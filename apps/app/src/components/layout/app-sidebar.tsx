@@ -8,6 +8,8 @@ import {
 	Moon,
 	Monitor,
 	Check,
+	FileText,
+	MessagesSquare,
 } from "lucide-react";
 
 import {
@@ -41,7 +43,11 @@ import { toast } from "sonner";
 import { useNavigate } from "@tanstack/react-router";
 import { userAtom } from "@/atoms/auth";
 
-const navItems = [{ title: "Dashboard", icon: Home, href: "/" }];
+const navItems = [
+	{ title: "Dashboard", icon: Home, href: "/" },
+	{ title: "Documents", icon: FileText, href: "/rag/documents" },
+	{ title: "Chat", icon: MessagesSquare, href: "/rag/chat" },
+];
 
 export function AppSidebar() {
 	const location = useLocation();

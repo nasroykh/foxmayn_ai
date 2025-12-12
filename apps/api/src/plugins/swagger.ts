@@ -1,6 +1,7 @@
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import { FastifyInstance } from "fastify";
+import { jsonSchemaTransform } from "fastify-type-provider-zod";
 
 export const registerSwagger = async (server: FastifyInstance) => {
 	await server.register(swagger, {
@@ -17,6 +18,7 @@ export const registerSwagger = async (server: FastifyInstance) => {
 				{ name: "health", description: "Health check endpoints" },
 			],
 		},
+		transform: jsonSchemaTransform,
 	});
 
 	await server.register(swaggerUi, {

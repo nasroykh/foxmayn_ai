@@ -4,12 +4,18 @@ import { initDB, disconnectDB } from "@repo/db";
 import {
 	registerCors,
 	registerSwagger,
-	registerTRPC,
+	// registerTRPC,
 	registerWS,
 	registerRedis,
-	registerAuth,
 	registerRateLimit,
+	registerMultipart,
 } from "./plugins";
+import {
+	validatorCompiler,
+	serializerCompiler,
+} from "fastify-type-provider-zod";
+import { registerRoutes } from "./routes/routes";
+import { registerAuthRoutes } from "./routes/auth/auth.routes";
 
 dotenvConfig({ override: true, quiet: true });
 
@@ -23,21 +29,27 @@ export const server = Fastify({
 	},
 });
 
+server.setValidatorCompiler(validatorCompiler);
+server.setSerializerCompiler(serializerCompiler);
+
 const start = async () => {
 	try {
 		console.log("🚀 Starting server initialization...");
 
-		// Initialize database
-		await initDB();
+		// Initialize external connections in parallel (DB + Redis are independent)
+		await Promise.all([initDB(), registerRedis(server)]);
 
-		// Register plugins
+		// Register plugins (order matters for some)
 		await registerCors(server);
 		await registerRateLimit(server);
-		await registerTRPC(server);
-		await registerSwagger(server);
+		await registerMultipart(server);
 		await registerWS(server);
-		await registerRedis(server);
-		await registerAuth(server);
+		// await registerTRPC(server);
+		await registerSwagger(server);
+		await registerAuthRoutes(server);
+
+		// Register routes
+		await registerRoutes(server);
 
 		// Start server
 		const port = parseInt(process.env.PORT || "33450");
@@ -63,11 +75,6 @@ async function gracefulShutdown() {
 
 		console.log("🔌 Disconnecting from database...");
 		await disconnectDB();
-
-		console.log("🔌 Closing Redis connection...");
-		if (server.redis) {
-			await server.redis.quit();
-		}
 
 		console.log("✅ Shutdown complete");
 		process.exit(0);

@@ -1,0 +1,29 @@
+{
+	"name": "@repo/qdrant",
+	"version": "0.0.0",
+	"description": "",
+	"main": "dist/index.js",
+	"types": "dist/types.d.ts",
+	"exports": {
+		".": "./dist/index.js"
+	},
+	"scripts": {
+		"dev": "NODE_ENV=development tsx watch src/index.ts",
+		"build": "rimraf dist && tsc",
+		"start": "NODE_ENV=production node dist/index.js",
+		"test": "echo \"Error: no test specified\" && exit 1"
+	},
+	"keywords": [],
+	"author": "",
+	"license": "ISC",
+	"dependencies": {
+		"@qdrant/js-client-rest": "^1.16.2",
+		"dotenv": "^17.2.3"
+	},
+	"devDependencies": {
+		"@types/node": "^22.10.2",
+		"rimraf": "^6.1.2",
+		"tsx": "^4.21.0",
+		"typescript": "^5.9.3"
+	}
+}

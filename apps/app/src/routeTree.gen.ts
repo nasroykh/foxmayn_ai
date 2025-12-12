@@ -13,9 +13,12 @@ import { Route as NotauthRouteImport } from './routes/_notauth'
 import { Route as AuthRouteImport } from './routes/_auth'
 import { Route as AuthIndexRouteImport } from './routes/_auth/index'
 import { Route as AuthSettingsRouteImport } from './routes/_auth/settings'
+import { Route as AuthRagIndexRouteImport } from './routes/_auth/rag/index'
 import { Route as NotauthAuthRegisterRouteImport } from './routes/_notauth/auth/register'
 import { Route as NotauthAuthLoginRouteImport } from './routes/_notauth/auth/login'
 import { Route as NotauthAuthForgotPasswordRouteImport } from './routes/_notauth/auth/forgot-password'
+import { Route as AuthRagDocumentsRouteImport } from './routes/_auth/rag/documents'
+import { Route as AuthRagChatRouteImport } from './routes/_auth/rag/chat'
 import { Route as AuthInviteInviteIdRouteImport } from './routes/_auth/invite/$inviteId'
 
 const NotauthRoute = NotauthRouteImport.update({
@@ -36,6 +39,11 @@ const AuthSettingsRoute = AuthSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthRagIndexRoute = AuthRagIndexRouteImport.update({
+  id: '/rag/',
+  path: '/rag/',
+  getParentRoute: () => AuthRoute,
+} as any)
 const NotauthAuthRegisterRoute = NotauthAuthRegisterRouteImport.update({
   id: '/auth/register',
   path: '/auth/register',
@@ -52,6 +60,16 @@ const NotauthAuthForgotPasswordRoute =
     path: '/auth/forgot-password',
     getParentRoute: () => NotauthRoute,
   } as any)
+const AuthRagDocumentsRoute = AuthRagDocumentsRouteImport.update({
+  id: '/rag/documents',
+  path: '/rag/documents',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthRagChatRoute = AuthRagChatRouteImport.update({
+  id: '/rag/chat',
+  path: '/rag/chat',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AuthInviteInviteIdRoute = AuthInviteInviteIdRouteImport.update({
   id: '/invite/$inviteId',
   path: '/invite/$inviteId',
@@ -62,17 +80,23 @@ export interface FileRoutesByFullPath {
   '/settings': typeof AuthSettingsRoute
   '/': typeof AuthIndexRoute
   '/invite/$inviteId': typeof AuthInviteInviteIdRoute
+  '/rag/chat': typeof AuthRagChatRoute
+  '/rag/documents': typeof AuthRagDocumentsRoute
   '/auth/forgot-password': typeof NotauthAuthForgotPasswordRoute
   '/auth/login': typeof NotauthAuthLoginRoute
   '/auth/register': typeof NotauthAuthRegisterRoute
+  '/rag': typeof AuthRagIndexRoute
 }
 export interface FileRoutesByTo {
   '/settings': typeof AuthSettingsRoute
   '/': typeof AuthIndexRoute
   '/invite/$inviteId': typeof AuthInviteInviteIdRoute
+  '/rag/chat': typeof AuthRagChatRoute
+  '/rag/documents': typeof AuthRagDocumentsRoute
   '/auth/forgot-password': typeof NotauthAuthForgotPasswordRoute
   '/auth/login': typeof NotauthAuthLoginRoute
   '/auth/register': typeof NotauthAuthRegisterRoute
+  '/rag': typeof AuthRagIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -81,9 +105,12 @@ export interface FileRoutesById {
   '/_auth/settings': typeof AuthSettingsRoute
   '/_auth/': typeof AuthIndexRoute
   '/_auth/invite/$inviteId': typeof AuthInviteInviteIdRoute
+  '/_auth/rag/chat': typeof AuthRagChatRoute
+  '/_auth/rag/documents': typeof AuthRagDocumentsRoute
   '/_notauth/auth/forgot-password': typeof NotauthAuthForgotPasswordRoute
   '/_notauth/auth/login': typeof NotauthAuthLoginRoute
   '/_notauth/auth/register': typeof NotauthAuthRegisterRoute
+  '/_auth/rag/': typeof AuthRagIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -91,17 +118,23 @@ export interface FileRouteTypes {
     | '/settings'
     | '/'
     | '/invite/$inviteId'
+    | '/rag/chat'
+    | '/rag/documents'
     | '/auth/forgot-password'
     | '/auth/login'
     | '/auth/register'
+    | '/rag'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/settings'
     | '/'
     | '/invite/$inviteId'
+    | '/rag/chat'
+    | '/rag/documents'
     | '/auth/forgot-password'
     | '/auth/login'
     | '/auth/register'
+    | '/rag'
   id:
     | '__root__'
     | '/_auth'
@@ -109,9 +142,12 @@ export interface FileRouteTypes {
     | '/_auth/settings'
     | '/_auth/'
     | '/_auth/invite/$inviteId'
+    | '/_auth/rag/chat'
+    | '/_auth/rag/documents'
     | '/_notauth/auth/forgot-password'
     | '/_notauth/auth/login'
     | '/_notauth/auth/register'
+    | '/_auth/rag/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -149,6 +185,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthSettingsRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/rag/': {
+      id: '/_auth/rag/'
+      path: '/rag'
+      fullPath: '/rag'
+      preLoaderRoute: typeof AuthRagIndexRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_notauth/auth/register': {
       id: '/_notauth/auth/register'
       path: '/auth/register'
@@ -170,6 +213,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof NotauthAuthForgotPasswordRouteImport
       parentRoute: typeof NotauthRoute
     }
+    '/_auth/rag/documents': {
+      id: '/_auth/rag/documents'
+      path: '/rag/documents'
+      fullPath: '/rag/documents'
+      preLoaderRoute: typeof AuthRagDocumentsRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/rag/chat': {
+      id: '/_auth/rag/chat'
+      path: '/rag/chat'
+      fullPath: '/rag/chat'
+      preLoaderRoute: typeof AuthRagChatRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_auth/invite/$inviteId': {
       id: '/_auth/invite/$inviteId'
       path: '/invite/$inviteId'
@@ -184,12 +241,18 @@ interface AuthRouteChildren {
   AuthSettingsRoute: typeof AuthSettingsRoute
   AuthIndexRoute: typeof AuthIndexRoute
   AuthInviteInviteIdRoute: typeof AuthInviteInviteIdRoute
+  AuthRagChatRoute: typeof AuthRagChatRoute
+  AuthRagDocumentsRoute: typeof AuthRagDocumentsRoute
+  AuthRagIndexRoute: typeof AuthRagIndexRoute
 }
 
 const AuthRouteChildren: AuthRouteChildren = {
   AuthSettingsRoute: AuthSettingsRoute,
   AuthIndexRoute: AuthIndexRoute,
   AuthInviteInviteIdRoute: AuthInviteInviteIdRoute,
+  AuthRagChatRoute: AuthRagChatRoute,
+  AuthRagDocumentsRoute: AuthRagDocumentsRoute,
+  AuthRagIndexRoute: AuthRagIndexRoute,
 }
 
 const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)

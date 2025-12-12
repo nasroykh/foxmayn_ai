@@ -1,10 +1,10 @@
 import { FastifyInstance } from "fastify";
-import { auth } from "../utils/auth";
+import { auth } from "../../utils/auth";
 
-export const registerAuth = async (server: FastifyInstance) => {
+export const registerAuthRoutes = async (server: FastifyInstance) => {
 	server.route({
 		method: ["GET", "POST"],
-		url: "/api/auth/*",
+		url: "/auth/*",
 		async handler(request, reply) {
 			try {
 				// Construct request URL
