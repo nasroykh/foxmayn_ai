@@ -1,0 +1,41 @@
+{
+	"name": "@repo/db",
+	"version": "0.0.0",
+	"description": "",
+	"main": "dist/index.js",
+	"types": "dist/types.d.ts",
+	"exports": {
+		".": "./dist/index.js",
+		"./schema": "./dist/schema.js",
+		"./types": "./dist/types.js",
+		"./drizzle-orm": "./dist/drizzle-orm.js"
+	},
+	"scripts": {
+		"dev": "NODE_ENV=development tsx watch src/index.ts",
+		"build": "rimraf dist && tsc",
+		"start": "NODE_ENV=production node dist/index.js",
+		"db:generate": "drizzle-kit generate --config drizzle.config.ts",
+		"db:migrate": "drizzle-kit migrate --config drizzle.config.ts",
+		"db:push": "drizzle-kit push --config drizzle.config.ts",
+		"db:studio": "drizzle-kit studio",
+		"test": "echo \"Error: no test specified\" && exit 1"
+	},
+	"keywords": [],
+	"author": "",
+	"license": "ISC",
+	"packageManager": "pnpm@10.0.0",
+	"dependencies": {
+		"dotenv": "^17.2.3",
+		"drizzle-orm": "^0.44.7",
+		"drizzle-zod": "^0.8.3",
+		"pg": "^8.16.3",
+		"zod": "^4.1.13"
+	},
+	"devDependencies": {
+		"@types/pg": "^8.15.6",
+		"drizzle-kit": "^0.31.7",
+		"rimraf": "^6.1.2",
+		"tsx": "^4.21.0",
+		"typescript": "^5.9.3"
+	}
+}

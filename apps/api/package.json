@@ -1,0 +1,53 @@
+{
+	"name": "api",
+	"private": true,
+	"version": "0.0.0",
+	"main": "dist/index.js",
+	"packageManager": "pnpm@10.0.0",
+	"exports": {
+		"./trpc": "./dist/trpc/router.d.ts"
+	},
+	"scripts": {
+		"dev": "NODE_ENV=development tsx watch src/index.ts",
+		"build": "rimraf dist && tsc",
+		"start": "NODE_ENV=production node dist/index.js",
+		"test": "echo \"Error: no test specified\" && exit 1"
+	},
+	"keywords": [],
+	"author": "",
+	"license": "ISC",
+	"dependencies": {
+		"@better-auth/stripe": "^1.4.5",
+		"@fastify/cors": "^11.1.0",
+		"@fastify/rate-limit": "^10.3.0",
+		"@fastify/redis": "^7.1.0",
+		"@fastify/swagger": "^9.6.1",
+		"@fastify/swagger-ui": "^5.2.3",
+		"@fastify/websocket": "^11.2.0",
+		"@repo/db": "workspace:*",
+		"@trpc/client": "^11.7.2",
+		"@trpc/server": "^11.7.2",
+		"argon2": "^0.44.0",
+		"better-auth": "^1.4.5",
+		"bullmq": "^5.65.1",
+		"dayjs": "^1.11.19",
+		"dotenv": "^17.2.3",
+		"fastify": "^5.6.2",
+		"jsonwebtoken": "^9.0.3",
+		"nanoid": "^5.1.6",
+		"nodemailer": "^7.0.11",
+		"stripe": "^20.0.0",
+		"zod": "^4.1.13"
+	},
+	"devDependencies": {
+		"@types/jsonwebtoken": "^9.0.10",
+		"@types/node": "^24.10.1",
+		"@types/nodemailer": "^7.0.4",
+		"@types/ws": "^8.18.1",
+		"fastify-tsconfig": "^3.0.0",
+		"rimraf": "^6.1.2",
+		"superjson": "^2.2.6",
+		"tsx": "^4.21.0",
+		"typescript": "^5.9.3"
+	}
+}

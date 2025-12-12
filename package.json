@@ -1,0 +1,30 @@
+{
+	"name": "app_template",
+	"private": true,
+	"version": "0.0.0",
+	"packageManager": "pnpm@10.0.0",
+	"scripts": {
+		"build": "pnpm --filter=db build && pnpm --filter=api build && pnpm --filter=app build",
+		"dev": "pnpm --filter=db build && pnpm --filter=api build && concurrently -n db,api,app -c blue,green,yellow \"pnpm --filter=db dev\" \"pnpm --filter=api dev\" \"pnpm --filter=app dev\"",
+		"start": "concurrently -n db,api,app -c blue,green,yellow \"pnpm --filter=db start\" \"pnpm --filter=api start\" \"pnpm --filter=app start\"",
+		"build:db": "pnpm --filter=db build",
+		"build:api": "pnpm --filter=api build",
+		"build:app": "pnpm --filter=app build",
+		"dev:db": "pnpm --filter=db dev",
+		"dev:api": "pnpm --filter=api dev",
+		"dev:app": "pnpm --filter=app dev",
+		"start:db": "pnpm --filter=db start",
+		"start:api": "pnpm --filter=api start",
+		"start:app": "pnpm --filter=app start",
+		"auth:generate": "cd apps/api && pnpm dlx @better-auth/cli generate --config src/utils/auth.ts --output ../../packages/db/src/models/auth/schema.ts",
+		"db:generate": "pnpm --filter=db db:generate",
+		"db:migrate": "pnpm --filter=db db:migrate",
+		"db:push": "pnpm --filter=db db:push"
+	},
+	"devDependencies": {
+		"concurrently": "^9.2.1"
+	},
+	"engines": {
+		"node": ">=18"
+	}
+}
