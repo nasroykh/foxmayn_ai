@@ -9,17 +9,20 @@ import {
 	type Point,
 } from "@repo/qdrant";
 import { eq } from "@repo/db/drizzle-orm";
-import { nanoid } from "nanoid";
 import {
 	chunkText,
 	calculateTokens,
 	type ChunkOptions,
 } from "./chunking.service";
-import { OpenRouterEmbed, OpenRouterQuery } from "../utils/openrouter";
+import {
+	OpenRouterBatchEmbed,
+	OpenRouterEmbed,
+	OpenRouterQuery,
+} from "../utils/openrouter";
 import { env } from "../config/env";
 
 // Constants
-const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME || "foxmayn_ai";
+const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME;
 const VECTOR_SIZE = 1536; // text-embedding-3-small dimension
 
 // Initialize Qdrant client
@@ -96,7 +99,7 @@ export const indexDocument = async (
 
 	await ensureCollection();
 
-	const docId = nanoid();
+	const docId = randomUUID();
 
 	// Create document record
 	await db.insert(document).values({
@@ -113,14 +116,15 @@ export const indexDocument = async (
 		const chunks = await chunkText(content, chunkOptions);
 
 		// Generate embeddings for all chunks
-		const embeddings: number[][] = [];
-		for (const chunk of chunks) {
-			const embedding = await OpenRouterEmbed(
-				"openaiTextEmbedding3Small",
-				chunk.content
+		const embeddings = await OpenRouterBatchEmbed(
+			"openaiTextEmbedding3Small",
+			chunks.map((chunk) => chunk.content)
+		);
+
+		if (embeddings.length !== chunks.length)
+			throw new Error(
+				"Mismatch between number of chunks and number of embeddings"
 			);
-			embeddings.push(embedding);
-		}
 
 		// Prepare vectors for Qdrant and chunk records
 		const points: Point<VectorPayload>[] = [];
@@ -129,7 +133,7 @@ export const indexDocument = async (
 
 			points.push({
 				id: chunkId,
-				vector: embeddings[index],
+				vector: embeddings[index].embedding,
 				payload: {
 					documentId: docId,
 					chunkId,
@@ -145,7 +149,7 @@ export const indexDocument = async (
 				documentId: docId,
 				content: chunk.content,
 				chunkIndex: chunk.index,
-				tokenCount: calculateTokens(chunk.content),
+				tokenCount: calculateTokens(chunk.content, "text-embedding-3-small"),
 				qdrantPointId: chunkId,
 			};
 		});
@@ -187,7 +191,7 @@ export const searchChunks = async (
 	query: string,
 	options: QueryOptions = {}
 ): Promise<SearchResult[]> => {
-	const { limit = 5, scoreThreshold = 0.3, filter } = options;
+	const { limit = 5, scoreThreshold = 0.6, filter } = options;
 
 	await ensureCollection();
 
@@ -266,7 +270,7 @@ Instructions:
 			model: "gemini25FlashLite",
 			temperature: 0,
 			maxTokens: 2048,
-			reasoningEffort: "minimal",
+			reasoningEffort: "none",
 			stream: false,
 		},
 		undefined,
@@ -329,7 +333,7 @@ Instructions:
 			model: "gemini25FlashLite",
 			temperature: 0,
 			maxTokens: 2048,
-			reasoningEffort: "minimal",
+			reasoningEffort: "none",
 			stream: true,
 		},
 		undefined,

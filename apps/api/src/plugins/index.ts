@@ -5,3 +5,4 @@ export { registerWS } from "./ws";
 export { registerRedis } from "./redis";
 export { registerRateLimit } from "./rate-limit";
 export { registerMultipart } from "./multipart";
+export { registerSSE } from "./sse";

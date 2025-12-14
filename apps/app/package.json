@@ -7,7 +7,7 @@
 		"dev": "vite --port 33460",
 		"build": "tsc -b && vite build",
 		"lint": "eslint .",
-		"start": "vite preview"
+		"start": "vite preview --port 33460"
 	},
 	"dependencies": {
 		"@better-auth/stripe": "^1.4.7",

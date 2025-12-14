@@ -1,5 +1,5 @@
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { getEncoding } from "js-tiktoken";
+import { encodingForModel, TiktokenModel } from "js-tiktoken";
 
 /**
  * Text chunking service using LangChain's RecursiveCharacterTextSplitter
@@ -32,9 +32,11 @@ const DEFAULT_SEPARATORS = [
 /**
  * Calculate token count
  */
-export const calculateTokens = (text: string): number => {
-	const encoding = getEncoding("o200k_base");
-	return encoding.encode(text).length;
+export const calculateTokens = (
+	text: string,
+	encoding: TiktokenModel
+): number => {
+	return encodingForModel(encoding).encode(text).length;
 };
 
 /**
@@ -45,8 +47,8 @@ export const chunkText = async (
 	options: ChunkOptions = {}
 ): Promise<Chunk[]> => {
 	const {
-		chunkSize = 1000, // ~500 tokens
-		chunkOverlap = 100, // ~50 tokens overlap
+		chunkSize = 500, // ~500 tokens
+		chunkOverlap = 50, // ~50 tokens overlap
 		separators = DEFAULT_SEPARATORS,
 	} = options;
 

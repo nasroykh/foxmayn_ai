@@ -144,7 +144,10 @@ export const uploadDocumentFile = async (params: {
 };
 
 export const deleteDocument = async (id: string) => {
-	await apiFetch(`/documents/${id}`, { method: "DELETE" });
+	await apiFetch(`/documents/${id}`, {
+		method: "DELETE",
+		body: JSON.stringify({}),
+	});
 };
 
 // Chat APIs
@@ -270,6 +273,11 @@ export const ragStream = async (
 							}
 							break;
 					}
+					// Reset current event after processing
+					currentEvent = "";
+				} else if (line === "") {
+					// Empty line marks the end of an event (SSE spec)
+					currentEvent = "";
 				}
 			}
 		}

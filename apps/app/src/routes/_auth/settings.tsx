@@ -325,8 +325,6 @@ function OrganizationTab() {
 	const [isSaving, setIsSaving] = useState(false);
 	const [orgId, setOrgId] = useState<string | null>(null);
 
-	console.log($role);
-
 	const form = useForm<OrgFormValues>({
 		resolver: zodResolver(orgSchema),
 		defaultValues: {
@@ -742,7 +740,7 @@ function MembersTab() {
 							<TableRow>
 								<TableHead>Member</TableHead>
 								<TableHead>Role</TableHead>
-								<TableHead className="w-[50px]"></TableHead>
+								<TableHead className="w-12.5"></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>

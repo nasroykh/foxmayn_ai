@@ -100,7 +100,9 @@ function DocumentsPage() {
 			const result = await listDocuments({ limit: 100 });
 			setDocuments(result.documents);
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : "Failed to load documents");
+			toast.error(
+				error instanceof Error ? error.message : "Failed to load documents"
+			);
 		} finally {
 			setIsLoading(false);
 		}
@@ -118,7 +120,9 @@ function DocumentsPage() {
 			setDeleteDoc(null);
 			loadDocuments();
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : "Failed to delete document");
+			toast.error(
+				error instanceof Error ? error.message : "Failed to delete document"
+			);
 		}
 	};
 
@@ -132,7 +136,9 @@ function DocumentsPage() {
 			const fullDoc = await getDocument(doc.id);
 			setViewDoc(fullDoc);
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : "Failed to load document");
+			toast.error(
+				error instanceof Error ? error.message : "Failed to load document"
+			);
 		}
 	};
 
@@ -184,7 +190,8 @@ function DocumentsPage() {
 					<CardHeader>
 						<CardTitle>All Documents</CardTitle>
 						<CardDescription>
-							{documents.length} document{documents.length !== 1 ? "s" : ""} in your knowledge base
+							{documents.length} document{documents.length !== 1 ? "s" : ""} in
+							your knowledge base
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
@@ -222,7 +229,7 @@ function DocumentsPage() {
 										<TableHead>Chunks</TableHead>
 										<TableHead>Source</TableHead>
 										<TableHead>Updated</TableHead>
-										<TableHead className="w-[50px]" />
+										<TableHead className="w-12.5" />
 									</TableRow>
 								</TableHeader>
 								<TableBody>
@@ -235,7 +242,7 @@ function DocumentsPage() {
 												</Badge>
 											</TableCell>
 											<TableCell>{doc.chunkCount ?? "-"}</TableCell>
-											<TableCell className="max-w-[200px] truncate">
+											<TableCell className="max-w-50 truncate">
 												{doc.source || "-"}
 											</TableCell>
 											<TableCell>
@@ -244,7 +251,11 @@ function DocumentsPage() {
 											<TableCell>
 												<DropdownMenu>
 													<DropdownMenuTrigger asChild>
-														<Button variant="ghost" size="icon" className="size-8">
+														<Button
+															variant="ghost"
+															size="icon"
+															className="size-8"
+														>
 															<MoreHorizontal className="size-4" />
 														</Button>
 													</DropdownMenuTrigger>
@@ -253,7 +264,9 @@ function DocumentsPage() {
 															<Eye className="mr-2 size-4" />
 															View
 														</DropdownMenuItem>
-														<DropdownMenuItem onClick={() => handleCopyId(doc.id)}>
+														<DropdownMenuItem
+															onClick={() => handleCopyId(doc.id)}
+														>
 															<Copy className="mr-2 size-4" />
 															Copy ID
 														</DropdownMenuItem>
@@ -276,12 +289,16 @@ function DocumentsPage() {
 				</Card>
 
 				{/* View Dialog */}
-				<Dialog open={!!viewDoc} onOpenChange={(open) => !open && setViewDoc(null)}>
+				<Dialog
+					open={!!viewDoc}
+					onOpenChange={(open) => !open && setViewDoc(null)}
+				>
 					<DialogContent className="max-w-2xl">
 						<DialogHeader>
 							<DialogTitle>{viewDoc?.title}</DialogTitle>
 							<DialogDescription>
-								ID: {viewDoc?.id} • Status: {viewDoc?.status} • {viewDoc?.chunkCount ?? 0} chunks
+								ID: {viewDoc?.id} • Status: {viewDoc?.status} •{" "}
+								{viewDoc?.chunkCount ?? 0} chunks
 							</DialogDescription>
 						</DialogHeader>
 						<div className="space-y-4">
@@ -291,25 +308,31 @@ function DocumentsPage() {
 									<p className="text-sm mt-1">{viewDoc.source}</p>
 								</div>
 							)}
-							{viewDoc?.metadata && Object.keys(viewDoc.metadata).length > 0 && (
-								<div>
-									<Label className="text-muted-foreground">Metadata</Label>
-									<pre className="text-sm mt-1 bg-muted p-2 rounded overflow-auto max-h-24">
-										{JSON.stringify(viewDoc.metadata, null, 2)}
-									</pre>
-								</div>
-							)}
+							{viewDoc?.metadata &&
+								Object.keys(viewDoc.metadata).length > 0 && (
+									<div>
+										<Label className="text-muted-foreground">Metadata</Label>
+										<pre className="text-sm mt-1 bg-muted p-2 rounded overflow-auto max-h-24">
+											{JSON.stringify(viewDoc.metadata, null, 2)}
+										</pre>
+									</div>
+								)}
 							<div>
 								<Label className="text-muted-foreground">Timestamps</Label>
 								<p className="text-sm mt-1">
-									Created: {viewDoc ? new Date(viewDoc.createdAt).toLocaleString() : "-"}
+									Created:{" "}
+									{viewDoc ? new Date(viewDoc.createdAt).toLocaleString() : "-"}
 									<br />
-									Updated: {viewDoc ? new Date(viewDoc.updatedAt).toLocaleString() : "-"}
+									Updated:{" "}
+									{viewDoc ? new Date(viewDoc.updatedAt).toLocaleString() : "-"}
 								</p>
 							</div>
 						</div>
 						<DialogFooter>
-							<Button variant="outline" onClick={() => viewDoc && handleCopyId(viewDoc.id)}>
+							<Button
+								variant="outline"
+								onClick={() => viewDoc && handleCopyId(viewDoc.id)}
+							>
 								<Copy className="mr-2 size-4" />
 								Copy ID
 							</Button>
@@ -319,13 +342,17 @@ function DocumentsPage() {
 				</Dialog>
 
 				{/* Delete Confirmation */}
-				<AlertDialog open={!!deleteDoc} onOpenChange={(open) => !open && setDeleteDoc(null)}>
+				<AlertDialog
+					open={!!deleteDoc}
+					onOpenChange={(open) => !open && setDeleteDoc(null)}
+				>
 					<AlertDialogContent>
 						<AlertDialogHeader>
 							<AlertDialogTitle>Delete Document</AlertDialogTitle>
 							<AlertDialogDescription>
-								Are you sure you want to delete "{deleteDoc?.title}"? This will also remove all
-								associated chunks and vectors. This action cannot be undone.
+								Are you sure you want to delete "{deleteDoc?.title}"? This will
+								also remove all associated chunks and vectors. This action
+								cannot be undone.
 							</AlertDialogDescription>
 						</AlertDialogHeader>
 						<AlertDialogFooter>
@@ -383,7 +410,9 @@ function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
 			setMetadata("");
 			onSuccess();
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : "Failed to create document");
+			toast.error(
+				error instanceof Error ? error.message : "Failed to create document"
+			);
 		} finally {
 			setIsSubmitting(false);
 		}
@@ -498,7 +527,9 @@ function UploadDialog({ onSuccess }: { onSuccess: () => void }) {
 			if (fileInputRef.current) fileInputRef.current.value = "";
 			onSuccess();
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : "Failed to upload file");
+			toast.error(
+				error instanceof Error ? error.message : "Failed to upload file"
+			);
 		} finally {
 			setIsSubmitting(false);
 		}
@@ -530,7 +561,9 @@ function UploadDialog({ onSuccess }: { onSuccess: () => void }) {
 					)}
 				</div>
 				<div className="space-y-2">
-					<Label htmlFor="upload-title">Title (optional, defaults to filename)</Label>
+					<Label htmlFor="upload-title">
+						Title (optional, defaults to filename)
+					</Label>
 					<Input
 						id="upload-title"
 						placeholder="Document title"
@@ -579,4 +612,3 @@ function UploadDialog({ onSuccess }: { onSuccess: () => void }) {
 		</DialogContent>
 	);
 }
-

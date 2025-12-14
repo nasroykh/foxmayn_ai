@@ -8,6 +8,7 @@ import {
 	registerRedis,
 	registerRateLimit,
 	registerMultipart,
+	registerSSE,
 } from "./plugins";
 import {
 	validatorCompiler,
@@ -40,6 +41,7 @@ const start = async () => {
 		// Register plugins (order matters for some)
 		await registerCors(server);
 		await registerRateLimit(server);
+		await registerSSE(server);
 		await registerMultipart(server);
 		await registerWS(server);
 		await registerTRPC(server);

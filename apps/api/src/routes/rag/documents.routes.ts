@@ -51,11 +51,7 @@ export const registerDocumentRoutes = async (server: FastifyInstance) => {
 			},
 		},
 		async (request, reply) => {
-			console.log(request.body);
-
-			const { title, content, source, metadata } = createDocumentSchema.parse(
-				request.body
-			);
+			const { title, content, source, metadata } = request.body;
 
 			const documentId = await indexDocument({
 				title,
@@ -165,7 +161,7 @@ export const registerDocumentRoutes = async (server: FastifyInstance) => {
 			},
 		},
 		async (request, reply) => {
-			const { id } = documentIdParamsSchema.parse(request.params);
+			const { id } = request.params;
 
 			const doc = await getDocument(id);
 
@@ -195,7 +191,7 @@ export const registerDocumentRoutes = async (server: FastifyInstance) => {
 			},
 		},
 		async (request) => {
-			const parsed = listQuerySchema.parse(request.query);
+			const parsed = request.query;
 			const limit = parsed.limit ?? 20;
 			const offset = parsed.offset ?? 0;
 
@@ -225,7 +221,7 @@ export const registerDocumentRoutes = async (server: FastifyInstance) => {
 			},
 		},
 		async (request, reply) => {
-			const { id } = documentIdParamsSchema.parse(request.params);
+			const { id } = request.params;
 
 			const doc = await getDocument(id);
 

@@ -37,7 +37,7 @@ export const DEFAULT_OPENROUTER_MODEL = OPENROUTER_AI_MODELS.gemini25FlashLite;
 
 export const DEFAULT_TEMPERATURE = 1.0;
 export const DEFAULT_MAX_TOKENS = 500;
-export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "minimal";
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "none";
 
 if (!env.OPENROUTER_API_KEY) {
 	throw new Error("OPENROUTER_API_KEY is not set");
@@ -157,6 +157,36 @@ export const OpenRouterEmbed = async (
 		}
 
 		return embedding.data[0].embedding;
+	} catch (error) {
+		console.error(error);
+		throw error;
+	}
+};
+
+export const OpenRouterBatchEmbed = async (
+	model: keyof typeof OPENROUTER_EMBEDDING_MODELS,
+	texts: string[]
+) => {
+	try {
+		let dimensions = 3072;
+		if (model === "openaiTextEmbedding3Small") {
+			dimensions = 1536;
+		} else if (model === "googleGeminiEmbedding001") {
+			dimensions = 3072;
+		}
+
+		const embedding = await openai.embeddings.create({
+			model: OPENROUTER_EMBEDDING_MODELS[model],
+			input: texts,
+			dimensions,
+			encoding_format: "float",
+		});
+
+		if (!embedding?.data?.length) {
+			throw new Error("No embedding returned from completion");
+		}
+
+		return embedding.data;
 	} catch (error) {
 		console.error(error);
 		throw error;
