@@ -1,12 +1,20 @@
 import { FastifyInstance } from "fastify";
 import { registerAuthRoutes } from "./auth/auth.routes";
 import { registerHealthRoutes } from "./health/health.route";
-import { registerRAGRoutes } from "./rag";
+import { registerChatRoutes } from "./rag/chat.routes";
+import { registerDocumentRoutes } from "./rag/documents.routes";
 
 const PREFIX = "/api";
 
+// Merged route registration function
 export const registerRoutes = async (server: FastifyInstance) => {
-	await server.register(registerHealthRoutes, { prefix: PREFIX });
-	await server.register(registerAuthRoutes, { prefix: PREFIX });
-	await server.register(registerRAGRoutes, { prefix: PREFIX });
+	await server.register(
+		(subServer) => {
+			registerHealthRoutes(subServer);
+			registerAuthRoutes(subServer);
+			registerChatRoutes(subServer);
+			registerDocumentRoutes(subServer);
+		},
+		{ prefix: PREFIX }
+	);
 };

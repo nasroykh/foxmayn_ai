@@ -4,8 +4,15 @@ import { AppSidebar } from "./app-sidebar";
 import { roleAtom, tokenAtom, userAtom } from "@/atoms/auth";
 import { authClient } from "@/lib/auth";
 import { useEffect } from "react";
+import { cn } from "@/lib/utils";
 
-export function Layout({ children }: { children: React.ReactNode }) {
+export function Layout({
+	children,
+	hideHeader = false,
+}: {
+	children: React.ReactNode;
+	hideHeader?: boolean;
+}) {
 	const [$user, setUser] = useAtom(userAtom);
 	const [$role, setRole] = useAtom(roleAtom);
 	const [$token, setToken] = useAtom(tokenAtom);
@@ -32,11 +39,18 @@ export function Layout({ children }: { children: React.ReactNode }) {
 		<SidebarProvider>
 			<AppSidebar />
 			<SidebarInset>
-				<header className="flex h-14 shrink-0 items-center gap-4 px-4 bg-sidebar">
+				<header
+					className={cn(
+						"flex h-14 shrink-0 items-center gap-4 px-4 bg-sidebar",
+						{
+							hidden: hideHeader,
+						}
+					)}
+				>
 					<SidebarTrigger className="-ml-1" />
 					<span className="font-medium text-sm">Dashboard</span>
 				</header>
-				<main className="flex-1 overflow-auto p-6">{children}</main>
+				<main className="flex-1 overflow-auto">{children}</main>
 			</SidebarInset>
 		</SidebarProvider>
 	);

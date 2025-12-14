@@ -204,9 +204,7 @@ export const ragStream = async (
 	},
 	abortController?: AbortController
 ) => {
-	const url = `${getBaseUrl()}/chat/query/stream`;
-
-	const response = await fetch(url, {
+	const response = await fetch(`${getBaseUrl()}/chat/query/stream`, {
 		method: "POST",
 		credentials: "include",
 		headers: {
@@ -231,6 +229,33 @@ export const ragStream = async (
 
 	const decoder = new TextDecoder();
 	let buffer = "";
+	let currentEvent = "";
+
+	const handleEvent = (event: string, data: string) => {
+		switch (event) {
+			case "sources":
+				try {
+					callbacks.onSources?.(JSON.parse(data));
+				} catch {
+					// ignore parse errors
+				}
+				break;
+			case "token":
+				callbacks.onToken?.(data);
+				break;
+			case "done":
+				callbacks.onDone?.();
+				break;
+			case "error":
+				try {
+					const errorData = JSON.parse(data);
+					callbacks.onError?.(errorData.message || "Unknown error");
+				} catch {
+					callbacks.onError?.(data || "Unknown error");
+				}
+				break;
+		}
+	};
 
 	try {
 		while (true) {
@@ -241,43 +266,11 @@ export const ragStream = async (
 			const lines = buffer.split("\n");
 			buffer = lines.pop() || "";
 
-			let currentEvent = "";
-
 			for (const line of lines) {
 				if (line.startsWith("event: ")) {
 					currentEvent = line.slice(7).trim();
 				} else if (line.startsWith("data: ")) {
-					const data = line.slice(6);
-
-					switch (currentEvent) {
-						case "sources":
-							try {
-								const sources = JSON.parse(data);
-								callbacks.onSources?.(sources);
-							} catch {
-								// ignore parse errors
-							}
-							break;
-						case "token":
-							callbacks.onToken?.(data);
-							break;
-						case "done":
-							callbacks.onDone?.();
-							break;
-						case "error":
-							try {
-								const errorData = JSON.parse(data);
-								callbacks.onError?.(errorData.message || "Unknown error");
-							} catch {
-								callbacks.onError?.(data || "Unknown error");
-							}
-							break;
-					}
-					// Reset current event after processing
-					currentEvent = "";
-				} else if (line === "") {
-					// Empty line marks the end of an event (SSE spec)
-					currentEvent = "";
+					handleEvent(currentEvent, line.slice(6));
 				}
 			}
 		}

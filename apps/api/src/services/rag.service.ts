@@ -331,7 +331,7 @@ Instructions:
 	const stream = await OpenRouterQuery(
 		{
 			model: "gemini25FlashLite",
-			temperature: 0,
+			temperature: 0.2,
 			maxTokens: 2048,
 			reasoningEffort: "none",
 			stream: true,

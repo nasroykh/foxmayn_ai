@@ -1,26 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useEffect, useRef } from "react";
 import { Layout } from "@/components/layout/layout";
-import {
-	Card,
-	CardContent,
-	CardDescription,
-	CardHeader,
-	CardTitle,
-} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-	Table,
-	TableBody,
-	TableCell,
-	TableHead,
-	TableHeader,
-	TableRow,
-} from "@/components/ui/table";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
 	Select,
 	SelectContent,
@@ -28,82 +11,154 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Label } from "@/components/ui/label";
-import { Slider } from "@/components/ui/slider";
 import {
-	Collapsible,
-	CollapsibleContent,
-	CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
 	Send,
-	Square,
-	Trash2,
-	Copy,
-	ChevronDown,
+	StopCircle,
+	Plus,
+	MoreHorizontal,
 	MessageSquare,
-	FileText,
-	Settings2,
-	Loader2,
+	Trash2,
+	Pencil,
+	Copy,
+	RotateCcw,
+	Bot,
+	User,
 } from "lucide-react";
 import { toast } from "sonner";
-import {
-	listDocuments,
-	ragStream,
-	type Document,
-	type SearchResult,
-} from "@/lib/rag";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { ragStream } from "@/lib/rag";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_auth/rag/chat")({
 	component: ChatPage,
 });
 
+// Mock types
+interface Message {
+	id: string;
+	role: "user" | "assistant";
+	content: string;
+	timestamp: Date;
+}
+
+interface Conversation {
+	id: string;
+	title: string;
+	messages: Message[];
+	updatedAt: Date;
+}
+
+// Mock models
+const AI_MODELS = [
+	{ id: "gpt-4o", name: "GPT-4o" },
+	{ id: "claude-3-5-sonnet", name: "Claude 3.5 Sonnet" },
+	{ id: "llama-3-70b", name: "Llama 3 70B" },
+];
+
 function ChatPage() {
-	// Query state
-	const [query, setQuery] = useState("");
+	// State
+	const [conversations, setConversations] = useState<Conversation[]>([]);
+	const [activeId, setActiveId] = useState<string | null>(null);
+	const [input, setInput] = useState("");
+	const [selectedModel, setSelectedModel] = useState(AI_MODELS[0].id);
 	const [isStreaming, setIsStreaming] = useState(false);
 	const abortControllerRef = useRef<AbortController | null>(null);
+	const scrollRef = useRef<HTMLDivElement>(null);
 
-	// Response state
-	const [answer, setAnswer] = useState("");
-	const [sources, setSources] = useState<SearchResult[]>([]);
-
-	// Filter state
-	const [documents, setDocuments] = useState<Document[]>([]);
-	const [selectedDocId, setSelectedDocId] = useState<string>("all");
-	const [sourceFilter, setSourceFilter] = useState("");
-	const [limit, setLimit] = useState(5);
-	const [scoreThreshold, setScoreThreshold] = useState(0.7);
-	const [filtersOpen, setFiltersOpen] = useState(false);
-
-	// Scroll ref for auto-scroll
-	const answerEndRef = useRef<HTMLDivElement>(null);
-
-	// Load documents for filter dropdown
+	// Auto-scroll to bottom
 	useEffect(() => {
-		const loadDocs = async () => {
-			try {
-				const result = await listDocuments({ limit: 100 });
-				setDocuments(result.documents);
-			} catch {
-				// Silent fail - filter will just be empty
-			}
+		if (scrollRef.current) {
+			scrollRef.current.scrollIntoView({ behavior: "smooth" });
+		}
+	}, [activeId, conversations]);
+
+	const activeConversation = conversations.find((c) => c.id === activeId);
+
+	const handleCreateConversation = () => {
+		const newId = crypto.randomUUID();
+		const newConversation: Conversation = {
+			id: newId,
+			title: "New Chat",
+			messages: [],
+			updatedAt: new Date(),
 		};
-		loadDocs();
-	}, []);
+		setConversations([newConversation, ...conversations]);
+		setActiveId(newId);
+		setInput("");
+	};
 
-	// Auto-scroll as content streams
-	useEffect(() => {
-		answerEndRef.current?.scrollIntoView({ behavior: "smooth" });
-	}, [answer]);
+	const handleDeleteConversation = (id: string, e: React.MouseEvent) => {
+		e.stopPropagation();
+		const newConversations = conversations.filter((c) => c.id !== id);
+		setConversations(newConversations);
+		if (activeId === id) {
+			setActiveId(newConversations[0]?.id || null);
+		}
+		toast.success("Conversation deleted");
+	};
 
-	const handleSubmit = async () => {
-		if (!query.trim() || isStreaming) return;
+	const handleRenameConversation = (id: string, newTitle: string) => {
+		setConversations(
+			conversations.map((c) => (c.id === id ? { ...c, title: newTitle } : c))
+		);
+	};
 
-		// Reset state
-		setAnswer("");
-		setSources([]);
+	const handleSend = async () => {
+		if (!input.trim() || isStreaming) return;
+
+		let currentConversationId = activeId;
+		let updatedConversations = [...conversations];
+
+		// Create new conversation if none selected
+		if (!currentConversationId) {
+			currentConversationId = crypto.randomUUID();
+			const newConversation: Conversation = {
+				id: currentConversationId,
+				title: input.slice(0, 30) + (input.length > 30 ? "..." : ""),
+				messages: [],
+				updatedAt: new Date(),
+			};
+			updatedConversations = [newConversation, ...conversations];
+			setConversations(updatedConversations);
+			setActiveId(currentConversationId);
+		}
+
+		// Add user message
+		const userMessage: Message = {
+			id: crypto.randomUUID(),
+			role: "user",
+			content: input,
+			timestamp: new Date(),
+		};
+
+		const assistantMessageId = crypto.randomUUID();
+		const assistantMessage: Message = {
+			id: assistantMessageId,
+			role: "assistant",
+			content: "",
+			timestamp: new Date(),
+		};
+
+		setConversations((prev) =>
+			prev.map((c) =>
+				c.id === currentConversationId
+					? {
+							...c,
+							messages: [...c.messages, userMessage, assistantMessage],
+							updatedAt: new Date(),
+					  }
+					: c
+			)
+		);
+
+		setInput("");
 		setIsStreaming(true);
 
 		const controller = new AbortController();
@@ -112,20 +167,22 @@ function ChatPage() {
 		try {
 			await ragStream(
 				{
-					query: query.trim(),
-					options: {
-						limit,
-						scoreThreshold,
-						documentId: selectedDocId === "all" ? undefined : selectedDocId,
-						source: sourceFilter.trim() || undefined,
-					},
+					query: userMessage.content,
+					// Note: Backend doesn't support model selection yet, so we don't send it
 				},
 				{
-					onSources: (newSources) => {
-						setSources(newSources);
-					},
 					onToken: (token) => {
-						setAnswer((prev) => prev + token);
+						setConversations((prev) =>
+							prev.map((c) => {
+								if (c.id !== currentConversationId) return c;
+								const messages = [...c.messages];
+								const lastMsg = messages[messages.length - 1];
+								if (lastMsg.id === assistantMessageId) {
+									lastMsg.content += token;
+								}
+								return { ...c, messages };
+							})
+						);
 					},
 					onDone: () => {
 						setIsStreaming(false);
@@ -139,289 +196,284 @@ function ChatPage() {
 			);
 		} catch (error) {
 			if ((error as Error).name !== "AbortError") {
-				toast.error(error instanceof Error ? error.message : "Query failed");
+				toast.error("Failed to send message");
 			}
 			setIsStreaming(false);
 		}
 	};
 
 	const handleStop = () => {
-		abortControllerRef.current?.abort();
+		if (abortControllerRef.current) {
+			abortControllerRef.current.abort();
+			abortControllerRef.current = null;
+		}
 		setIsStreaming(false);
 	};
 
-	const handleClear = () => {
-		setQuery("");
-		setAnswer("");
-		setSources([]);
-	};
-
-	const handleCopyAnswer = () => {
-		navigator.clipboard.writeText(answer);
-		toast.success("Answer copied to clipboard");
-	};
-
-	const handleCopyChunkId = (id: string) => {
-		navigator.clipboard.writeText(id);
-		toast.success("Chunk ID copied");
+	const handleCopy = (content: string) => {
+		navigator.clipboard.writeText(content);
+		toast.success("Copied to clipboard");
 	};
 
 	const handleKeyDown = (e: React.KeyboardEvent) => {
-		if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+		if (e.key === "Enter" && !e.shiftKey) {
 			e.preventDefault();
-			handleSubmit();
+			handleSend();
 		}
 	};
 
 	return (
-		<Layout>
-			<div className="space-y-6">
-				{/* Header */}
-				<div>
-					<h1 className="text-2xl font-bold tracking-tight">RAG Chat</h1>
-					<p className="text-muted-foreground">
-						Query your knowledge base with AI-powered answers
-					</p>
-				</div>
-
-				{/* Query Card */}
-				<Card>
-					<CardHeader className="pb-3">
-						<CardTitle className="text-base">Ask a question</CardTitle>
-						<CardDescription>
-							Your query will be matched against indexed documents
-						</CardDescription>
-					</CardHeader>
-					<CardContent className="space-y-4">
-						{/* Query input */}
-						<div className="flex gap-2">
-							<Textarea
-								placeholder="What would you like to know?"
-								value={query}
-								onChange={(e) => setQuery(e.target.value)}
-								onKeyDown={handleKeyDown}
-								disabled={isStreaming}
-								rows={3}
-								className="resize-none"
-							/>
-						</div>
-
-						{/* Filters collapsible */}
-						<Collapsible open={filtersOpen} onOpenChange={setFiltersOpen}>
-							<CollapsibleTrigger asChild>
-								<Button
-									variant="ghost"
-									size="sm"
-									className="gap-2 text-muted-foreground"
+		<Layout hideHeader>
+			<div className="flex h-full overflow-hidden bg-background">
+				{/* Sidebar */}
+				<aside className="w-64 border-r bg-muted/10 flex flex-col">
+					<div className="p-4 border-b">
+						<Button
+							variant="outline"
+							className="w-full justify-start gap-2"
+							onClick={handleCreateConversation}
+						>
+							<Plus className="size-4" />
+							New Chat
+						</Button>
+					</div>
+					<ScrollArea className="flex-1">
+						<div className="p-2 space-y-1">
+							{conversations.map((conv) => (
+								<div
+									key={conv.id}
+									className={cn(
+										"group flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground cursor-pointer transition-colors",
+										activeId === conv.id
+											? "bg-accent text-accent-foreground"
+											: ""
+									)}
+									onClick={() => setActiveId(conv.id)}
 								>
-									<Settings2 className="size-4" />
-									Filters
-									<ChevronDown
-										className={`size-4 transition-transform ${
-											filtersOpen ? "rotate-180" : ""
-										}`}
-									/>
-								</Button>
-							</CollapsibleTrigger>
-							<CollapsibleContent className="pt-4">
-								<div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-									<div className="space-y-2">
-										<Label>Document</Label>
-										<Select
-											value={selectedDocId}
-											onValueChange={setSelectedDocId}
-										>
-											<SelectTrigger>
-												<SelectValue placeholder="All documents" />
-											</SelectTrigger>
-											<SelectContent>
-												<SelectItem value="all">All documents</SelectItem>
-												{documents.map((doc) => (
-													<SelectItem key={doc.id} value={doc.id}>
-														{doc.title}
-													</SelectItem>
-												))}
-											</SelectContent>
-										</Select>
-									</div>
-									<div className="space-y-2">
-										<Label>Source filter</Label>
-										<Input
-											placeholder="Filter by source"
-											value={sourceFilter}
-											onChange={(e) => setSourceFilter(e.target.value)}
-										/>
-									</div>
-									<div className="space-y-2">
-										<Label>Max chunks: {limit}</Label>
-										<Slider
-											value={[limit]}
-											onValueChange={(v) => setLimit(v[0])}
-											min={1}
-											max={20}
-											step={1}
-										/>
-									</div>
-									<div className="space-y-2">
-										<Label>Min score: {scoreThreshold.toFixed(2)}</Label>
-										<Slider
-											value={[scoreThreshold]}
-											onValueChange={(v) => setScoreThreshold(v[0])}
-											min={0}
-											max={1}
-											step={0.05}
-										/>
-									</div>
+									<MessageSquare className="size-4 shrink-0 text-muted-foreground" />
+									<span className="truncate flex-1 text-left">
+										{conv.title}
+									</span>
+									<DropdownMenu>
+										<DropdownMenuTrigger asChild>
+											<Button
+												variant="ghost"
+												size="icon"
+												className="size-6 opacity-0 group-hover:opacity-100 transition-opacity"
+												onClick={(e) => e.stopPropagation()}
+											>
+												<MoreHorizontal className="size-3" />
+											</Button>
+										</DropdownMenuTrigger>
+										<DropdownMenuContent align="end">
+											<DropdownMenuItem
+												onClick={(e) => {
+													e.stopPropagation();
+													// Mock rename
+													const newTitle = prompt("New title", conv.title);
+													if (newTitle)
+														handleRenameConversation(conv.id, newTitle);
+												}}
+											>
+												<Pencil className="mr-2 size-4" />
+												Rename
+											</DropdownMenuItem>
+											<DropdownMenuItem
+												className="text-destructive"
+												onClick={(e) => handleDeleteConversation(conv.id, e)}
+											>
+												<Trash2 className="mr-2 size-4" />
+												Delete
+											</DropdownMenuItem>
+										</DropdownMenuContent>
+									</DropdownMenu>
 								</div>
-							</CollapsibleContent>
-						</Collapsible>
-
-						{/* Actions */}
-						<div className="flex items-center gap-2">
-							{isStreaming ? (
-								<Button variant="destructive" onClick={handleStop}>
-									<Square className="mr-2 size-4" />
-									Stop
-								</Button>
-							) : (
-								<Button onClick={handleSubmit} disabled={!query.trim()}>
-									<Send className="mr-2 size-4" />
-									Send
-								</Button>
+							))}
+							{conversations.length === 0 && (
+								<div className="text-center py-8 text-muted-foreground text-sm">
+									No conversations yet
+								</div>
 							)}
-							{(answer || sources.length > 0) && (
-								<Button
-									variant="outline"
-									onClick={handleClear}
-									disabled={isStreaming}
-								>
-									<Trash2 className="mr-2 size-4" />
-									Clear
-								</Button>
-							)}
-							<span className="text-xs text-muted-foreground ml-auto">
-								⌘+Enter to send
-							</span>
 						</div>
-					</CardContent>
-				</Card>
+					</ScrollArea>
+				</aside>
 
-				{/* Response Area */}
-				{(answer || sources.length > 0 || isStreaming) && (
-					<Card>
-						<Tabs defaultValue="answer">
-							<CardHeader className="pb-0">
-								<div className="flex items-center justify-between">
-									<TabsList>
-										<TabsTrigger value="answer" className="gap-2">
-											<MessageSquare className="size-4" />
-											Answer
-										</TabsTrigger>
-										<TabsTrigger value="sources" className="gap-2">
-											<FileText className="size-4" />
-											Sources
-											{sources.length > 0 && (
-												<Badge variant="secondary" className="ml-1">
-													{sources.length}
-												</Badge>
+				{/* Main Chat Area */}
+				<main className="flex-1 flex flex-col relative">
+					<ScrollArea className="flex-1 p-4">
+						<div className="max-w-3xl mx-auto space-y-6 pb-4">
+							{activeConversation ? (
+								activeConversation.messages.map((msg, idx) => (
+									<div
+										key={msg.id}
+										className={cn(
+											"flex gap-4 group",
+											msg.role === "user" ? "flex-row-reverse" : "flex-row"
+										)}
+									>
+										<div
+											className={cn(
+												"size-8 shrink-0 rounded-full flex items-center justify-center",
+												msg.role === "user"
+													? "bg-primary text-primary-foreground"
+													: "bg-muted"
 											)}
-										</TabsTrigger>
-									</TabsList>
-									{answer && !isStreaming && (
-										<Button
-											variant="ghost"
-											size="sm"
-											onClick={handleCopyAnswer}
 										>
-											<Copy className="mr-2 size-4" />
-											Copy
+											{msg.role === "user" ? (
+												<User className="size-5" />
+											) : (
+												<Bot className="size-5" />
+											)}
+										</div>
+										<div
+											className={cn(
+												"flex-1 max-w-[80%] space-y-2",
+												msg.role === "user" ? "text-right" : "text-left"
+											)}
+										>
+											<div
+												className={cn(
+													"rounded-lg p-4 prose prose-sm dark:prose-invert max-w-none wrap-break-word",
+													msg.role === "user"
+														? "bg-primary text-primary-foreground prose-headings:text-primary-foreground prose-p:text-primary-foreground prose-strong:text-primary-foreground prose-code:text-primary-foreground"
+														: "bg-muted"
+												)}
+											>
+												<ReactMarkdown remarkPlugins={[remarkGfm]}>
+													{msg.content}
+												</ReactMarkdown>
+												{msg.role === "assistant" &&
+													isStreaming &&
+													idx === activeConversation.messages.length - 1 && (
+														<span className="inline-block w-2 h-4 bg-current animate-pulse ml-1 align-middle" />
+													)}
+											</div>
+											<div
+												className={cn(
+													"flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity",
+													msg.role === "user" ? "justify-end" : "justify-start"
+												)}
+											>
+												<Button
+													variant="ghost"
+													size="icon"
+													className="size-6"
+													onClick={() => handleCopy(msg.content)}
+													title="Copy"
+												>
+													<Copy className="size-3" />
+												</Button>
+												{msg.role === "user" && (
+													<Button
+														variant="ghost"
+														size="icon"
+														className="size-6"
+														onClick={() => {
+															setInput(msg.content);
+														}}
+														title="Edit"
+													>
+														<Pencil className="size-3" />
+													</Button>
+												)}
+												<Button
+													variant="ghost"
+													size="icon"
+													className="size-6"
+													onClick={() => {
+														// Mock retry by setting input
+														if (msg.role === "user") {
+															setInput(msg.content);
+															// In real app, would trigger resend immediately or delete subsequent messages
+														} else {
+															// Find previous user message
+															const prevUserMsg =
+																activeConversation.messages[idx - 1];
+															if (prevUserMsg) setInput(prevUserMsg.content);
+														}
+													}}
+													title="Retry"
+												>
+													<RotateCcw className="size-3" />
+												</Button>
+											</div>
+										</div>
+									</div>
+								))
+							) : (
+								<div className="flex flex-col items-center justify-center h-[50vh] text-center space-y-4">
+									<div className="bg-muted p-4 rounded-full">
+										<Bot className="size-12 text-muted-foreground" />
+									</div>
+									<h2 className="text-2xl font-bold">
+										How can I help you today?
+									</h2>
+									<p className="text-muted-foreground max-w-md">
+										Select a model and start chatting to get answers from your
+										documents.
+									</p>
+								</div>
+							)}
+							<div ref={scrollRef} />
+						</div>
+					</ScrollArea>
+
+					{/* Input Area */}
+					<div className="p-4 bg-background border-t">
+						<div className="max-w-3xl mx-auto space-y-4">
+							<div className="relative">
+								<Textarea
+									placeholder="Type your message..."
+									value={input}
+									onChange={(e) => setInput(e.target.value)}
+									onKeyDown={handleKeyDown}
+									className="min-h-[100px] resize-none pr-24"
+									disabled={isStreaming}
+								/>
+								<div className="absolute bottom-3 right-3 flex gap-2">
+									{isStreaming ? (
+										<Button
+											size="sm"
+											variant="destructive"
+											onClick={handleStop}
+											className="h-8 w-8 p-0 rounded-full"
+										>
+											<StopCircle className="size-4" />
+										</Button>
+									) : (
+										<Button
+											size="sm"
+											onClick={handleSend}
+											disabled={!input.trim()}
+											className="h-8 w-8 p-0 rounded-full"
+										>
+											<Send className="size-4" />
 										</Button>
 									)}
 								</div>
-							</CardHeader>
-							<CardContent className="pt-4">
-								<TabsContent value="answer" className="mt-0">
-									<ScrollArea className="h-[400px] rounded-md border p-4">
-										{answer ? (
-											<div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap">
-												{answer}
-												{isStreaming && (
-													<span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />
-												)}
-											</div>
-										) : isStreaming ? (
-											<div className="flex items-center gap-2 text-muted-foreground">
-												<Loader2 className="size-4 animate-spin" />
-												Generating answer...
-											</div>
-										) : (
-											<p className="text-muted-foreground">No answer yet</p>
-										)}
-										<div ref={answerEndRef} />
-									</ScrollArea>
-								</TabsContent>
-								<TabsContent value="sources" className="mt-0">
-									{sources.length === 0 ? (
-										<div className="flex flex-col items-center justify-center py-12 text-center">
-											<FileText className="size-10 text-muted-foreground mb-3" />
-											<p className="text-muted-foreground">No sources found</p>
-										</div>
-									) : (
-										<ScrollArea className="h-[400px]">
-											<Table>
-												<TableHeader>
-													<TableRow>
-														<TableHead className="w-[80px]">Score</TableHead>
-														<TableHead>Content</TableHead>
-														<TableHead className="w-[100px]">Actions</TableHead>
-													</TableRow>
-												</TableHeader>
-												<TableBody>
-													{sources.map((source, idx) => (
-														<TableRow key={source.chunkId}>
-															<TableCell>
-																<Badge
-																	variant={
-																		source.score >= 0.8
-																			? "default"
-																			: "secondary"
-																	}
-																>
-																	{(source.score * 100).toFixed(0)}%
-																</Badge>
-															</TableCell>
-															<TableCell>
-																<p className="text-sm line-clamp-3">
-																	{source.content}
-																</p>
-																<p className="text-xs text-muted-foreground mt-1">
-																	[{idx + 1}] Doc:{" "}
-																	{source.documentId.slice(0, 8)}...
-																</p>
-															</TableCell>
-															<TableCell>
-																<Button
-																	variant="ghost"
-																	size="icon"
-																	className="size-8"
-																	onClick={() =>
-																		handleCopyChunkId(source.chunkId)
-																	}
-																>
-																	<Copy className="size-4" />
-																</Button>
-															</TableCell>
-														</TableRow>
-													))}
-												</TableBody>
-											</Table>
-										</ScrollArea>
-									)}
-								</TabsContent>
-							</CardContent>
-						</Tabs>
-					</Card>
-				)}
+							</div>
+							<div className="flex items-center justify-between">
+								<div className="flex items-center gap-2">
+									<Select
+										value={selectedModel}
+										onValueChange={setSelectedModel}
+									>
+										<SelectTrigger className="w-[180px] h-8 text-xs">
+											<SelectValue placeholder="Select model" />
+										</SelectTrigger>
+										<SelectContent>
+											{AI_MODELS.map((model) => (
+												<SelectItem key={model.id} value={model.id}>
+													{model.name}
+												</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
+								</div>
+							</div>
+						</div>
+					</div>
+				</main>
 			</div>
 		</Layout>
 	);
