@@ -1,7 +1,5 @@
 import { QdrantClient, Schemas } from "@qdrant/js-client-rest";
-import { config as dotenvConfig } from "dotenv";
-dotenvConfig({ override: true, quiet: true });
-
+import { env } from "./config/env";
 export type { QdrantClient, Schemas };
 
 export type Distance = "Cosine" | "Euclid" | "Dot" | "Manhattan";
@@ -52,19 +50,11 @@ export interface Point<
 /**
  * Creates a Qdrant client instance with configuration from environment or options
  */
-export const createQdrantClient = (config?: QdrantConfig): QdrantClient => {
-	if (config?.url) {
-		return new QdrantClient({
-			url: config.url,
-			apiKey: config.apiKey ?? process.env.QDRANT_API_KEY,
-		});
-	}
+export const createQdrantClient = (config: QdrantConfig): QdrantClient => {
+	if (!config.url) throw new Error("QDRANT_URL is not set");
 
 	return new QdrantClient({
-		host: config?.host ?? process.env.QDRANT_HOST ?? "localhost",
-		port: config?.port ?? (Number(process.env.QDRANT_PORT) || 6333),
-		apiKey: config?.apiKey ?? process.env.QDRANT_API_KEY,
-		https: config?.https ?? process.env.QDRANT_HTTPS === "true",
+		url: config.url,
 	});
 };
 

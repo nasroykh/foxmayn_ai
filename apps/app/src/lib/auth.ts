@@ -5,10 +5,11 @@ import {
 	adminClient,
 } from "better-auth/client/plugins";
 import { stripeClient } from "@better-auth/stripe/client";
+import { env } from "./env";
 
 export const authClient = createAuthClient({
 	/** The base URL of the server (optional if you're using the same domain) */
-	baseURL: `${import.meta.env.VITE_API_URL}/auth`,
+	baseURL: `${env.VITE_API_URL}/auth`,
 	plugins: [
 		adminClient(),
 		organizationClient(),

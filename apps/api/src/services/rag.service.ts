@@ -16,13 +16,14 @@ import {
 	type ChunkOptions,
 } from "./chunking.service";
 import { OpenRouterEmbed, OpenRouterQuery } from "../utils/openrouter";
+import { env } from "../config/env";
 
 // Constants
-const COLLECTION_NAME = process.env.QDRANT_COLLECTION_NAME || "documents";
+const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME || "foxmayn_ai";
 const VECTOR_SIZE = 1536; // text-embedding-3-small dimension
 
 // Initialize Qdrant client
-const qdrant = createQdrantClient();
+const qdrant = createQdrantClient({ url: env.QDRANT_URL });
 
 // Payload type for Qdrant vectors
 interface VectorPayload extends Record<string, unknown> {

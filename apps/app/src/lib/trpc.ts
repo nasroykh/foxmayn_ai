@@ -8,6 +8,7 @@ import {
 	splitLink,
 } from "@trpc/client";
 import SuperJSON from "superjson";
+import { env } from "./env";
 
 export const queryClient = new QueryClient();
 
@@ -18,9 +19,9 @@ const trpcClient = createTRPCClient<AppRouter>({
 				return op.type === "subscription";
 			},
 			true: httpSubscriptionLink({
-				url: import.meta.env.VITE_IS_DEV
-					? `${import.meta.env.VITE_API_URL_DEV}/trpc`
-					: `${import.meta.env.VITE_API_URL}/trpc`,
+				url: env.VITE_IS_DEV
+					? `${env.VITE_API_URL_DEV}/trpc`
+					: `${env.VITE_API_URL}/trpc`,
 				transformer: SuperJSON,
 				eventSourceOptions() {
 					return {
@@ -29,9 +30,9 @@ const trpcClient = createTRPCClient<AppRouter>({
 				},
 			}),
 			false: httpBatchLink({
-				url: import.meta.env.VITE_IS_DEV
-					? `${import.meta.env.VITE_API_URL_DEV}/trpc`
-					: `${import.meta.env.VITE_API_URL}/trpc`,
+				url: env.VITE_IS_DEV
+					? `${env.VITE_API_URL_DEV}/trpc`
+					: `${env.VITE_API_URL}/trpc`,
 				transformer: SuperJSON,
 				fetch(url, options) {
 					return fetch(url, {

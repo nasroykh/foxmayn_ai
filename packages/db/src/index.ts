@@ -1,18 +1,13 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
-import { config as dotenvConfig } from "dotenv";
-
-// Load environment variables
-dotenvConfig({ override: true, quiet: true });
+import { env } from "./config/env";
 
 // Use DB_URL if available, otherwise construct from individual variables
 const connectionString =
-	process.env.DB_URL ||
-	`postgresql://${process.env.DB_USER}:${process.env.DB_PASSWORD}@${
-		process.env.DB_HOST
-	}:${process.env.DB_PORT}/${process.env.DB_NAME}?sslmode=${
-		process.env.DB_SSL_MODE || "disable"
-	}`;
+	env.DB_URL ||
+	`postgresql://${env.DB_USER}:${env.DB_PASSWORD}@${env.DB_HOST}:${
+		env.DB_PORT
+	}/${env.DB_NAME}?sslmode=${env.DB_SSL_MODE || "disable"}`;
 
 const pool = new Pool({
 	connectionString,

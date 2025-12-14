@@ -1,10 +1,9 @@
 import { z } from "zod";
+import { env } from "./env";
 
 // Base URL helper (same pattern as trpc.ts)
 const getBaseUrl = () => {
-	return import.meta.env.VITE_IS_DEV
-		? import.meta.env.VITE_API_URL_DEV
-		: import.meta.env.VITE_API_URL;
+	return env.VITE_IS_DEV ? env.VITE_API_URL_DEV : env.VITE_API_URL;
 };
 
 // Response schemas

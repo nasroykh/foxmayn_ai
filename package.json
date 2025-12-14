@@ -2,7 +2,6 @@
 	"name": "app_template",
 	"private": true,
 	"version": "0.0.0",
-	"packageManager": "pnpm@10.0.0",
 	"scripts": {
 		"build": "pnpm --filter=db build && pnpm --filter=qdrant build && pnpm --filter=api build && pnpm --filter=app build",
 		"dev": "pnpm --filter=db build && pnpm --filter=qdrant build && pnpm --filter=api build && concurrently -n api,app -c blue,green \"pnpm --filter=api dev\" \"pnpm --filter=app dev\"",
@@ -22,6 +21,14 @@
 	},
 	"devDependencies": {
 		"concurrently": "^9.2.1"
+	},
+	"pnpm": {
+		"onlyBuiltDependencies": [
+			"@swc/core",
+			"argon2",
+			"esbuild",
+			"msgpackr-extract"
+		]
 	},
 	"engines": {
 		"node": ">=18"

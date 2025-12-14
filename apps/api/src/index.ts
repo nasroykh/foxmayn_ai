@@ -1,10 +1,9 @@
-import { config as dotenvConfig } from "dotenv";
 import Fastify from "fastify";
 import { initDB, disconnectDB } from "@repo/db";
 import {
 	registerCors,
 	registerSwagger,
-	// registerTRPC,
+	registerTRPC,
 	registerWS,
 	registerRedis,
 	registerRateLimit,
@@ -16,12 +15,11 @@ import {
 } from "fastify-type-provider-zod";
 import { registerRoutes } from "./routes/routes";
 import { registerAuthRoutes } from "./routes/auth/auth.routes";
-
-dotenvConfig({ override: true, quiet: true });
+import { env } from "./config/env";
 
 export const server = Fastify({
 	// logger: {
-	// 	level: process.env.NODE_ENV === "production" ? "info" : "debug",
+	// 	level: env.NODE_ENV === "production" ? "info" : "debug",
 	// },
 	// Increase URL parameter length to handle long tRPC batch requests
 	routerOptions: {
@@ -44,7 +42,7 @@ const start = async () => {
 		await registerRateLimit(server);
 		await registerMultipart(server);
 		await registerWS(server);
-		// await registerTRPC(server);
+		await registerTRPC(server);
 		await registerSwagger(server);
 		await registerAuthRoutes(server);
 
@@ -52,8 +50,8 @@ const start = async () => {
 		await registerRoutes(server);
 
 		// Start server
-		const port = parseInt(process.env.PORT || "33450");
-		const host = process.env.HOST || "0.0.0.0";
+		const port = env.PORT || 33450;
+		const host = env.HOST || "127.0.0.1";
 
 		await server.listen({ port, host });
 

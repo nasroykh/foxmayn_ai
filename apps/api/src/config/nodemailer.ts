@@ -1,11 +1,12 @@
 import nodemailer from "nodemailer";
+import { env } from "./env";
 
 const getSMTPEnvConfig = () => {
-	const SMTP_HOST = process.env.SMTP_HOST;
-	const SMTP_PORT = process.env.SMTP_PORT;
-	const SMTP_USER = process.env.SMTP_USER;
-	const SMTP_PASSWORD = process.env.SMTP_PASSWORD;
-	const SMTP_FROM = process.env.SMTP_FROM;
+	const SMTP_HOST = env.SMTP_HOST;
+	const SMTP_PORT = env.SMTP_PORT;
+	const SMTP_USER = env.SMTP_USER;
+	const SMTP_PASSWORD = env.SMTP_PASSWORD;
+	const SMTP_FROM = env.SMTP_FROM;
 
 	if (!SMTP_HOST) {
 		throw new Error("SMTP_HOST is not set");

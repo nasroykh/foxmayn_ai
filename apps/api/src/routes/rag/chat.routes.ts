@@ -6,6 +6,7 @@ import {
 	searchChunks,
 } from "../../services/rag.service";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
+import { env } from "../../config/env";
 
 // Request schemas
 const queryBodySchema = z.object({
@@ -81,7 +82,7 @@ export const registerChatRoutes = async (server: FastifyInstance) => {
 			const { query, options } = queryBodySchema.parse(request.body);
 
 			// Get allowed origin from CORS config
-			const allowedOrigin = process.env.APP_URL || "http://localhost:33460";
+			const allowedOrigin = env.APP_URL || "http://localhost:33460";
 
 			// Set SSE headers with CORS (must be manual since we use raw.writeHead)
 			reply.raw.writeHead(200, {

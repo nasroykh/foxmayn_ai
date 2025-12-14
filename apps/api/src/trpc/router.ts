@@ -1,8 +1,8 @@
-// import { subscriptionRouter } from "./routes/subscription";
-// import { router } from "./trpc";
+import { subscriptionRouter } from "./routes/subscription";
+import { router } from "./trpc";
 
-// export const appRouter = router({
-// 	subscription: subscriptionRouter,
-// });
+export const appRouter = router({
+	subscription: subscriptionRouter,
+});
 
-// export type AppRouter = typeof appRouter;
+export type AppRouter = typeof appRouter;

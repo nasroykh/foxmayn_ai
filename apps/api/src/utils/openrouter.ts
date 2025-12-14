@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { type ReasoningEffort } from "openai/resources";
+import { env } from "../config/env";
 
 export const OPENROUTER_AI_MODELS = {
 	claude4_5: "anthropic/claude-sonnet-4.5",
@@ -38,15 +39,15 @@ export const DEFAULT_TEMPERATURE = 1.0;
 export const DEFAULT_MAX_TOKENS = 500;
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "minimal";
 
-if (!process.env.OPENROUTER_API_KEY) {
+if (!env.OPENROUTER_API_KEY) {
 	throw new Error("OPENROUTER_API_KEY is not set");
 }
 
 const openai = new OpenAI({
 	baseURL: "https://openrouter.ai/api/v1",
-	apiKey: process.env.OPENROUTER_API_KEY,
+	apiKey: env.OPENROUTER_API_KEY,
 	defaultHeaders: {
-		"HTTP-Referer": process.env.APP_URL || "https://nascodes.dev", // Optional. Site URL for rankings on openrouter.ai.
+		"HTTP-Referer": env.APP_URL || "https://nascodes.dev", // Optional. Site URL for rankings on openrouter.ai.
 		"X-Title": "Nas Portfolio | Software Engineer & AI/LLM Specialist", // Optional. Site title for rankings on openrouter.ai.
 	},
 });
