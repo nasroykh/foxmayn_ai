@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Layout } from "@/components/layout/layout";
 import {
 	Card,
@@ -66,6 +67,7 @@ import {
 	getDocument,
 	type Document,
 } from "@/lib/rag";
+import { useRef } from "react";
 
 export const Route = createFileRoute("/_auth/rag/documents")({
 	component: DocumentsPage,
@@ -87,43 +89,36 @@ function getStatusBadgeVariant(status: string) {
 }
 
 function DocumentsPage() {
-	const [documents, setDocuments] = useState<Document[]>([]);
-	const [isLoading, setIsLoading] = useState(true);
+	const queryClient = useQueryClient();
 	const [createOpen, setCreateOpen] = useState(false);
 	const [uploadOpen, setUploadOpen] = useState(false);
 	const [viewDoc, setViewDoc] = useState<Document | null>(null);
 	const [deleteDoc, setDeleteDoc] = useState<Document | null>(null);
 
-	const loadDocuments = async () => {
-		setIsLoading(true);
-		try {
-			const result = await listDocuments({ limit: 100 });
-			setDocuments(result.documents);
-		} catch (error) {
-			toast.error(
-				error instanceof Error ? error.message : "Failed to load documents"
-			);
-		} finally {
-			setIsLoading(false);
-		}
-	};
+	const { data, isLoading } = useQuery({
+		queryKey: ["documents"],
+		queryFn: () => listDocuments({ limit: 100 }),
+	});
 
-	useEffect(() => {
-		loadDocuments();
-	}, []);
+	const documents = data?.documents ?? [];
 
-	const handleDelete = async () => {
-		if (!deleteDoc) return;
-		try {
-			await deleteDocument(deleteDoc.id);
+	const deleteMutation = useMutation({
+		mutationFn: deleteDocument,
+		onSuccess: () => {
 			toast.success("Document deleted");
 			setDeleteDoc(null);
-			loadDocuments();
-		} catch (error) {
+			queryClient.invalidateQueries({ queryKey: ["documents"] });
+		},
+		onError: (error) => {
 			toast.error(
 				error instanceof Error ? error.message : "Failed to delete document"
 			);
-		}
+		},
+	});
+
+	const handleDelete = () => {
+		if (!deleteDoc) return;
+		deleteMutation.mutate(deleteDoc.id);
 	};
 
 	const handleCopyId = (id: string) => {
@@ -133,6 +128,7 @@ function DocumentsPage() {
 
 	const handleView = async (doc: Document) => {
 		try {
+			// Pre-fetch specific document details on view click
 			const fullDoc = await getDocument(doc.id);
 			setViewDoc(fullDoc);
 		} catch (error) {
@@ -161,12 +157,7 @@ function DocumentsPage() {
 									Upload
 								</Button>
 							</DialogTrigger>
-							<UploadDialog
-								onSuccess={() => {
-									setUploadOpen(false);
-									loadDocuments();
-								}}
-							/>
+							<UploadDialog onSuccess={() => setUploadOpen(false)} />
 						</Dialog>
 						<Dialog open={createOpen} onOpenChange={setCreateOpen}>
 							<DialogTrigger asChild>
@@ -175,12 +166,7 @@ function DocumentsPage() {
 									New Document
 								</Button>
 							</DialogTrigger>
-							<CreateDialog
-								onSuccess={() => {
-									setCreateOpen(false);
-									loadDocuments();
-								}}
-							/>
+							<CreateDialog onSuccess={() => setCreateOpen(false)} />
 						</Dialog>
 					</div>
 				</div>
@@ -360,8 +346,9 @@ function DocumentsPage() {
 							<AlertDialogAction
 								onClick={handleDelete}
 								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+								disabled={deleteMutation.isPending}
 							>
-								Delete
+								{deleteMutation.isPending ? "Deleting..." : "Delete"}
 							</AlertDialogAction>
 						</AlertDialogFooter>
 					</AlertDialogContent>
@@ -373,13 +360,31 @@ function DocumentsPage() {
 
 // Create Document Dialog
 function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
-	const [isSubmitting, setIsSubmitting] = useState(false);
+	const queryClient = useQueryClient();
 	const [title, setTitle] = useState("");
 	const [content, setContent] = useState("");
 	const [source, setSource] = useState("");
 	const [metadata, setMetadata] = useState("");
 
-	const handleSubmit = async () => {
+	const createMutation = useMutation({
+		mutationFn: createDocument,
+		onSuccess: () => {
+			toast.success("Document created and indexing started");
+			setTitle("");
+			setContent("");
+			setSource("");
+			setMetadata("");
+			queryClient.invalidateQueries({ queryKey: ["documents"] });
+			onSuccess();
+		},
+		onError: (error) => {
+			toast.error(
+				error instanceof Error ? error.message : "Failed to create document"
+			);
+		},
+	});
+
+	const handleSubmit = () => {
 		if (!title.trim() || !content.trim()) {
 			toast.error("Title and content are required");
 			return;
@@ -395,27 +400,12 @@ function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
 			}
 		}
 
-		setIsSubmitting(true);
-		try {
-			await createDocument({
-				title: title.trim(),
-				content: content.trim(),
-				source: source.trim() || undefined,
-				metadata: parsedMetadata,
-			});
-			toast.success("Document created and indexing started");
-			setTitle("");
-			setContent("");
-			setSource("");
-			setMetadata("");
-			onSuccess();
-		} catch (error) {
-			toast.error(
-				error instanceof Error ? error.message : "Failed to create document"
-			);
-		} finally {
-			setIsSubmitting(false);
-		}
+		createMutation.mutate({
+			title: title.trim(),
+			content: content.trim(),
+			source: source.trim() || undefined,
+			metadata: parsedMetadata,
+		});
 	};
 
 	return (
@@ -434,7 +424,7 @@ function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
 						placeholder="Document title"
 						value={title}
 						onChange={(e) => setTitle(e.target.value)}
-						disabled={isSubmitting}
+						disabled={createMutation.isPending}
 					/>
 				</div>
 				<div className="space-y-2">
@@ -445,7 +435,7 @@ function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
 						rows={8}
 						value={content}
 						onChange={(e) => setContent(e.target.value)}
-						disabled={isSubmitting}
+						disabled={createMutation.isPending}
 					/>
 				</div>
 				<div className="space-y-2">
@@ -455,7 +445,7 @@ function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
 						placeholder="https://example.com/doc or internal-ref"
 						value={source}
 						onChange={(e) => setSource(e.target.value)}
-						disabled={isSubmitting}
+						disabled={createMutation.isPending}
 					/>
 				</div>
 				<div className="space-y-2">
@@ -466,13 +456,13 @@ function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
 						rows={2}
 						value={metadata}
 						onChange={(e) => setMetadata(e.target.value)}
-						disabled={isSubmitting}
+						disabled={createMutation.isPending}
 					/>
 				</div>
 			</div>
 			<DialogFooter>
-				<Button onClick={handleSubmit} disabled={isSubmitting}>
-					{isSubmitting ? (
+				<Button onClick={handleSubmit} disabled={createMutation.isPending}>
+					{createMutation.isPending ? (
 						<>
 							<Loader2 className="mr-2 size-4 animate-spin" />
 							Creating...
@@ -488,14 +478,33 @@ function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
 
 // Upload Document Dialog
 function UploadDialog({ onSuccess }: { onSuccess: () => void }) {
-	const [isSubmitting, setIsSubmitting] = useState(false);
+	const queryClient = useQueryClient();
 	const [file, setFile] = useState<File | null>(null);
 	const [title, setTitle] = useState("");
 	const [source, setSource] = useState("");
 	const [metadata, setMetadata] = useState("");
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
-	const handleSubmit = async () => {
+	const uploadMutation = useMutation({
+		mutationFn: uploadDocumentFile,
+		onSuccess: () => {
+			toast.success("File uploaded and indexing started");
+			setFile(null);
+			setTitle("");
+			setSource("");
+			setMetadata("");
+			if (fileInputRef.current) fileInputRef.current.value = "";
+			queryClient.invalidateQueries({ queryKey: ["documents"] });
+			onSuccess();
+		},
+		onError: (error) => {
+			toast.error(
+				error instanceof Error ? error.message : "Failed to upload file"
+			);
+		},
+	});
+
+	const handleSubmit = () => {
 		if (!file) {
 			toast.error("Please select a file");
 			return;
@@ -511,28 +520,12 @@ function UploadDialog({ onSuccess }: { onSuccess: () => void }) {
 			}
 		}
 
-		setIsSubmitting(true);
-		try {
-			await uploadDocumentFile({
-				file,
-				title: title.trim() || undefined,
-				source: source.trim() || undefined,
-				metadata: parsedMetadata,
-			});
-			toast.success("File uploaded and indexing started");
-			setFile(null);
-			setTitle("");
-			setSource("");
-			setMetadata("");
-			if (fileInputRef.current) fileInputRef.current.value = "";
-			onSuccess();
-		} catch (error) {
-			toast.error(
-				error instanceof Error ? error.message : "Failed to upload file"
-			);
-		} finally {
-			setIsSubmitting(false);
-		}
+		uploadMutation.mutate({
+			file,
+			title: title.trim() || undefined,
+			source: source.trim() || undefined,
+			metadata: parsedMetadata,
+		});
 	};
 
 	return (
@@ -552,7 +545,7 @@ function UploadDialog({ onSuccess }: { onSuccess: () => void }) {
 						type="file"
 						accept=".txt,.md,.csv,.json,.xml,.html"
 						onChange={(e) => setFile(e.target.files?.[0] || null)}
-						disabled={isSubmitting}
+						disabled={uploadMutation.isPending}
 					/>
 					{file && (
 						<p className="text-sm text-muted-foreground">
@@ -569,7 +562,7 @@ function UploadDialog({ onSuccess }: { onSuccess: () => void }) {
 						placeholder="Document title"
 						value={title}
 						onChange={(e) => setTitle(e.target.value)}
-						disabled={isSubmitting}
+						disabled={uploadMutation.isPending}
 					/>
 				</div>
 				<div className="space-y-2">
@@ -579,7 +572,7 @@ function UploadDialog({ onSuccess }: { onSuccess: () => void }) {
 						placeholder="https://example.com/doc"
 						value={source}
 						onChange={(e) => setSource(e.target.value)}
-						disabled={isSubmitting}
+						disabled={uploadMutation.isPending}
 					/>
 				</div>
 				<div className="space-y-2">
@@ -590,13 +583,16 @@ function UploadDialog({ onSuccess }: { onSuccess: () => void }) {
 						rows={2}
 						value={metadata}
 						onChange={(e) => setMetadata(e.target.value)}
-						disabled={isSubmitting}
+						disabled={uploadMutation.isPending}
 					/>
 				</div>
 			</div>
 			<DialogFooter>
-				<Button onClick={handleSubmit} disabled={isSubmitting || !file}>
-					{isSubmitting ? (
+				<Button
+					onClick={handleSubmit}
+					disabled={uploadMutation.isPending || !file}
+				>
+					{uploadMutation.isPending ? (
 						<>
 							<Loader2 className="mr-2 size-4 animate-spin" />
 							Uploading...

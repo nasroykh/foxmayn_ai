@@ -1,8 +1,8 @@
-import { subscriptionRouter } from "./routes/subscription";
+import { documentRouter } from "./routes/document";
 import { router } from "./trpc";
 
 export const appRouter = router({
-	subscription: subscriptionRouter,
+	document: documentRouter,
 });
 
 export type AppRouter = typeof appRouter;

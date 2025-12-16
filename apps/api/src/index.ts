@@ -17,6 +17,7 @@ import {
 import { registerRoutes } from "./routes/routes";
 import { registerAuthRoutes } from "./routes/auth/auth.routes";
 import { env } from "./config/env";
+import { closeQueues, registerBullBoard } from "./jobs";
 
 export const server = Fastify({
 	// logger: {
@@ -47,6 +48,7 @@ const start = async () => {
 		await registerTRPC(server);
 		await registerSwagger(server);
 		await registerAuthRoutes(server);
+		await registerBullBoard(server);
 
 		// Register routes
 		await registerRoutes(server);
@@ -72,6 +74,9 @@ async function gracefulShutdown() {
 	try {
 		console.log("🔌 Closing Fastify server...");
 		await server.close();
+
+		console.log("🔌 Closing BullMQ queues...");
+		await closeQueues();
 
 		console.log("🔌 Disconnecting from database...");
 		await disconnectDB();

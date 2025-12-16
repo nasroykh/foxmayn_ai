@@ -6,6 +6,7 @@ import {
 	listDocuments,
 	deleteDocument,
 } from "../../services/rag.service";
+import { getDocumentJobStatus, getPendingDocumentJobs } from "../../jobs";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 
 const ALLOWED_TEXT_EXTENSIONS = [
@@ -30,22 +31,28 @@ const documentIdParamsSchema = z.object({
 	id: z.string(),
 });
 
+const jobIdParamsSchema = z.object({
+	jobId: z.string(),
+});
+
 const listQuerySchema = z.object({
 	limit: z.coerce.number().min(1).max(100).optional(),
 	offset: z.coerce.number().min(0).optional(),
 });
 
 export const registerDocumentRoutes = async (server: FastifyInstance) => {
-	// Create and index a document
+	// Create and index a document (ASYNC - returns immediately with jobId)
 	server.withTypeProvider<ZodTypeProvider>().post(
 		"/documents",
 		{
 			schema: {
 				body: createDocumentSchema,
 				response: {
-					201: z.object({
-						id: z.string(),
+					202: z.object({
+						documentId: z.string(),
+						jobId: z.string().optional(),
 						message: z.string(),
+						status: z.string(),
 					}),
 				},
 			},
@@ -53,30 +60,35 @@ export const registerDocumentRoutes = async (server: FastifyInstance) => {
 		async (request, reply) => {
 			const { title, content, source, metadata } = request.body;
 
-			const documentId = await indexDocument({
+			const { documentId, jobId } = await indexDocument({
 				title,
 				content,
 				source,
 				metadata,
 			});
 
-			return reply.status(201).send({
-				id: documentId,
-				message: "Document indexed successfully",
+			// Return 202 Accepted - processing is async
+			return reply.status(202).send({
+				documentId,
+				jobId,
+				message: "Document accepted for processing",
+				status: "processing",
 			});
 		}
 	);
 
-	// Upload a text file and index as document
+	// Upload a text file and index as document (ASYNC)
 	server.post(
 		"/documents/upload",
 		{
 			schema: {
 				consumes: ["multipart/form-data"],
 				response: {
-					201: z.object({
-						id: z.string(),
+					202: z.object({
+						documentId: z.string(),
+						jobId: z.string().optional(),
 						message: z.string(),
+						status: z.string(),
 					}),
 					400: z.object({
 						error: z.string(),
@@ -138,19 +150,57 @@ export const registerDocumentRoutes = async (server: FastifyInstance) => {
 				}
 			}
 
-			const documentId = await indexDocument({
+			const { documentId, jobId } = await indexDocument({
 				title,
 				content,
 				source,
 				metadata,
 			});
 
-			return reply.status(201).send({
-				id: documentId,
-				message: "File uploaded and indexed successfully",
+			// Return 202 Accepted
+			return reply.status(202).send({
+				documentId,
+				jobId,
+				message: "File accepted for processing",
+				status: "processing",
 			});
 		}
 	);
+
+	// Get job status (for polling)
+	server.withTypeProvider<ZodTypeProvider>().get(
+		"/documents/jobs/:jobId",
+		{
+			schema: {
+				params: jobIdParamsSchema,
+			},
+		},
+		async (request, reply) => {
+			const { jobId } = request.params;
+
+			const status = await getDocumentJobStatus(jobId);
+
+			if (!status) {
+				return reply.status(404).send({ error: "Job not found" });
+			}
+
+			return {
+				jobId: status.jobId,
+				state: status.state,
+				progress: status.progress,
+				result: status.returnvalue,
+				error: status.failedReason,
+				attemptsMade: status.attemptsMade,
+				processedOn: status.processedOn,
+				finishedOn: status.finishedOn,
+			};
+		}
+	);
+
+	// Get all pending/active jobs
+	server.get("/documents/jobs", async () => {
+		return getPendingDocumentJobs();
+	});
 
 	// Get document by ID
 	server.withTypeProvider<ZodTypeProvider>().get(
@@ -191,9 +241,7 @@ export const registerDocumentRoutes = async (server: FastifyInstance) => {
 			},
 		},
 		async (request) => {
-			const parsed = request.query;
-			const limit = parsed.limit ?? 20;
-			const offset = parsed.offset ?? 0;
+			const { limit = 20, offset = 0 } = request.query;
 
 			const docs = await listDocuments(limit, offset);
 
@@ -212,7 +260,7 @@ export const registerDocumentRoutes = async (server: FastifyInstance) => {
 		}
 	);
 
-	// Delete document
+	// Delete document (ASYNC)
 	server.withTypeProvider<ZodTypeProvider>().delete(
 		"/documents/:id",
 		{
@@ -229,9 +277,12 @@ export const registerDocumentRoutes = async (server: FastifyInstance) => {
 				return reply.status(404).send({ error: "Document not found" });
 			}
 
-			await deleteDocument(id);
+			const { jobId } = await deleteDocument(id);
 
-			return { message: "Document deleted successfully" };
+			return reply.status(202).send({
+				message: "Document deletion queued",
+				jobId,
+			});
 		}
 	);
 };

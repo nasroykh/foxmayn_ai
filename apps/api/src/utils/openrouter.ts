@@ -163,10 +163,28 @@ export const OpenRouterEmbed = async (
 	}
 };
 
-export const OpenRouterBatchEmbed = async (
+/**
+ * Batch embedding - generates embeddings for multiple texts in a single API call
+ * MUCH more efficient than calling OpenRouterEmbed in a loop
+ * 
+ * @param model - Embedding model to use
+ * @param texts - Array of texts to embed (max ~100 for best performance)
+ * @returns Array of embedding vectors in the same order as input texts
+ */
+export const OpenRouterEmbedBatch = async (
 	model: keyof typeof OPENROUTER_EMBEDDING_MODELS,
 	texts: string[]
-) => {
+): Promise<number[][]> => {
+	if (texts.length === 0) {
+		return [];
+	}
+
+	// Single text - use regular function
+	if (texts.length === 1) {
+		const embedding = await OpenRouterEmbed(model, texts[0]);
+		return [embedding];
+	}
+
 	try {
 		let dimensions = 3072;
 		if (model === "openaiTextEmbedding3Small") {
@@ -175,20 +193,25 @@ export const OpenRouterBatchEmbed = async (
 			dimensions = 3072;
 		}
 
-		const embedding = await openai.embeddings.create({
+		// OpenAI API accepts array of strings for batch embedding
+		const response = await openai.embeddings.create({
 			model: OPENROUTER_EMBEDDING_MODELS[model],
 			input: texts,
 			dimensions,
 			encoding_format: "float",
 		});
 
-		if (!embedding?.data?.length) {
-			throw new Error("No embedding returned from completion");
+		if (!response?.data?.length) {
+			throw new Error("No embeddings returned from batch completion");
 		}
 
-		return embedding.data;
+		// Response data is sorted by index, but let's be explicit
+		// Sort by index to ensure order matches input
+		const sorted = response.data.sort((a, b) => a.index - b.index);
+		
+		return sorted.map((item) => item.embedding);
 	} catch (error) {
-		console.error(error);
+		console.error("Batch embedding error:", error);
 		throw error;
 	}
 };

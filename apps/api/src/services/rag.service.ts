@@ -1,44 +1,28 @@
-import { randomUUID } from "crypto";
-import { db, document, documentChunk } from "@repo/db";
+import { db, document } from "@repo/db";
 import {
 	createQdrantClient,
 	createCollection,
-	upsertVectors,
 	searchVectors,
-	deleteVectorsByFilter,
-	type Point,
 } from "@repo/qdrant";
 import { eq } from "@repo/db/drizzle-orm";
-import {
-	chunkText,
-	calculateTokens,
-	type ChunkOptions,
-} from "./chunking.service";
-import {
-	OpenRouterBatchEmbed,
-	OpenRouterEmbed,
-	OpenRouterQuery,
-} from "../utils/openrouter";
+import { nanoid } from "nanoid";
+import type { ChunkOptions } from "./chunking.service";
+import { OpenRouterEmbed, OpenRouterQuery } from "../utils/openrouter";
 import { env } from "../config/env";
+import {
+	addIndexDocumentJob,
+	addDeleteDocumentJob,
+	getDocumentJobStatus,
+} from "../jobs";
 
 // Constants
-const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME;
-const VECTOR_SIZE = 1536; // text-embedding-3-small dimension
+const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME || "foxmayn_ai";
+const VECTOR_SIZE = 1536;
 
 // Initialize Qdrant client
 const qdrant = createQdrantClient({ url: env.QDRANT_URL });
 
-// Payload type for Qdrant vectors
-interface VectorPayload extends Record<string, unknown> {
-	documentId: string;
-	chunkId: string;
-	content: string;
-	chunkIndex: number;
-	source?: string;
-	metadata?: Record<string, unknown>;
-}
-
-// Initialize collection on first use
+// Collection initialization flag
 let collectionInitialized = false;
 
 const ensureCollection = async () => {
@@ -53,6 +37,16 @@ const ensureCollection = async () => {
 
 	collectionInitialized = true;
 };
+
+// Payload type for Qdrant vectors
+interface VectorPayload extends Record<string, unknown> {
+	documentId: string;
+	chunkId: string;
+	content: string;
+	chunkIndex: number;
+	source?: string;
+	metadata?: Record<string, unknown>;
+}
 
 // Types
 export interface IndexDocumentOptions {
@@ -90,18 +84,21 @@ export interface SearchResult {
 }
 
 /**
- * Index a document into the RAG system
+ * Index a document into the RAG system (ASYNC - via background job)
+ * 
+ * This now returns immediately with a jobId. The actual indexing
+ * happens in a background worker process.
+ * 
+ * @returns documentId and jobId for tracking
  */
 export const indexDocument = async (
 	options: IndexDocumentOptions
-): Promise<string> => {
+): Promise<{ documentId: string; jobId: string | undefined }> => {
 	const { title, content, source, metadata, chunkOptions } = options;
 
-	await ensureCollection();
+	const docId = nanoid();
 
-	const docId = randomUUID();
-
-	// Create document record
+	// Create document record with status "processing"
 	await db.insert(document).values({
 		id: docId,
 		title,
@@ -111,77 +108,24 @@ export const indexDocument = async (
 		status: "processing",
 	});
 
-	try {
-		// Chunk the content
-		const chunks = await chunkText(content, chunkOptions);
+	// Add job to queue - returns immediately
+	const { jobId } = await addIndexDocumentJob({
+		documentId: docId,
+		title,
+		content,
+		source,
+		metadata,
+		chunkOptions,
+	});
 
-		// Generate embeddings for all chunks
-		const embeddings = await OpenRouterBatchEmbed(
-			"openaiTextEmbedding3Small",
-			chunks.map((chunk) => chunk.content)
-		);
+	return { documentId: docId, jobId };
+};
 
-		if (embeddings.length !== chunks.length)
-			throw new Error(
-				"Mismatch between number of chunks and number of embeddings"
-			);
-
-		// Prepare vectors for Qdrant and chunk records
-		const points: Point<VectorPayload>[] = [];
-		const chunkRecords = chunks.map((chunk, index) => {
-			const chunkId = randomUUID();
-
-			points.push({
-				id: chunkId,
-				vector: embeddings[index].embedding,
-				payload: {
-					documentId: docId,
-					chunkId,
-					content: chunk.content,
-					chunkIndex: chunk.index,
-					source,
-					metadata,
-				},
-			});
-
-			return {
-				id: chunkId,
-				documentId: docId,
-				content: chunk.content,
-				chunkIndex: chunk.index,
-				tokenCount: calculateTokens(chunk.content, "text-embedding-3-small"),
-				qdrantPointId: chunkId,
-			};
-		});
-
-		// Insert chunk records into PostgreSQL
-		if (chunkRecords.length > 0) {
-			await db.insert(documentChunk).values(chunkRecords);
-		}
-
-		// Upsert vectors into Qdrant
-		if (points.length > 0) {
-			await upsertVectors(qdrant, COLLECTION_NAME, points);
-		}
-
-		// Update document status
-		await db
-			.update(document)
-			.set({
-				status: "indexed",
-				chunkCount: chunks.length,
-			})
-			.where(eq(document.id, docId));
-
-		return docId;
-	} catch (error) {
-		// Mark document as failed
-		await db
-			.update(document)
-			.set({ status: "failed" })
-			.where(eq(document.id, docId));
-		throw error;
-	}
+/**
+ * Get the status of a document indexing job
+ */
+export const getIndexingStatus = async (jobId: string) => {
+	return getDocumentJobStatus(jobId);
 };
 
 /**
@@ -191,7 +135,7 @@ export const searchChunks = async (
 	query: string,
 	options: QueryOptions = {}
 ): Promise<SearchResult[]> => {
-	const { limit = 5, scoreThreshold = 0.6, filter } = options;
+	const { limit = 5, scoreThreshold = 0.7, filter } = options;
 
 	await ensureCollection();
 
@@ -270,7 +214,7 @@ Instructions:
 			model: "gemini25FlashLite",
 			temperature: 0,
 			maxTokens: 2048,
-			reasoningEffort: "none",
+			reasoningEffort: "minimal",
 			stream: false,
 		},
 		undefined,
@@ -331,9 +275,9 @@ Instructions:
 	const stream = await OpenRouterQuery(
 		{
 			model: "gemini25FlashLite",
-			temperature: 0.2,
+			temperature: 0,
 			maxTokens: 2048,
-			reasoningEffort: "none",
+			reasoningEffort: "minimal",
 			stream: true,
 		},
 		undefined,
@@ -355,18 +299,13 @@ Instructions:
 }
 
 /**
- * Delete a document and its vectors
+ * Delete a document and its vectors (ASYNC - via background job)
  */
-export const deleteDocument = async (documentId: string): Promise<void> => {
-	await ensureCollection();
-
-	// Delete from Qdrant
-	await deleteVectorsByFilter(qdrant, COLLECTION_NAME, {
-		must: [{ key: "documentId", match: { value: documentId } }],
-	});
-
-	// Delete from PostgreSQL (cascades to chunks)
-	await db.delete(document).where(eq(document.id, documentId));
+export const deleteDocument = async (
+	documentId: string
+): Promise<{ jobId: string | undefined }> => {
+	const { jobId } = await addDeleteDocumentJob({ documentId });
+	return { jobId };
 };
 
 /**

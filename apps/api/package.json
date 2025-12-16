@@ -8,8 +8,11 @@
 	},
 	"scripts": {
 		"dev": "NODE_ENV=development tsx watch src/index.ts",
+		"dev:worker": "NODE_ENV=development tsx watch src/worker.ts",
+		"dev:all": "concurrently -n api,worker -c blue,green \"pnpm dev\" \"pnpm dev:worker\"",
 		"build": "rimraf dist && tsc",
 		"start": "NODE_ENV=production node dist/index.js",
+		"start:worker": "NODE_ENV=production node dist/worker.js",
 		"test": "echo \"Error: no test specified\" && exit 1"
 	},
 	"keywords": [],
@@ -17,6 +20,8 @@
 	"license": "ISC",
 	"dependencies": {
 		"@better-auth/stripe": "^1.4.7",
+		"@bull-board/api": "^6.15.0",
+		"@bull-board/fastify": "^6.15.0",
 		"@fastify/busboy": "^3.2.0",
 		"@fastify/cors": "^11.2.0",
 		"@fastify/multipart": "^9.3.0",
@@ -27,6 +32,8 @@
 		"@fastify/swagger-ui": "^5.2.3",
 		"@fastify/websocket": "^11.2.0",
 		"@langchain/textsplitters": "^1.0.1",
+		"@orpc/client": "^1.12.3",
+		"@orpc/server": "^1.12.3",
 		"@repo/db": "workspace:*",
 		"@repo/qdrant": "workspace:*",
 		"@trpc/client": "^11.8.0",
@@ -42,9 +49,9 @@
 		"jsonwebtoken": "^9.0.3",
 		"nanoid": "^5.1.6",
 		"nodemailer": "^7.0.11",
-		"openai": "^6.10.0",
+		"openai": "^6.13.0",
 		"stripe": "^20.0.0",
-		"zod": "^4.1.13"
+		"zod": "^4.2.1"
 	},
 	"devDependencies": {
 		"@types/jsonwebtoken": "^9.0.10",

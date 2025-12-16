@@ -10,9 +10,9 @@ const getBaseUrl = () => {
 const documentSchema = z.object({
 	id: z.string(),
 	title: z.string(),
-	source: z.string().nullable(),
+	source: z.string().nullish(),
 	status: z.string(),
-	chunkCount: z.number().nullable(),
+	chunkCount: z.number().nullish(),
 	metadata: z.record(z.string(), z.unknown()).optional(),
 	createdAt: z.string(),
 	updatedAt: z.string(),
@@ -24,8 +24,10 @@ const listDocumentsResponseSchema = z.object({
 });
 
 const createDocumentResponseSchema = z.object({
-	id: z.string(),
+	documentId: z.string(),
+	jobId: z.string().optional(),
 	message: z.string(),
+	status: z.string(),
 });
 
 const searchResultSchema = z.object({
