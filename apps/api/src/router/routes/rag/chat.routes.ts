@@ -4,7 +4,7 @@ import {
 	queryRAG,
 	queryRAGStream,
 	searchChunks,
-} from "../../services/rag.service";
+} from "../../../services/rag.service";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 
 // Request schemas

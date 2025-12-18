@@ -1,4 +1,3 @@
-// packages/auth/src/server.ts
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { admin, emailOTP, organization } from "better-auth/plugins";
@@ -8,7 +7,7 @@ import { stripe } from "@better-auth/stripe";
 import { db } from "@repo/db";
 import * as schema from "@repo/db/schema";
 import { sendOTPEmail, sendInvitationEmail } from "../services/auth.service";
-import { env } from "../config/env";
+import { env } from "./env";
 
 const stripeClient = new Stripe(env.STRIPE_SECRET_KEY!, {
 	apiVersion: "2025-11-17.clover", // Latest API version as of Stripe SDK v20.0.0

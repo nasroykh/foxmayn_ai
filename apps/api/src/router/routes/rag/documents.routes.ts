@@ -5,8 +5,8 @@ import {
 	getDocument,
 	listDocuments,
 	deleteDocument,
-} from "../../services/rag.service";
-import { getDocumentJobStatus, getPendingDocumentJobs } from "../../jobs";
+} from "../../../services/rag.service";
+import { getDocumentJobStatus, getPendingDocumentJobs } from "../../../jobs";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 
 const ALLOWED_TEXT_EXTENSIONS = [

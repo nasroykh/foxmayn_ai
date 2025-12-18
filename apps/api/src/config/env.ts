@@ -1,8 +1,5 @@
 import { z } from "zod";
-import * as dotenv from "dotenv";
-
-// Load .env file contents into process.env
-dotenv.config({ override: true, quiet: true });
+import "dotenv/config";
 
 // Define the schema for your environment variables
 const envSchema = z.object({

@@ -1,8 +1,5 @@
 {
-	"extends": "fastify-tsconfig",
 	"compilerOptions": {
-		"outDir": "dist",
-		"rootDir": "src",
 		"target": "esnext",
 		"module": "NodeNext",
 		"moduleResolution": "nodenext",
@@ -32,10 +29,13 @@
 		"importHelpers": false,
 		"downlevelIteration": false,
 		"incremental": true,
-		"tsBuildInfoFile": "./dist/.tsbuildinfo"
+		"types": ["node"],
+		"jsx": "react-jsx",
+		"jsxImportSource": "hono/jsx",
+		"outDir": "./dist"
 	},
 	"include": ["src/**/*"],
-	"exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.spec.ts"],
+	"exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.spec.tsx"],
 	"ts-node": {
 		"esm": true,
 		"experimentalSpecifierResolution": "node"
