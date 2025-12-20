@@ -2,38 +2,42 @@
 
 ## Project Overview
 
-This is a full-stack web application built with a monorepo architecture using pnpm workspaces. The project consists of a React frontend, a Node.js backend, and a shared database package.
+This is a full-stack web application built with a monorepo architecture using pnpm workspaces. The project consists of a React frontend, a Hono (Node.js) backend, and shared database/utility packages.
 
 **Technologies:**
 
-*   **Frontend:**
-    *   React
-    *   Vite
-    *   TypeScript
-    *   TanStack Router (for routing)
-    *   TanStack React Query (for data fetching)
-    *   tRPC Client
-    *   Radix UI
-    *   Tailwind CSS
-*   **Backend:**
-    *   Node.js
-    *   Fastify
-    *   TypeScript
-    *   tRPC
-    *   PostgreSQL
-    *   Drizzle ORM
-*   **Database:**
-    *   PostgreSQL
-    *   Drizzle ORM
-    *   drizzle-zod
+*   **Frontend (`apps/app`):**
+    *   **Framework:** React 19
+    *   **Build Tool:** Vite
+    *   **Language:** TypeScript
+    *   **Routing:** TanStack Router
+    *   **Data Fetching:** TanStack Query + oRPC Client
+    *   **State Management:** Jotai
+    *   **Auth:** Better Auth (Client)
+    *   **Styling:** Tailwind CSS 4
+    *   **UI Components:** Radix UI, Lucide React, Sonner, Vaul
+*   **Backend (`apps/api`):**
+    *   **Runtime:** Node.js
+    *   **Framework:** Hono
+    *   **Language:** TypeScript
+    *   **API Protocol:** oRPC (Open RPC) + OpenAPI
+    *   **Database:** PostgreSQL + Drizzle ORM
+    *   **Vector DB:** Qdrant
+    *   **Queues:** BullMQ (Redis)
+    *   **Auth:** Better Auth
+    *   **Payments:** Stripe
+    *   **AI/RAG:** OpenAI SDK, LangChain Text Splitters
+*   **Packages:**
+    *   `@repo/db`: PostgreSQL configuration, Drizzle ORM schemas, and migrations.
+    *   `@repo/qdrant`: Qdrant vector database client and configuration.
 
 ## Building and Running
 
 ### Prerequisites
 
-*   Node.js (>=18)
-*   pnpm (>=10.0.0)
-*   Docker (for running a local PostgreSQL database)
+*   Node.js (>=20)
+*   pnpm (>=9.0.0)
+*   Docker (for local PostgreSQL, Qdrant, Redis)
 
 ### Development
 
@@ -43,53 +47,40 @@ This is a full-stack web application built with a monorepo architecture using pn
     ```
 
 2.  **Set up environment variables:**
-    *   Create a `.env` file in the `apps/api` directory by copying the `.env.example` file.
-    *   Update the `.env` file with your database connection details.
+    *   Copy `.env.example` to `.env` in `apps/api`, `apps/app`, `packages/db`, and `packages/qdrant`.
+    *   Update the `.env` files with your local configuration (DB credentials, API keys, etc.).
 
 3.  **Start the development servers:**
     ```bash
     pnpm dev
     ```
-    This will start the frontend, backend, and database services concurrently.
+    This will likely start the frontend and backend in parallel.
+    *   **Frontend:** `http://localhost:33460` (or similar, check console)
+    *   **Backend:** `http://localhost:3000` (or defined port)
 
-    *   Frontend: `http://localhost:5173`
-    *   Backend: `http://localhost:3001`
-    *   Swagger UI: `http://localhost:3001/docs`
-
-### Database Migrations
+### Database & Migrations
 
 *   **Generate migrations:**
     ```bash
-    pnpm --filter=db db:generate
+    pnpm --filter=@repo/db db:generate
     ```
 
 *   **Run migrations:**
     ```bash
-    pnpm --filter=db db:migrate
+    pnpm --filter=@repo/db db:migrate
     ```
 
-*   **Push schema changes (for development):**
+*   **Push schema changes (dev only):**
     ```bash
-    pnpm --filter=db db:push
+    pnpm --filter=@repo/db db:push
     ```
-
-### Building for Production
-
-```bash
-pnpm build
-```
-
-### Starting in Production
-
-```bash
-pnpm start
-```
 
 ## Development Conventions
 
-*   **Monorepo:** The project is organized as a monorepo with `apps` and `packages` directories.
-*   **tRPC:** tRPC is used for communication between the frontend and backend, providing type-safe APIs.
-*   **Database:** Drizzle ORM is used for database access. The database schema is defined in the `packages/db` package.
-*   **Styling:** Tailwind CSS is used for styling the frontend.
-*   **Routing:** TanStack Router is used for routing in the frontend.
-*   **State Management:** TanStack React Query is used for server-side state management.
+*   **Monorepo Structure:**
+    *   `apps/`: Deployable applications (api, app).
+    *   `packages/`: Shared libraries (db, qdrant).
+*   **API Communication:** The project uses **oRPC** for type-safe communication between frontend and backend.
+*   **Authentication:** implemented using **Better Auth**.
+*   **Styling:** Tailwind CSS v4 is used.
+*   **Strictness:** Follow the "100% honest, strict, unbiased and harsh" persona. Do not make assumptions. Verify against the codebase.
