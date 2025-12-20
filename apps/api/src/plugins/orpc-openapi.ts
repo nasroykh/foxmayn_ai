@@ -13,9 +13,8 @@ export const registerORPCOpenAPI = (app: Hono) => {
 		],
 	});
 
-	app.use("/api/*", async (c, next) => {
+	app.use("/*", async (c, next) => {
 		const { matched, response } = await handler.handle(c.req.raw, {
-			prefix: "/api",
 			context: {
 				headers: new Headers(c.req.header()),
 			},

@@ -60,14 +60,13 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import {
-	listDocuments,
 	createDocument,
-	uploadDocumentFile,
 	deleteDocument,
 	getDocument,
 	type Document,
 } from "@/lib/rag";
 import { useRef } from "react";
+import { orpc } from "@/lib/orpc";
 
 export const Route = createFileRoute("/_auth/rag/documents")({
 	component: DocumentsPage,
@@ -95,10 +94,11 @@ function DocumentsPage() {
 	const [viewDoc, setViewDoc] = useState<Document | null>(null);
 	const [deleteDoc, setDeleteDoc] = useState<Document | null>(null);
 
-	const { data, isLoading } = useQuery({
-		queryKey: ["documents"],
-		queryFn: () => listDocuments({ limit: 100 }),
-	});
+	const { data, isLoading } = useQuery(
+		orpc.documents.listDocuments.queryOptions({
+			input: {},
+		})
+	);
 
 	const documents = data?.documents ?? [];
 
@@ -485,24 +485,25 @@ function UploadDialog({ onSuccess }: { onSuccess: () => void }) {
 	const [metadata, setMetadata] = useState("");
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
-	const uploadMutation = useMutation({
-		mutationFn: uploadDocumentFile,
-		onSuccess: () => {
-			toast.success("File uploaded and indexing started");
-			setFile(null);
-			setTitle("");
-			setSource("");
-			setMetadata("");
-			if (fileInputRef.current) fileInputRef.current.value = "";
-			queryClient.invalidateQueries({ queryKey: ["documents"] });
-			onSuccess();
-		},
-		onError: (error) => {
-			toast.error(
-				error instanceof Error ? error.message : "Failed to upload file"
-			);
-		},
-	});
+	const uploadMutation = useMutation(
+		orpc.documents.uploadDocument.mutationOptions({
+			onSuccess: () => {
+				toast.success("File uploaded and indexing started");
+				setFile(null);
+				setTitle("");
+				setSource("");
+				setMetadata("");
+				if (fileInputRef.current) fileInputRef.current.value = "";
+				queryClient.invalidateQueries({ queryKey: ["documents"] });
+				onSuccess();
+			},
+			onError: (error) => {
+				toast.error(
+					error instanceof Error ? error.message : "Failed to upload file"
+				);
+			},
+		})
+	);
 
 	const handleSubmit = () => {
 		if (!file) {
@@ -524,7 +525,7 @@ function UploadDialog({ onSuccess }: { onSuccess: () => void }) {
 			file,
 			title: title.trim() || undefined,
 			source: source.trim() || undefined,
-			metadata: parsedMetadata,
+			metadata,
 		});
 	};
 

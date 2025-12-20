@@ -55,6 +55,7 @@ export const createQdrantClient = (config: QdrantConfig): QdrantClient => {
 
 	return new QdrantClient({
 		url: config.url,
+		checkCompatibility: false,
 	});
 };
 

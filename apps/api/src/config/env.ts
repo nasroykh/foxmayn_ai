@@ -13,6 +13,7 @@ const envSchema = z.object({
 	// Server Configuration
 	PORT: z.coerce.number(),
 	HOST: z.string(),
+	API_V1_PREFIX: z.string().startsWith("/"),
 
 	// APP Configuration
 	APP_URL: z.url(),

@@ -3,6 +3,9 @@ import { RPCHandler } from "@orpc/server/fetch";
 import { onError } from "@orpc/server";
 
 import { router } from "../router/index";
+import { env } from "../config/env";
+
+const rpcEndpoint = `${env.API_V1_PREFIX}/rpc` as `/${string}`;
 
 export const registerORPC = (app: Hono) => {
 	const handler = new RPCHandler(router, {
@@ -13,9 +16,9 @@ export const registerORPC = (app: Hono) => {
 		],
 	});
 
-	app.use("/api/rpc/*", async (c, next) => {
+	app.use(`/rpc/*`, async (c, next) => {
 		const { matched, response } = await handler.handle(c.req.raw, {
-			prefix: "/api/rpc",
+			prefix: rpcEndpoint,
 			context: {
 				headers: new Headers(c.req.header()),
 			},

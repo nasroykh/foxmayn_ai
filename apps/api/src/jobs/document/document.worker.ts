@@ -23,7 +23,7 @@ import { env } from "../../config/env";
 
 // Constants
 const QUEUE_NAME = "document";
-const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME || "foxmayn_ai";
+const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME;
 const VECTOR_SIZE = 1536;
 const EMBEDDING_BATCH_SIZE = 20; // Process embeddings in batches of 20
 

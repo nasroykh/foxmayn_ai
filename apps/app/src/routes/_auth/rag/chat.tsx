@@ -35,6 +35,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ragStream } from "@/lib/rag";
 import { cn } from "@/lib/utils";
+import { useQuery } from "@tanstack/react-query";
+import { orpc } from "@/lib/orpc";
+import { consumeEventIterator } from "@orpc/client";
 
 export const Route = createFileRoute("/_auth/rag/chat")({
 	component: ChatPage,
@@ -55,22 +58,35 @@ interface Conversation {
 	updatedAt: Date;
 }
 
-// Mock models
-const AI_MODELS = [
-	{ id: "gpt-4o", name: "GPT-4o" },
-	{ id: "claude-3-5-sonnet", name: "Claude 3.5 Sonnet" },
-	{ id: "llama-3-70b", name: "Llama 3 70B" },
-];
-
 function ChatPage() {
 	// State
 	const [conversations, setConversations] = useState<Conversation[]>([]);
 	const [activeId, setActiveId] = useState<string | null>(null);
 	const [input, setInput] = useState("");
-	const [selectedModel, setSelectedModel] = useState(AI_MODELS[0].id);
+	const [selectedModel, setSelectedModel] = useState("");
 	const [isStreaming, setIsStreaming] = useState(false);
 	const abortControllerRef = useRef<AbortController | null>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
+
+	const modelsQuery = useQuery(orpc.chat.getModels.queryOptions());
+
+	// const cancel = consumeEventIterator(
+	// 	orpc.chat.queryStream.call({ query: input }),
+	// 	{
+	// 		onEvent: (event) => {
+	// 			console.log(event);
+	// 		},
+	// 		onError: (error) => {
+	// 			console.error(error);
+	// 		},
+	// 		onSuccess: (value) => {
+	// 			console.log(value);
+	// 		},
+	// 		onFinish: (state) => {
+	// 			console.log(state);
+	// 		},
+	// 	}
+	// );
 
 	// Auto-scroll to bottom
 	useEffect(() => {
@@ -78,6 +94,11 @@ function ChatPage() {
 			scrollRef.current.scrollIntoView({ behavior: "smooth" });
 		}
 	}, [activeId, conversations]);
+
+	useEffect(() => {
+		if (!modelsQuery.data) return;
+		setSelectedModel(modelsQuery.data.models[0]);
+	}, [modelsQuery.data]);
 
 	const activeConversation = conversations.find((c) => c.id === activeId);
 
@@ -462,9 +483,9 @@ function ChatPage() {
 											<SelectValue placeholder="Select model" />
 										</SelectTrigger>
 										<SelectContent>
-											{AI_MODELS.map((model) => (
-												<SelectItem key={model.id} value={model.id}>
-													{model.name}
+											{modelsQuery.data?.models.map((model) => (
+												<SelectItem key={model} value={model}>
+													{model}
 												</SelectItem>
 											))}
 										</SelectContent>

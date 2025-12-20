@@ -2,27 +2,16 @@ import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { initDB } from "@repo/db";
 import { env } from "./config/env";
-import { auth } from "./config/auth";
-import {
-	registerCors,
-	registerORPC,
-	registerORPCOpenAPI,
-} from "./plugins/index";
+import { registerPlugins } from "./plugins/index";
 
-const app = new Hono();
+const app = new Hono().basePath(env.API_V1_PREFIX);
 
 const start = async () => {
 	try {
 		console.log("🚀 Starting server initialization...");
 		await initDB();
 
-		registerCors(app);
-		registerORPC(app);
-		registerORPCOpenAPI(app);
-
-		app.on(["POST", "GET"], "/api/auth/*", (c) => {
-			return auth.handler(c.req.raw);
-		});
+		registerPlugins(app);
 
 		serve(
 			{

@@ -5,7 +5,6 @@ import {
 	searchVectors,
 } from "@repo/qdrant";
 import { eq } from "@repo/db/drizzle-orm";
-import { nanoid } from "nanoid";
 import type { ChunkOptions } from "./chunking.service";
 import { OpenRouterEmbed, OpenRouterQuery } from "../utils/openrouter";
 import { env } from "../config/env";
@@ -14,6 +13,7 @@ import {
 	addDeleteDocumentJob,
 	getDocumentJobStatus,
 } from "../jobs";
+import { randomUUID } from "node:crypto";
 
 // Constants
 const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME || "foxmayn_ai";
@@ -85,10 +85,10 @@ export interface SearchResult {
 
 /**
  * Index a document into the RAG system (ASYNC - via background job)
- * 
+ *
  * This now returns immediately with a jobId. The actual indexing
  * happens in a background worker process.
- * 
+ *
  * @returns documentId and jobId for tracking
  */
 export const indexDocument = async (
@@ -96,7 +96,7 @@ export const indexDocument = async (
 ): Promise<{ documentId: string; jobId: string | undefined }> => {
 	const { title, content, source, metadata, chunkOptions } = options;
 
-	const docId = nanoid();
+	const docId = randomUUID();
 
 	// Create document record with status "processing"
 	await db.insert(document).values({
