@@ -59,12 +59,6 @@ import {
 	Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
-import {
-	createDocument,
-	deleteDocument,
-	getDocument,
-	type Document,
-} from "@/lib/rag";
 import { useRef } from "react";
 import { orpc } from "@/lib/orpc";
 
@@ -91,8 +85,8 @@ function DocumentsPage() {
 	const queryClient = useQueryClient();
 	const [createOpen, setCreateOpen] = useState(false);
 	const [uploadOpen, setUploadOpen] = useState(false);
-	const [viewDoc, setViewDoc] = useState<Document | null>(null);
-	const [deleteDoc, setDeleteDoc] = useState<Document | null>(null);
+	const [viewedDocId, setViewedDocId] = useState<string | null>(null);
+	const [docToDelete, setDocToDelete] = useState<string | null>(null);
 
 	const { data, isLoading } = useQuery(
 		orpc.documents.listDocuments.queryOptions({
@@ -102,23 +96,33 @@ function DocumentsPage() {
 
 	const documents = data?.documents ?? [];
 
-	const deleteMutation = useMutation({
-		mutationFn: deleteDocument,
-		onSuccess: () => {
-			toast.success("Document deleted");
-			setDeleteDoc(null);
-			queryClient.invalidateQueries({ queryKey: ["documents"] });
-		},
-		onError: (error) => {
-			toast.error(
-				error instanceof Error ? error.message : "Failed to delete document"
-			);
-		},
-	});
+	const getDocumentQuery = useQuery(
+		orpc.documents.getDocument.queryOptions({
+			input: {
+				id: viewedDocId ?? "",
+			},
+			enabled: !!viewedDocId,
+		})
+	);
+
+	const deleteDocumentMutation = useMutation(
+		orpc.documents.deleteDocument.mutationOptions({
+			onSuccess: () => {
+				toast.success("Document deleted");
+				setDocToDelete(null);
+				queryClient.invalidateQueries({ queryKey: ["documents"] });
+			},
+			onError: (error) => {
+				toast.error(
+					error instanceof Error ? error.message : "Failed to delete document"
+				);
+			},
+		})
+	);
 
 	const handleDelete = () => {
-		if (!deleteDoc) return;
-		deleteMutation.mutate(deleteDoc.id);
+		if (!docToDelete) return;
+		deleteDocumentMutation.mutate({ id: docToDelete });
 	};
 
 	const handleCopyId = (id: string) => {
@@ -126,11 +130,9 @@ function DocumentsPage() {
 		toast.success("ID copied to clipboard");
 	};
 
-	const handleView = async (doc: Document) => {
+	const handleView = async (docId: string) => {
 		try {
-			// Pre-fetch specific document details on view click
-			const fullDoc = await getDocument(doc.id);
-			setViewDoc(fullDoc);
+			setViewedDocId(docId);
 		} catch (error) {
 			toast.error(
 				error instanceof Error ? error.message : "Failed to load document"
@@ -246,7 +248,9 @@ function DocumentsPage() {
 														</Button>
 													</DropdownMenuTrigger>
 													<DropdownMenuContent align="end">
-														<DropdownMenuItem onClick={() => handleView(doc)}>
+														<DropdownMenuItem
+															onClick={() => handleView(doc.id)}
+														>
 															<Eye className="mr-2 size-4" />
 															View
 														</DropdownMenuItem>
@@ -258,7 +262,7 @@ function DocumentsPage() {
 														</DropdownMenuItem>
 														<DropdownMenuItem
 															className="text-destructive focus:text-destructive"
-															onClick={() => setDeleteDoc(doc)}
+															onClick={() => setDocToDelete(doc.id)}
 														>
 															<Trash2 className="mr-2 size-4" />
 															Delete
@@ -276,30 +280,31 @@ function DocumentsPage() {
 
 				{/* View Dialog */}
 				<Dialog
-					open={!!viewDoc}
-					onOpenChange={(open) => !open && setViewDoc(null)}
+					open={!!getDocumentQuery.data}
+					onOpenChange={(open) => !open && setViewedDocId(null)}
 				>
 					<DialogContent className="max-w-2xl">
 						<DialogHeader>
-							<DialogTitle>{viewDoc?.title}</DialogTitle>
+							<DialogTitle>{getDocumentQuery.data?.title}</DialogTitle>
 							<DialogDescription>
-								ID: {viewDoc?.id} • Status: {viewDoc?.status} •{" "}
-								{viewDoc?.chunkCount ?? 0} chunks
+								ID: {getDocumentQuery.data?.id} • Status:{" "}
+								{getDocumentQuery.data?.status} •{" "}
+								{getDocumentQuery.data?.chunkCount ?? 0} chunks
 							</DialogDescription>
 						</DialogHeader>
 						<div className="space-y-4">
-							{viewDoc?.source && (
+							{getDocumentQuery.data?.source && (
 								<div>
 									<Label className="text-muted-foreground">Source</Label>
-									<p className="text-sm mt-1">{viewDoc.source}</p>
+									<p className="text-sm mt-1">{getDocumentQuery.data.source}</p>
 								</div>
 							)}
-							{viewDoc?.metadata &&
-								Object.keys(viewDoc.metadata).length > 0 && (
+							{getDocumentQuery.data?.metadata &&
+								Object.keys(getDocumentQuery.data.metadata).length > 0 && (
 									<div>
 										<Label className="text-muted-foreground">Metadata</Label>
 										<pre className="text-sm mt-1 bg-muted p-2 rounded overflow-auto max-h-24">
-											{JSON.stringify(viewDoc.metadata, null, 2)}
+											{JSON.stringify(getDocumentQuery.data.metadata, null, 2)}
 										</pre>
 									</div>
 								)}
@@ -307,38 +312,45 @@ function DocumentsPage() {
 								<Label className="text-muted-foreground">Timestamps</Label>
 								<p className="text-sm mt-1">
 									Created:{" "}
-									{viewDoc ? new Date(viewDoc.createdAt).toLocaleString() : "-"}
+									{getDocumentQuery.data
+										? new Date(getDocumentQuery.data.createdAt).toLocaleString()
+										: "-"}
 									<br />
 									Updated:{" "}
-									{viewDoc ? new Date(viewDoc.updatedAt).toLocaleString() : "-"}
+									{getDocumentQuery.data
+										? new Date(getDocumentQuery.data.updatedAt).toLocaleString()
+										: "-"}
 								</p>
 							</div>
 						</div>
 						<DialogFooter>
 							<Button
 								variant="outline"
-								onClick={() => viewDoc && handleCopyId(viewDoc.id)}
+								onClick={() =>
+									getDocumentQuery.data &&
+									handleCopyId(getDocumentQuery.data.id)
+								}
 							>
 								<Copy className="mr-2 size-4" />
 								Copy ID
 							</Button>
-							<Button onClick={() => setViewDoc(null)}>Close</Button>
+							<Button onClick={() => setViewedDocId(null)}>Close</Button>
 						</DialogFooter>
 					</DialogContent>
 				</Dialog>
 
 				{/* Delete Confirmation */}
 				<AlertDialog
-					open={!!deleteDoc}
-					onOpenChange={(open) => !open && setDeleteDoc(null)}
+					open={!!docToDelete}
+					onOpenChange={(open) => !open && setDocToDelete(null)}
 				>
 					<AlertDialogContent>
 						<AlertDialogHeader>
 							<AlertDialogTitle>Delete Document</AlertDialogTitle>
 							<AlertDialogDescription>
-								Are you sure you want to delete "{deleteDoc?.title}"? This will
-								also remove all associated chunks and vectors. This action
-								cannot be undone.
+								Are you sure you want to delete this document? This will also
+								remove all associated chunks and vectors. This action cannot be
+								undone.
 							</AlertDialogDescription>
 						</AlertDialogHeader>
 						<AlertDialogFooter>
@@ -346,9 +358,9 @@ function DocumentsPage() {
 							<AlertDialogAction
 								onClick={handleDelete}
 								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-								disabled={deleteMutation.isPending}
+								disabled={deleteDocumentMutation.isPending}
 							>
-								{deleteMutation.isPending ? "Deleting..." : "Delete"}
+								{deleteDocumentMutation.isPending ? "Deleting..." : "Delete"}
 							</AlertDialogAction>
 						</AlertDialogFooter>
 					</AlertDialogContent>
@@ -366,23 +378,24 @@ function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
 	const [source, setSource] = useState("");
 	const [metadata, setMetadata] = useState("");
 
-	const createMutation = useMutation({
-		mutationFn: createDocument,
-		onSuccess: () => {
-			toast.success("Document created and indexing started");
-			setTitle("");
-			setContent("");
-			setSource("");
-			setMetadata("");
-			queryClient.invalidateQueries({ queryKey: ["documents"] });
-			onSuccess();
-		},
-		onError: (error) => {
-			toast.error(
-				error instanceof Error ? error.message : "Failed to create document"
-			);
-		},
-	});
+	const createDocumentMutation = useMutation(
+		orpc.documents.createDocument.mutationOptions({
+			onSuccess: () => {
+				toast.success("Document created and indexing started");
+				setTitle("");
+				setContent("");
+				setSource("");
+				setMetadata("");
+				queryClient.invalidateQueries({ queryKey: ["documents"] });
+				onSuccess();
+			},
+			onError: (error) => {
+				toast.error(
+					error instanceof Error ? error.message : "Failed to create document"
+				);
+			},
+		})
+	);
 
 	const handleSubmit = () => {
 		if (!title.trim() || !content.trim()) {
@@ -400,7 +413,7 @@ function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
 			}
 		}
 
-		createMutation.mutate({
+		createDocumentMutation.mutate({
 			title: title.trim(),
 			content: content.trim(),
 			source: source.trim() || undefined,
@@ -424,7 +437,7 @@ function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
 						placeholder="Document title"
 						value={title}
 						onChange={(e) => setTitle(e.target.value)}
-						disabled={createMutation.isPending}
+						disabled={createDocumentMutation.isPending}
 					/>
 				</div>
 				<div className="space-y-2">
@@ -435,7 +448,7 @@ function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
 						rows={8}
 						value={content}
 						onChange={(e) => setContent(e.target.value)}
-						disabled={createMutation.isPending}
+						disabled={createDocumentMutation.isPending}
 					/>
 				</div>
 				<div className="space-y-2">
@@ -445,7 +458,7 @@ function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
 						placeholder="https://example.com/doc or internal-ref"
 						value={source}
 						onChange={(e) => setSource(e.target.value)}
-						disabled={createMutation.isPending}
+						disabled={createDocumentMutation.isPending}
 					/>
 				</div>
 				<div className="space-y-2">
@@ -456,13 +469,16 @@ function CreateDialog({ onSuccess }: { onSuccess: () => void }) {
 						rows={2}
 						value={metadata}
 						onChange={(e) => setMetadata(e.target.value)}
-						disabled={createMutation.isPending}
+						disabled={createDocumentMutation.isPending}
 					/>
 				</div>
 			</div>
 			<DialogFooter>
-				<Button onClick={handleSubmit} disabled={createMutation.isPending}>
-					{createMutation.isPending ? (
+				<Button
+					onClick={handleSubmit}
+					disabled={createDocumentMutation.isPending}
+				>
+					{createDocumentMutation.isPending ? (
 						<>
 							<Loader2 className="mr-2 size-4 animate-spin" />
 							Creating...
@@ -509,16 +525,6 @@ function UploadDialog({ onSuccess }: { onSuccess: () => void }) {
 		if (!file) {
 			toast.error("Please select a file");
 			return;
-		}
-
-		let parsedMetadata: Record<string, unknown> | undefined;
-		if (metadata.trim()) {
-			try {
-				parsedMetadata = JSON.parse(metadata);
-			} catch {
-				toast.error("Invalid JSON in metadata field");
-				return;
-			}
 		}
 
 		uploadMutation.mutate({

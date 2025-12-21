@@ -111,7 +111,7 @@ function Dashboard() {
 							</CardDescription>
 						</CardHeader>
 						<CardContent>
-							<ChartContainer config={chartConfig} className="h-[200px] w-full">
+							<ChartContainer config={chartConfig} className="h-50 w-full">
 								<AreaChart data={revenueData}>
 									<defs>
 										<linearGradient
@@ -160,7 +160,7 @@ function Dashboard() {
 							<CardDescription>New users acquired per month</CardDescription>
 						</CardHeader>
 						<CardContent>
-							<ChartContainer config={chartConfig} className="h-[200px] w-full">
+							<ChartContainer config={chartConfig} className="h-50 w-full">
 								<BarChart data={usersData}>
 									<XAxis
 										dataKey="month"

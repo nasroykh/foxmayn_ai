@@ -5,6 +5,7 @@ import { HonoAdapter } from "@bull-board/hono";
 import { serveStatic } from "@hono/node-server/serve-static";
 
 import { documentQueue, emailQueue } from "../jobs";
+import { env } from "../config/env";
 
 const bullBoardEndpoint = `/admin/queues`;
 
@@ -14,7 +15,7 @@ const bullBoardEndpoint = `/admin/queues`;
  */
 export const registerBullBoard = (app: Hono) => {
 	const serverAdapter = new HonoAdapter(serveStatic);
-	serverAdapter.setBasePath(bullBoardEndpoint);
+	serverAdapter.setBasePath(`${env.API_V1_PREFIX}${bullBoardEndpoint}`);
 
 	createBullBoard({
 		queues: [new BullMQAdapter(documentQueue), new BullMQAdapter(emailQueue)],

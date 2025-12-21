@@ -37,7 +37,7 @@ import { ragStream } from "@/lib/rag";
 import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { orpc } from "@/lib/orpc";
-import { consumeEventIterator } from "@orpc/client";
+// import { consumeEventIterator } from "@orpc/client";
 
 export const Route = createFileRoute("/_auth/rag/chat")({
 	component: ChatPage,
@@ -448,7 +448,7 @@ function ChatPage() {
 									value={input}
 									onChange={(e) => setInput(e.target.value)}
 									onKeyDown={handleKeyDown}
-									className="min-h-[100px] resize-none pr-24"
+									className="min-h-25 resize-none pr-24"
 									disabled={isStreaming}
 								/>
 								<div className="absolute bottom-3 right-3 flex gap-2">
@@ -479,7 +479,7 @@ function ChatPage() {
 										value={selectedModel}
 										onValueChange={setSelectedModel}
 									>
-										<SelectTrigger className="w-[180px] h-8 text-xs">
+										<SelectTrigger className="w-45 h-8 text-xs">
 											<SelectValue placeholder="Select model" />
 										</SelectTrigger>
 										<SelectContent>
