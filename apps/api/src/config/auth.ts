@@ -10,7 +10,7 @@ import { sendOTPEmail, sendInvitationEmail } from "../services/auth.service";
 import { env } from "./env";
 
 const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-	apiVersion: "2025-11-17.clover", // Latest API version as of Stripe SDK v20.0.0
+	apiVersion: "2025-12-15.clover", // Latest API version as of Stripe SDK v20.1.0
 });
 
 export const auth = betterAuth({

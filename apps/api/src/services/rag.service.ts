@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { db, document } from "@repo/db";
 import {
 	createQdrantClient,
@@ -13,7 +14,23 @@ import {
 	addDeleteDocumentJob,
 	getDocumentJobStatus,
 } from "../jobs";
-import { randomUUID } from "node:crypto";
+import { parseDocx, parseHTML, parsePDF, parseXlsx } from "../utils/parsers";
+import { ORPCError } from "@orpc/server";
+
+const ALLOWED_FILE_TYPES = [
+	"text/plain",
+	"text/markdown",
+	"text/csv",
+	"application/json",
+	"application/xml",
+	"text/html",
+	"application/pdf",
+	"application/msword",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	"application/vnd.ms-excel",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+];
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 // Constants
 const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME || "foxmayn_ai";
@@ -50,8 +67,8 @@ interface VectorPayload extends Record<string, unknown> {
 
 // Types
 export interface IndexDocumentOptions {
-	title: string;
-	content: string;
+	file: File;
+	title?: string;
 	source?: string;
 	metadata?: Record<string, unknown>;
 	chunkOptions?: ChunkOptions;
@@ -91,17 +108,47 @@ export interface SearchResult {
  *
  * @returns documentId and jobId for tracking
  */
-export const indexDocument = async (
-	options: IndexDocumentOptions
-): Promise<{ documentId: string; jobId: string | undefined }> => {
-	const { title, content, source, metadata, chunkOptions } = options;
+export const indexDocument = async (options: {
+	file: File;
+	title?: string;
+	source?: string;
+	metadata?: Record<string, unknown>;
+}): Promise<{ documentId: string; jobId: string | undefined }> => {
+	const { file, title, source, metadata } = options;
 
-	const docId = randomUUID();
+	if (!file || !file.name || !file.type)
+		throw new ORPCError("BAD_REQUEST", {
+			message: "File is required",
+		});
+
+	// Validate file extension
+	if (!ALLOWED_FILE_TYPES.includes(file.type))
+		throw new ORPCError("BAD_REQUEST", {
+			message: "Invalid file type.",
+			data: {
+				allowedFileTypes: ALLOWED_FILE_TYPES,
+			},
+		});
+
+	if (file.size > MAX_FILE_SIZE)
+		throw new ORPCError("BAD_REQUEST", {
+			message: "File too large (max 10MB)",
+		});
+
+	const content = await extractTextFromDocument(file);
+
+	if (!content?.trim())
+		throw new ORPCError("BAD_REQUEST", {
+			message: "File is empty",
+		});
+
+	const documentId = randomUUID();
+	const docTitle = title || file.name || "Untitled";
 
 	// Create document record with status "processing"
 	await db.insert(document).values({
-		id: docId,
-		title,
+		id: documentId,
+		title: docTitle,
 		content,
 		source,
 		metadata,
@@ -110,15 +157,14 @@ export const indexDocument = async (
 
 	// Add job to queue - returns immediately
 	const { jobId } = await addIndexDocumentJob({
-		documentId: docId,
-		title,
+		documentId,
+		title: docTitle,
 		content,
 		source,
 		metadata,
-		chunkOptions,
 	});
 
-	return { documentId: docId, jobId };
+	return { documentId, jobId };
 };
 
 /**
@@ -326,4 +372,32 @@ export const getDocument = async (documentId: string) => {
 export const listDocuments = async (limit = 20, offset = 0) => {
 	const docs = await db.select().from(document).limit(limit).offset(offset);
 	return docs;
+};
+
+export const extractTextFromDocument = async (file: File) => {
+	const { type } = file;
+
+	switch (type) {
+		case "text/html":
+			return parseHTML(await file.text());
+		case "application/pdf":
+			const pdfBuffer = await file.arrayBuffer();
+			return await parsePDF(Buffer.from(pdfBuffer));
+		case "application/msword":
+		case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+			const docxBuffer = await file.arrayBuffer();
+			return await parseDocx(Buffer.from(docxBuffer));
+		case "application/vnd.ms-excel":
+		case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+			const xlsxBuffer = await file.arrayBuffer();
+			return parseXlsx(Buffer.from(xlsxBuffer));
+		case "text/plain":
+		case "text/markdown":
+		case "text/csv":
+		case "application/json":
+		case "application/xml":
+			return await file.text();
+		default:
+			throw new Error("Unsupported file type");
+	}
 };

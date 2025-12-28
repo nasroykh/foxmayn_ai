@@ -4,7 +4,7 @@ import {
 	queryRAGStream,
 	searchChunks,
 } from "../../services/rag.service";
-import { authProcedure } from "../middleware";
+import { publicProcedure } from "../middleware";
 import { env } from "../../config/env";
 import { OPENROUTER_AI_MODELS } from "../../utils/openrouter";
 
@@ -24,7 +24,7 @@ const queryBodySchema = z.object({
 });
 
 export const chatRoutes = {
-	query: authProcedure
+	query: publicProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/query`,
@@ -35,8 +35,8 @@ export const chatRoutes = {
 			const { query, options } = input;
 
 			const result = await queryRAG(query, {
-				limit: options?.limit,
-				scoreThreshold: options?.scoreThreshold,
+				limit: options?.limit || 5,
+				scoreThreshold: options?.scoreThreshold || 0.3,
 				filter: {
 					documentId: options?.documentId,
 					source: options?.source,
@@ -46,7 +46,7 @@ export const chatRoutes = {
 			return result;
 		}),
 
-	search: authProcedure
+	search: publicProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/search`,
@@ -68,7 +68,7 @@ export const chatRoutes = {
 			return { results };
 		}),
 
-	queryStream: authProcedure
+	queryStream: publicProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/query/stream`,
@@ -91,7 +91,7 @@ export const chatRoutes = {
 				yield chunk;
 			}
 		}),
-	getModels: authProcedure
+	getModels: publicProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/chat/models`,

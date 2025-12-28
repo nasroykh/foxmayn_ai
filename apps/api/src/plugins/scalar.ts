@@ -26,7 +26,7 @@ export const registerScalar = (app: Hono) => {
 	app.get(
 		`/scalar`,
 		Scalar({
-			url: specEndpoint,
+			url: `${env.API_V1_PREFIX}${specEndpoint}`,
 		})
 	);
 };

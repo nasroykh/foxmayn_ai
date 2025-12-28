@@ -8,7 +8,7 @@ export const registerORPCOpenAPI = (app: Hono) => {
 	const handler = new OpenAPIHandler(router, {
 		interceptors: [
 			onError((error) => {
-				console.error(error);
+				console.log(error);
 			}),
 		],
 	});

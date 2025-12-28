@@ -2,39 +2,30 @@ import { z } from "zod";
 import { ORPCError } from "@orpc/server";
 
 import {
-	indexDocument,
 	getDocument,
 	listDocuments,
 	deleteDocument,
+	extractTextFromDocument,
+	indexDocument,
 } from "../../services/rag.service";
 import { getDocumentJobStatus, getPendingDocumentJobs } from "../../jobs";
-import { authProcedure } from "../middleware";
+import { publicProcedure } from "../middleware";
 import { env } from "../../config/env";
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
-const ALLOWED_TEXT_EXTENSIONS = [
-	".txt",
-	".md",
-	".csv",
-	".json",
-	".xml",
-	".html",
-];
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-
 export const documentRoutes = {
-	createDocument: authProcedure
+	createDocument: publicProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/documents`,
-			description: "Create a new document",
+			description: "Upload a file and index as document",
 		})
 		.input(
 			z.object({
-				title: z.string().min(1).max(500),
-				content: z.string().min(1),
-				source: z.string().max(1000).optional(),
+				file: z.file(),
+				title: z.string().optional(),
+				source: z.string().optional(),
 				metadata: z.record(z.string(), z.unknown()).optional(),
 			})
 		)
@@ -47,92 +38,11 @@ export const documentRoutes = {
 			})
 		)
 		.handler(async ({ input }) => {
-			const { title, content, source, metadata } = input;
+			const { file, title, source, metadata } = input;
 
 			const { documentId, jobId } = await indexDocument({
+				file,
 				title,
-				content,
-				source,
-				metadata,
-			});
-
-			return {
-				documentId,
-				jobId,
-				message: "Document accepted for processing",
-				status: "processing",
-			};
-		}),
-
-	uploadDocument: authProcedure
-		.route({
-			method: "POST",
-			path: `${PREFIX}/documents/upload`,
-			description: "Upload a text file and index as document",
-		})
-		.input(
-			z.object({
-				file: z.file(),
-				title: z.string().optional(),
-				source: z.string().optional(),
-				metadata: z.string().optional(),
-			})
-		)
-		.output(
-			z.object({
-				documentId: z.string(),
-				jobId: z.string().optional(),
-				message: z.string(),
-				status: z.string(),
-			})
-		)
-		.handler(async ({ input }) => {
-			const { file, title, source, metadata: metadataRaw } = input;
-
-			// Validate file extension
-			const filename = (file as any).name?.toLowerCase();
-			if (filename) {
-				const hasValidExtension = ALLOWED_TEXT_EXTENSIONS.some((ext) =>
-					filename.endsWith(ext)
-				);
-
-				if (!hasValidExtension) {
-					throw new ORPCError("BAD_REQUEST", {
-						message: `Invalid file type. Allowed: ${ALLOWED_TEXT_EXTENSIONS.join(
-							", "
-						)}`,
-					});
-				}
-			}
-
-			if (file.size > MAX_FILE_SIZE) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: "File too large (max 10MB)",
-				});
-			}
-
-			const content = await file.text();
-
-			if (!content.trim()) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: "File is empty",
-				});
-			}
-
-			let metadata: Record<string, unknown> | undefined;
-			if (metadataRaw) {
-				try {
-					metadata = JSON.parse(metadataRaw);
-				} catch {
-					throw new ORPCError("BAD_REQUEST", {
-						message: "Invalid metadata JSON",
-					});
-				}
-			}
-
-			const { documentId, jobId } = await indexDocument({
-				title: title || filename || "Untitled",
-				content,
 				source,
 				metadata,
 			});
@@ -145,7 +55,7 @@ export const documentRoutes = {
 			};
 		}),
 
-	getJobStatus: authProcedure
+	getJobStatus: publicProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/documents/jobs/{jobId}`,
@@ -186,7 +96,7 @@ export const documentRoutes = {
 			};
 		}),
 
-	getPendingJobs: authProcedure
+	getPendingJobs: publicProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/documents/jobs`,
@@ -196,7 +106,7 @@ export const documentRoutes = {
 			return await getPendingDocumentJobs();
 		}),
 
-	getDocument: authProcedure
+	getDocument: publicProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/documents/{id}`,
@@ -237,7 +147,7 @@ export const documentRoutes = {
 			};
 		}),
 
-	listDocuments: authProcedure
+	listDocuments: publicProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/documents`,
@@ -283,7 +193,7 @@ export const documentRoutes = {
 			};
 		}),
 
-	deleteDocument: authProcedure
+	deleteDocument: publicProcedure
 		.route({
 			method: "DELETE",
 			path: `${PREFIX}/documents/{id}`,

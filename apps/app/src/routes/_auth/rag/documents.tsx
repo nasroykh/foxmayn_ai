@@ -130,9 +130,9 @@ function DocumentsPage() {
 		toast.success("ID copied to clipboard");
 	};
 
-	const handleView = async (docId: string) => {
+	const handleView = async (documentId: string) => {
 		try {
-			setViewedDocId(docId);
+			setViewedDocId(documentId);
 		} catch (error) {
 			toast.error(
 				error instanceof Error ? error.message : "Failed to load document"
