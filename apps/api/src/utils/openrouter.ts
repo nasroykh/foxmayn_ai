@@ -3,28 +3,36 @@ import { type ReasoningEffort } from "openai/resources";
 import { env } from "../config/env";
 
 export const OPENROUTER_AI_MODELS = [
-	"anthropic/claude-sonnet-4.5",
-	"google/gemini-2.5-flash",
-	"google/gemini-2.5-pro",
-	"google/gemini-2.5-flash-lite",
-	"google/gemini-2.0-flash-001",
-	"google/gemma-3-12b-it",
-	"google/gemma-3-27b-it",
-	"openai/gpt-5",
-	"openai/gpt-5-mini",
-	"openai/gpt-5-nano",
-	"openai/gpt-oss-20b",
-	"openai/gpt-oss-120b",
-	"x-ai/grok-4-fast",
-	"x-ai/grok-3-mini",
-	"meta-llama/llama-4-scout",
-	"meta-llama/llama-4-maverick",
-	"nousresearch/hermes-4-405b",
-	"nousresearch/hermes-4-70b",
-	"deepseek/deepseek-chat-v3.1",
-	"moonshotai/kimi-k2-0905",
-	"z-ai/glm-4.6",
-	"z-ai/glm-4.5-air",
+	{ id: "anthropic/claude-opus-4.5", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "anthropic/claude-haiku-4.5", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "anthropic/claude-sonnet-4.5", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "google/gemini-3-flash-preview", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "google/gemini-3-pro-preview", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "google/gemini-2.5-flash", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "google/gemini-2.5-pro", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "google/gemini-2.5-flash-lite", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "google/gemma-3-12b-it", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "google/gemma-3-27b-it", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "openai/gpt-5.2-chat", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "openai/gpt-5.2", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "openai/gpt-5.1", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "openai/gpt-5.1-chat", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "openai/gpt-5", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "openai/gpt-5-mini", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "openai/gpt-5-nano", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "openai/gpt-oss-20b", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "openai/gpt-oss-120b", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "x-ai/grok-4.1-fast", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "x-ai/grok-4-fast", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "x-ai/grok-3-mini", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "deepseek/deepseek-v3.2", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "deepseek/deepseek-chat-v3.1", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "moonshotai/kimi-k2-0905", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "z-ai/glm-4.7", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "z-ai/glm-4.6", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "z-ai/glm-4.5-air", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "minimax/minimax-m2.1", inputPrice: 0.1, outputPrice: 0.2 },
+	{ id: "minimax/minimax-m2", inputPrice: 0.1, outputPrice: 0.2 },
 ] as const;
 
 export const OPENROUTER_EMBEDDING_MODELS = [
@@ -42,10 +50,10 @@ export const OPENROUTER_EMBEDDING_MODELS = [
 	{ id: "baai/bge-m3", dimensions: 1024 },
 ] as const;
 
+// Default settings
 export const DEFAULT_OPENROUTER_MODEL = OPENROUTER_AI_MODELS.find(
-	(m) => m === "google/gemini-2.5-flash-lite"
+	(m) => m.id === "google/gemini-2.5-flash-lite"
 );
-
 export const DEFAULT_TEMPERATURE = 1.0;
 export const DEFAULT_MAX_TOKENS = 500;
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "none";
@@ -58,13 +66,13 @@ const openai = new OpenAI({
 	baseURL: "https://openrouter.ai/api/v1",
 	apiKey: env.OPENROUTER_API_KEY,
 	defaultHeaders: {
-		"HTTP-Referer": env.APP_URL || "https://nascodes.dev", // Optional. Site URL for rankings on openrouter.ai.
-		"X-Title": "Nas Portfolio | Software Engineer & AI/LLM Specialist", // Optional. Site title for rankings on openrouter.ai.
+		"HTTP-Referer": env.APP_URL || "https://foxmayn.ai", // Optional. Site URL for rankings on openrouter.ai.
+		"X-Title": "Foxmayn AI", // Optional. Site title for rankings on openrouter.ai.
 	},
 });
 
 type AISettings = {
-	model: (typeof OPENROUTER_AI_MODELS)[number];
+	model: (typeof OPENROUTER_AI_MODELS)[number]["id"];
 	temperature: number;
 	maxTokens: number;
 	reasoningEffort: ReasoningEffort;

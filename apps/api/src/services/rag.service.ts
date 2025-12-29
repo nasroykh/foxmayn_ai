@@ -20,6 +20,7 @@ import {
 } from "../jobs";
 import { parseDocx, parseHTML, parsePDF, parseXlsx } from "../utils/parsers";
 import { ORPCError } from "@orpc/server";
+import { GET_MAIN_SYSTEM_PROMPT } from "../utils/system_prompts";
 
 const ALLOWED_FILE_TYPES = [
 	"text/plain",
@@ -39,7 +40,7 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 // Constants
 const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME || "foxmayn_ai";
 const SELECTED_EMBEDDING_MODEL = OPENROUTER_EMBEDDING_MODELS.find(
-	(m) => m.id === "qwen/qwen3-embedding-8b"
+	(m) => m.id === "openai/text-embedding-3-small"
 );
 
 // Initialize Qdrant client
@@ -187,8 +188,13 @@ export const searchChunks = async (
 
 	await ensureCollection();
 
+	if (!SELECTED_EMBEDDING_MODEL)
+		throw new ORPCError("INTERNAL_SERVER_ERROR", {
+			message: "Selected embedding model not found",
+		});
+
 	// Generate query embedding
-	const embedding = await OpenRouterEmbed("qwen/qwen3-embedding-8b", query);
+	const embedding = await OpenRouterEmbed(SELECTED_EMBEDDING_MODEL.id, query);
 
 	// Build filter
 	let qdrantFilter = undefined;
@@ -232,29 +238,18 @@ export const queryRAG = async (
 ): Promise<QueryResult> => {
 	const searchResults = await searchChunks(query, options);
 
-	if (searchResults.length === 0) {
-		return {
-			answer:
-				"I couldn't find any relevant information to answer your question.",
-			sources: [],
-		};
-	}
+	// if (searchResults.length === 0) {
+	// 	return {
+	// 		answer:
+	// 			"I couldn't find any relevant information to answer your question.",
+	// 		sources: [],
+	// 	};
+	// }
 
 	// Build context from search results
 	const context = searchResults
 		.map((r, i) => `[${i + 1}] ${r.content}`)
 		.join("\n\n");
-
-	const systemPrompt = `You are a helpful assistant. Answer the user's question based ONLY on the provided context. If the context doesn't contain enough information to answer the question, say so clearly. Do not make up information.
-
-Context:
-${context}
-
-Instructions:
-- Use only the information from the context above
-- Cite sources using [number] notation when referencing specific context
-- Be concise and accurate
-- If uncertain, express your uncertainty`;
 
 	// Generate answer
 	const answer = await OpenRouterQuery(
@@ -266,7 +261,15 @@ Instructions:
 			stream: false,
 		},
 		undefined,
-		systemPrompt,
+		GET_MAIN_SYSTEM_PROMPT({
+			context,
+			assistantName: "Hafid",
+			companyName: "Foxmayn",
+			tone: "friendly",
+			domain: "Accounting Expert",
+			enableCitations: true,
+			responseLength: "balanced",
+		}),
 		query
 	);
 

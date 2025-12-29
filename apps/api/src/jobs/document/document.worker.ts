@@ -21,12 +21,13 @@ import { chunkText, calculateTokens } from "../../services/chunking.service";
 import { OpenRouterEmbedBatch } from "../../utils/openrouter";
 import { env } from "../../config/env";
 import { OPENROUTER_EMBEDDING_MODELS } from "../../utils/openrouter";
+import { ORPCError } from "@orpc/server";
 
 // Constants
 const QUEUE_NAME = "document";
 const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME;
 const SELECTED_EMBEDDING_MODEL = OPENROUTER_EMBEDDING_MODELS.find(
-	(m) => m.id === "qwen/qwen3-embedding-8b"
+	(m) => m.id === "openai/text-embedding-3-small"
 );
 const EMBEDDING_BATCH_SIZE = 20; // Process embeddings in batches of 20
 
@@ -98,9 +99,14 @@ async function processIndexDocument(
 			const batchChunks = chunks.slice(i, i + EMBEDDING_BATCH_SIZE);
 			const batchTexts = batchChunks.map((c) => c.content);
 
+			if (!SELECTED_EMBEDDING_MODEL)
+				throw new ORPCError("INTERNAL_SERVER_ERROR", {
+					message: "Selected embedding model not found",
+				});
+
 			// Batch embedding call - single API request for multiple texts
 			const batchEmbeddings = await OpenRouterEmbedBatch(
-				"qwen/qwen3-embedding-8b",
+				SELECTED_EMBEDDING_MODEL.id,
 				batchTexts
 			);
 

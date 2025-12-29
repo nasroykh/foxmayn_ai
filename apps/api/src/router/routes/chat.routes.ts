@@ -100,7 +100,7 @@ export const chatRoutes = {
 		.output(z.object({ models: z.array(z.string()) }))
 		.handler(async () => {
 			return {
-				models: Object.values(OPENROUTER_AI_MODELS),
+				models: OPENROUTER_AI_MODELS.map((m) => m.id),
 			};
 		}),
 };
