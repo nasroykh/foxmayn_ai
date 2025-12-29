@@ -7,7 +7,11 @@ import {
 } from "@repo/qdrant";
 import { eq } from "@repo/db/drizzle-orm";
 import type { ChunkOptions } from "./chunking.service";
-import { OpenRouterEmbed, OpenRouterQuery } from "../utils/openrouter";
+import {
+	OPENROUTER_EMBEDDING_MODELS,
+	OpenRouterEmbed,
+	OpenRouterQuery,
+} from "../utils/openrouter";
 import { env } from "../config/env";
 import {
 	addIndexDocumentJob,
@@ -20,21 +24,23 @@ import { ORPCError } from "@orpc/server";
 const ALLOWED_FILE_TYPES = [
 	"text/plain",
 	"text/markdown",
-	"text/csv",
-	"application/json",
-	"application/xml",
+	// "text/csv",
+	// "application/json",
+	// "application/xml",
 	"text/html",
 	"application/pdf",
 	"application/msword",
 	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-	"application/vnd.ms-excel",
-	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	// "application/vnd.ms-excel",
+	// "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ];
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 // Constants
 const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME || "foxmayn_ai";
-const VECTOR_SIZE = 1536;
+const SELECTED_EMBEDDING_MODEL = OPENROUTER_EMBEDDING_MODELS.find(
+	(m) => m.id === "qwen/qwen3-embedding-8b"
+);
 
 // Initialize Qdrant client
 const qdrant = createQdrantClient({ url: env.QDRANT_URL });
@@ -45,8 +51,12 @@ let collectionInitialized = false;
 const ensureCollection = async () => {
 	if (collectionInitialized) return;
 
+	if (!SELECTED_EMBEDDING_MODEL) {
+		throw new Error("Selected embedding model not found");
+	}
+
 	await createCollection(qdrant, COLLECTION_NAME, {
-		size: VECTOR_SIZE,
+		size: SELECTED_EMBEDDING_MODEL.dimensions,
 		distance: "Cosine",
 		keywordFields: ["documentId", "source"],
 		textFields: ["content"],
@@ -66,14 +76,6 @@ interface VectorPayload extends Record<string, unknown> {
 }
 
 // Types
-export interface IndexDocumentOptions {
-	file: File;
-	title?: string;
-	source?: string;
-	metadata?: Record<string, unknown>;
-	chunkOptions?: ChunkOptions;
-}
-
 export interface QueryOptions {
 	limit?: number;
 	scoreThreshold?: number;
@@ -186,7 +188,7 @@ export const searchChunks = async (
 	await ensureCollection();
 
 	// Generate query embedding
-	const embedding = await OpenRouterEmbed("openaiTextEmbedding3Small", query);
+	const embedding = await OpenRouterEmbed("qwen/qwen3-embedding-8b", query);
 
 	// Build filter
 	let qdrantFilter = undefined;
@@ -257,7 +259,7 @@ Instructions:
 	// Generate answer
 	const answer = await OpenRouterQuery(
 		{
-			model: "gemini25FlashLite",
+			model: "google/gemini-2.5-flash-lite",
 			temperature: 0,
 			maxTokens: 2048,
 			reasoningEffort: "minimal",
@@ -320,7 +322,7 @@ Instructions:
 	// Generate streaming answer
 	const stream = await OpenRouterQuery(
 		{
-			model: "gemini25FlashLite",
+			model: "google/gemini-2.5-flash-lite",
 			temperature: 0,
 			maxTokens: 2048,
 			reasoningEffort: "minimal",
@@ -378,25 +380,27 @@ export const extractTextFromDocument = async (file: File) => {
 	const { type } = file;
 
 	switch (type) {
-		case "text/html":
+		case "text/html": {
 			return parseHTML(await file.text());
-		case "application/pdf":
+		}
+		case "application/pdf": {
 			const pdfBuffer = await file.arrayBuffer();
 			return await parsePDF(Buffer.from(pdfBuffer));
+		}
 		case "application/msword":
-		case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+		case "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
 			const docxBuffer = await file.arrayBuffer();
 			return await parseDocx(Buffer.from(docxBuffer));
+		}
 		case "application/vnd.ms-excel":
-		case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+		case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
 			const xlsxBuffer = await file.arrayBuffer();
 			return parseXlsx(Buffer.from(xlsxBuffer));
+		}
 		case "text/plain":
-		case "text/markdown":
-		case "text/csv":
-		case "application/json":
-		case "application/xml":
+		case "text/markdown": {
 			return await file.text();
+		}
 		default:
 			throw new Error("Unsupported file type");
 	}

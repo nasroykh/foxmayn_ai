@@ -5,7 +5,6 @@ import {
 	getDocument,
 	listDocuments,
 	deleteDocument,
-	extractTextFromDocument,
 	indexDocument,
 } from "../../services/rag.service";
 import { getDocumentJobStatus, getPendingDocumentJobs } from "../../jobs";
@@ -26,7 +25,7 @@ export const documentRoutes = {
 				file: z.file(),
 				title: z.string().optional(),
 				source: z.string().optional(),
-				metadata: z.record(z.string(), z.unknown()).optional(),
+				metadata: z.string().optional(),
 			})
 		)
 		.output(
@@ -39,12 +38,11 @@ export const documentRoutes = {
 		)
 		.handler(async ({ input }) => {
 			const { file, title, source, metadata } = input;
-
 			const { documentId, jobId } = await indexDocument({
 				file,
 				title,
 				source,
-				metadata,
+				metadata: metadata ? JSON.parse(metadata) : undefined,
 			});
 
 			return {

@@ -20,11 +20,14 @@ import {
 import { chunkText, calculateTokens } from "../../services/chunking.service";
 import { OpenRouterEmbedBatch } from "../../utils/openrouter";
 import { env } from "../../config/env";
+import { OPENROUTER_EMBEDDING_MODELS } from "../../utils/openrouter";
 
 // Constants
 const QUEUE_NAME = "document";
 const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME;
-const VECTOR_SIZE = 1536;
+const SELECTED_EMBEDDING_MODEL = OPENROUTER_EMBEDDING_MODELS.find(
+	(m) => m.id === "qwen/qwen3-embedding-8b"
+);
 const EMBEDDING_BATCH_SIZE = 20; // Process embeddings in batches of 20
 
 // Initialize Qdrant client
@@ -36,8 +39,12 @@ let collectionInitialized = false;
 const ensureCollection = async () => {
 	if (collectionInitialized) return;
 
+	if (!SELECTED_EMBEDDING_MODEL) {
+		throw new Error("Selected embedding model not found");
+	}
+
 	await createCollection(qdrant, COLLECTION_NAME, {
-		size: VECTOR_SIZE,
+		size: SELECTED_EMBEDDING_MODEL.dimensions,
 		distance: "Cosine",
 		keywordFields: ["documentId", "source"],
 		textFields: ["content"],
@@ -93,7 +100,7 @@ async function processIndexDocument(
 
 			// Batch embedding call - single API request for multiple texts
 			const batchEmbeddings = await OpenRouterEmbedBatch(
-				"openaiTextEmbedding3Small",
+				"qwen/qwen3-embedding-8b",
 				batchTexts
 			);
 

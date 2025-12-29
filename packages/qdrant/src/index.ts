@@ -3,7 +3,7 @@ import { env } from "./config/env";
 export type { QdrantClient, Schemas };
 
 export type Distance = "Cosine" | "Euclid" | "Dot" | "Manhattan";
-export type VectorSize = 1536 | 3072;
+export type VectorSize = number;
 
 export interface QdrantConfig {
 	host?: string;
