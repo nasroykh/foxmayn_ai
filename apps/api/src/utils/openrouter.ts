@@ -74,6 +74,7 @@ const openai = new OpenAI({
 type AISettings = {
 	model: (typeof OPENROUTER_AI_MODELS)[number]["id"];
 	temperature: number;
+	topP?: number;
 	maxTokens: number;
 	reasoningEffort: ReasoningEffort;
 	stream?: boolean;
@@ -117,6 +118,7 @@ export const OpenRouterQuery = async (
 				messages,
 				model: settings.model || DEFAULT_OPENROUTER_MODEL,
 				temperature: settings.temperature || DEFAULT_TEMPERATURE,
+				top_p: settings.topP ?? 1.0,
 				max_completion_tokens: settings.maxTokens || DEFAULT_MAX_TOKENS,
 				reasoning_effort:
 					(settings.reasoningEffort as ReasoningEffort) ||
@@ -130,6 +132,7 @@ export const OpenRouterQuery = async (
 				messages,
 				model: settings.model || DEFAULT_OPENROUTER_MODEL,
 				temperature: settings.temperature || DEFAULT_TEMPERATURE,
+				top_p: settings.topP ?? 1.0,
 				max_completion_tokens: settings.maxTokens || DEFAULT_MAX_TOKENS,
 				reasoning_effort:
 					(settings.reasoningEffort as ReasoningEffort) ||

@@ -6,13 +6,13 @@ import {
 	searchVectors,
 } from "@repo/qdrant";
 import { eq } from "@repo/db/drizzle-orm";
-import type { ChunkOptions } from "./chunking.service";
 import {
 	OPENROUTER_EMBEDDING_MODELS,
 	OpenRouterEmbed,
 	OpenRouterQuery,
 } from "../utils/openrouter";
 import { env } from "../config/env";
+import { getProfile, getDefaultProfile } from "./profile.service";
 import {
 	addIndexDocumentJob,
 	addDeleteDocumentJob,
@@ -39,31 +39,32 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 // Constants
 const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME || "foxmayn_ai";
-const SELECTED_EMBEDDING_MODEL = OPENROUTER_EMBEDDING_MODELS.find(
-	(m) => m.id === "openai/text-embedding-3-small"
-);
 
 // Initialize Qdrant client
 const qdrant = createQdrantClient({ url: env.QDRANT_URL });
 
-// Collection initialization flag
-let collectionInitialized = false;
+// Collection initialization map to handle multiple embedding models (dimensions)
+const initializedCollections = new Set<string>();
 
-const ensureCollection = async () => {
-	if (collectionInitialized) return;
-
-	if (!SELECTED_EMBEDDING_MODEL) {
-		throw new Error("Selected embedding model not found");
+const ensureCollection = async (modelId: string) => {
+	const model = OPENROUTER_EMBEDDING_MODELS.find((m) => m.id === modelId);
+	if (!model) {
+		throw new Error(`Embedding model not found: ${modelId}`);
 	}
 
-	await createCollection(qdrant, COLLECTION_NAME, {
-		size: SELECTED_EMBEDDING_MODEL.dimensions,
+	const collectionName = `${COLLECTION_NAME}_${model.dimensions}`;
+
+	if (initializedCollections.has(collectionName)) return collectionName;
+
+	await createCollection(qdrant, collectionName, {
+		size: model.dimensions,
 		distance: "Cosine",
 		keywordFields: ["documentId", "source"],
 		textFields: ["content"],
 	});
 
-	collectionInitialized = true;
+	initializedCollections.add(collectionName);
+	return collectionName;
 };
 
 // Payload type for Qdrant vectors
@@ -80,6 +81,7 @@ interface VectorPayload extends Record<string, unknown> {
 export interface QueryOptions {
 	limit?: number;
 	scoreThreshold?: number;
+	profileId?: string;
 	filter?: {
 		documentId?: string;
 		source?: string;
@@ -115,9 +117,10 @@ export const indexDocument = async (options: {
 	file: File;
 	title?: string;
 	source?: string;
+	profileId?: string;
 	metadata?: Record<string, unknown>;
 }): Promise<{ documentId: string; jobId: string | undefined }> => {
-	const { file, title, source, metadata } = options;
+	const { file, title, source, profileId, metadata } = options;
 
 	if (!file || !file.name || !file.type)
 		throw new ORPCError("BAD_REQUEST", {
@@ -151,6 +154,7 @@ export const indexDocument = async (options: {
 	// Create document record with status "processing"
 	await db.insert(document).values({
 		id: documentId,
+		profileId,
 		title: docTitle,
 		content,
 		source,
@@ -165,6 +169,7 @@ export const indexDocument = async (options: {
 		content,
 		source,
 		metadata,
+		profileId,
 	});
 
 	return { documentId, jobId };
@@ -184,17 +189,23 @@ export const searchChunks = async (
 	query: string,
 	options: QueryOptions = {}
 ): Promise<SearchResult[]> => {
-	const { limit = 5, scoreThreshold = 0.7, filter } = options;
+	const { profileId, filter } = options;
 
-	await ensureCollection();
+	// Load profile or use default
+	const profile = profileId
+		? await getProfile(profileId)
+		: await getDefaultProfile();
 
-	if (!SELECTED_EMBEDDING_MODEL)
-		throw new ORPCError("INTERNAL_SERVER_ERROR", {
-			message: "Selected embedding model not found",
-		});
+	const embeddingModelId =
+		profile?.embeddingModel || "openai/text-embedding-3-small";
+	const limit = options.limit || profile?.topK || 5;
+	const scoreThreshold =
+		options.scoreThreshold || profile?.scoreThreshold || 0.3;
+
+	const collectionName = await ensureCollection(embeddingModelId);
 
 	// Generate query embedding
-	const embedding = await OpenRouterEmbed(SELECTED_EMBEDDING_MODEL.id, query);
+	const embedding = await OpenRouterEmbed(embeddingModelId as any, query);
 
 	// Build filter
 	let qdrantFilter = undefined;
@@ -212,7 +223,7 @@ export const searchChunks = async (
 	}
 
 	// Search Qdrant
-	const results = await searchVectors(qdrant, COLLECTION_NAME, embedding, {
+	const results = await searchVectors(qdrant, collectionName, embedding, {
 		limit,
 		scoreThreshold,
 		filter: qdrantFilter,
@@ -236,15 +247,11 @@ export const queryRAG = async (
 	query: string,
 	options: QueryOptions = {}
 ): Promise<QueryResult> => {
-	const searchResults = await searchChunks(query, options);
+	const profile = options.profileId
+		? await getProfile(options.profileId)
+		: await getDefaultProfile();
 
-	// if (searchResults.length === 0) {
-	// 	return {
-	// 		answer:
-	// 			"I couldn't find any relevant information to answer your question.",
-	// 		sources: [],
-	// 	};
-	// }
+	const searchResults = await searchChunks(query, options);
 
 	// Build context from search results
 	const context = searchResults
@@ -254,21 +261,24 @@ export const queryRAG = async (
 	// Generate answer
 	const answer = await OpenRouterQuery(
 		{
-			model: "google/gemini-2.5-flash-lite",
-			temperature: 0,
-			maxTokens: 2048,
-			reasoningEffort: "minimal",
+			model: (profile?.model as any) || "google/gemini-2.5-flash-lite",
+			temperature: profile?.temperature ?? 0.7,
+			topP: profile?.topP ?? 1.0,
+			maxTokens: profile?.maxTokens ?? 2048,
+			reasoningEffort: (profile?.reasoningEffort as any) || "none",
 			stream: false,
 		},
 		undefined,
 		GET_MAIN_SYSTEM_PROMPT({
 			context,
-			assistantName: "Hafid",
-			companyName: "Foxmayn",
-			tone: "friendly",
-			domain: "Accounting Expert",
-			enableCitations: true,
-			responseLength: "balanced",
+			assistantName: profile?.assistantName || "Assistant",
+			companyName: profile?.companyName || undefined,
+			tone: (profile?.tone as any) || "friendly",
+			domain: profile?.domain || undefined,
+			enableCitations: profile?.enableCitations ?? true,
+			responseLength: (profile?.responseLength as any) || "balanced",
+			language: profile?.language || "English",
+			customInstructions: profile?.customInstructions || [],
 		}),
 		query
 	);
@@ -292,6 +302,10 @@ export async function* queryRAGStream(
 	void,
 	unknown
 > {
+	const profile = options.profileId
+		? await getProfile(options.profileId)
+		: await getDefaultProfile();
+
 	const searchResults = await searchChunks(query, options);
 
 	// Yield sources first
@@ -311,24 +325,28 @@ export async function* queryRAGStream(
 		.map((r, i) => `[${i + 1}] ${r.content}`)
 		.join("\n\n");
 
-	const systemPrompt = `You are a helpful assistant. Answer the user's question based ONLY on the provided context. If the context doesn't contain enough information to answer the question, say so clearly. Do not make up information.
-
-Context:
-${context}
-
-Instructions:
-- Use only the information from the context above
-- Cite sources using [number] notation when referencing specific context
-- Be concise and accurate
-- If uncertain, express your uncertainty`;
+	const systemPrompt =
+		profile?.systemPrompt ||
+		GET_MAIN_SYSTEM_PROMPT({
+			context,
+			assistantName: profile?.assistantName || "Assistant",
+			companyName: profile?.companyName || undefined,
+			tone: (profile?.tone as any) || "friendly",
+			domain: profile?.domain || undefined,
+			enableCitations: profile?.enableCitations ?? true,
+			responseLength: (profile?.responseLength as any) || "balanced",
+			language: profile?.language || "English",
+			customInstructions: profile?.customInstructions || [],
+		});
 
 	// Generate streaming answer
 	const stream = await OpenRouterQuery(
 		{
-			model: "google/gemini-2.5-flash-lite",
-			temperature: 0,
-			maxTokens: 2048,
-			reasoningEffort: "minimal",
+			model: (profile?.model as any) || "google/gemini-2.5-flash-lite",
+			temperature: profile?.temperature ?? 0.7,
+			topP: profile?.topP ?? 1.0,
+			maxTokens: profile?.maxTokens ?? 2048,
+			reasoningEffort: (profile?.reasoningEffort as any) || "none",
 			stream: true,
 		},
 		undefined,

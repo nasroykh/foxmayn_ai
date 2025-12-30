@@ -21,37 +21,38 @@ import { chunkText, calculateTokens } from "../../services/chunking.service";
 import { OpenRouterEmbedBatch } from "../../utils/openrouter";
 import { env } from "../../config/env";
 import { OPENROUTER_EMBEDDING_MODELS } from "../../utils/openrouter";
-import { ORPCError } from "@orpc/server";
+import { getProfile, getDefaultProfile } from "../../services/profile.service";
 
 // Constants
 const QUEUE_NAME = "document";
-const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME;
-const SELECTED_EMBEDDING_MODEL = OPENROUTER_EMBEDDING_MODELS.find(
-	(m) => m.id === "openai/text-embedding-3-small"
-);
+const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME || "foxmayn_ai";
 const EMBEDDING_BATCH_SIZE = 20; // Process embeddings in batches of 20
 
 // Initialize Qdrant client
 const qdrant = createQdrantClient({ url: env.QDRANT_URL });
 
-// Collection initialization flag
-let collectionInitialized = false;
+// Collection initialization map to handle multiple embedding models (dimensions)
+const initializedCollections = new Set<string>();
 
-const ensureCollection = async () => {
-	if (collectionInitialized) return;
-
-	if (!SELECTED_EMBEDDING_MODEL) {
-		throw new Error("Selected embedding model not found");
+const ensureCollection = async (modelId: string) => {
+	const model = OPENROUTER_EMBEDDING_MODELS.find((m) => m.id === modelId);
+	if (!model) {
+		throw new Error(`Embedding model not found: ${modelId}`);
 	}
 
-	await createCollection(qdrant, COLLECTION_NAME, {
-		size: SELECTED_EMBEDDING_MODEL.dimensions,
+	const collectionName = `${COLLECTION_NAME}_${model.dimensions}`;
+
+	if (initializedCollections.has(collectionName)) return collectionName;
+
+	await createCollection(qdrant, collectionName, {
+		size: model.dimensions,
 		distance: "Cosine",
 		keywordFields: ["documentId", "source"],
 		textFields: ["content"],
 	});
 
-	collectionInitialized = true;
+	initializedCollections.add(collectionName);
+	return collectionName;
 };
 
 // Payload type for Qdrant vectors
@@ -71,20 +72,33 @@ async function processIndexDocument(
 	job: Job<IndexDocumentJobData>
 ): Promise<IndexDocumentJobResult> {
 	const startTime = Date.now();
-	const { documentId, content, source, metadata, chunkOptions } = job.data;
+	const { documentId, content, source, metadata, chunkOptions, profileId } =
+		job.data;
 
 	console.log(
-		`[Document Worker] Starting indexing for document: ${documentId}`
+		`[Document Worker] Starting indexing for document: ${documentId} with profile: ${
+			profileId || "default"
+		}`
 	);
 
-	await ensureCollection();
+	const profile = profileId
+		? await getProfile(profileId)
+		: await getDefaultProfile();
+	const embeddingModelId =
+		profile?.embeddingModel || "openai/text-embedding-3-small";
+
+	const collectionName = await ensureCollection(embeddingModelId);
 
 	// Update progress: Starting
 	await job.updateProgress(5);
 
 	try {
 		// Step 1: Chunk the content
-		const chunks = await chunkText(content, chunkOptions);
+		const chunks = await chunkText(content, {
+			chunkSize: chunkOptions?.chunkSize || profile?.chunkSize || 500,
+			chunkOverlap: chunkOptions?.chunkOverlap || profile?.chunkOverlap || 50,
+			separators: profile?.separators || undefined,
+		});
 		console.log(
 			`[Document Worker] Document ${documentId}: Created ${chunks.length} chunks`
 		);
@@ -99,14 +113,9 @@ async function processIndexDocument(
 			const batchChunks = chunks.slice(i, i + EMBEDDING_BATCH_SIZE);
 			const batchTexts = batchChunks.map((c) => c.content);
 
-			if (!SELECTED_EMBEDDING_MODEL)
-				throw new ORPCError("INTERNAL_SERVER_ERROR", {
-					message: "Selected embedding model not found",
-				});
-
 			// Batch embedding call - single API request for multiple texts
 			const batchEmbeddings = await OpenRouterEmbedBatch(
-				SELECTED_EMBEDDING_MODEL.id,
+				embeddingModelId as any,
 				batchTexts
 			);
 
@@ -147,7 +156,12 @@ async function processIndexDocument(
 				documentId,
 				content: chunk.content,
 				chunkIndex: chunk.index,
-				tokenCount: calculateTokens(chunk.content, "text-embedding-3-small"),
+				tokenCount: calculateTokens(
+					chunk.content,
+					(embeddingModelId as any).includes("large")
+						? "text-embedding-3-large"
+						: "text-embedding-3-small"
+				),
 				qdrantPointId: chunkId,
 			};
 		});
@@ -163,7 +177,7 @@ async function processIndexDocument(
 
 		// Step 5: Upsert vectors into Qdrant
 		if (points.length > 0) {
-			await upsertVectors(qdrant, COLLECTION_NAME, points);
+			await upsertVectors(qdrant, collectionName, points);
 		}
 
 		await job.updateProgress(95);
@@ -216,12 +230,33 @@ async function processDeleteDocument(
 		`[Document Worker] Starting deletion for document: ${documentId}`
 	);
 
-	await ensureCollection();
-
 	// Delete from Qdrant first
-	await deleteVectorsByFilter(qdrant, COLLECTION_NAME, {
-		must: [{ key: "documentId", match: { value: documentId } }],
-	});
+	// We need to delete from ALL possible collections since we don't know which model was used
+	// Or we find the document's model. Let's find the document.
+	const [doc] = await db
+		.select()
+		.from(document)
+		.where(eq(document.id, documentId));
+	if (doc?.profileId) {
+		const profile = await getProfile(doc.profileId);
+		if (profile?.embeddingModel) {
+			const model = OPENROUTER_EMBEDDING_MODELS.find(
+				(m) => m.id === profile.embeddingModel
+			);
+			if (model) {
+				const collectionName = `${COLLECTION_NAME}_${model.dimensions}`;
+				await deleteVectorsByFilter(qdrant, collectionName, {
+					must: [{ key: "documentId", match: { value: documentId } }],
+				});
+			}
+		}
+	} else {
+		// Try default collection just in case
+		const collectionName = `${COLLECTION_NAME}_1536`; // Default dimensions for small
+		await deleteVectorsByFilter(qdrant, collectionName, {
+			must: [{ key: "documentId", match: { value: documentId } }],
+		});
+	}
 
 	await job.updateProgress(50);
 
@@ -239,7 +274,7 @@ async function processDeleteDocument(
 async function processReindexDocument(
 	job: Job<ReindexDocumentJobData>
 ): Promise<IndexDocumentJobResult> {
-	const { documentId, chunkOptions } = job.data;
+	const { documentId, chunkOptions, profileId } = job.data;
 
 	console.log(
 		`[Document Worker] Starting re-indexing for document: ${documentId}`
@@ -258,10 +293,26 @@ async function processReindexDocument(
 	await job.updateProgress(10);
 
 	// Delete existing vectors
-	await ensureCollection();
-	await deleteVectorsByFilter(qdrant, COLLECTION_NAME, {
-		must: [{ key: "documentId", match: { value: documentId } }],
-	});
+	// Similar deletion logic as processDeleteDocument
+	if (doc.profileId) {
+		const profile = await getProfile(doc.profileId);
+		if (profile?.embeddingModel) {
+			const model = OPENROUTER_EMBEDDING_MODELS.find(
+				(m) => m.id === profile.embeddingModel
+			);
+			if (model) {
+				const collectionName = `${COLLECTION_NAME}_${model.dimensions}`;
+				await deleteVectorsByFilter(qdrant, collectionName, {
+					must: [{ key: "documentId", match: { value: documentId } }],
+				});
+			}
+		}
+	} else {
+		const collectionName = `${COLLECTION_NAME}_1536`;
+		await deleteVectorsByFilter(qdrant, collectionName, {
+			must: [{ key: "documentId", match: { value: documentId } }],
+		});
+	}
 
 	// Delete existing chunks from PostgreSQL
 	await db
@@ -286,6 +337,7 @@ async function processReindexDocument(
 			source: doc.source ?? undefined,
 			metadata: doc.metadata ?? undefined,
 			chunkOptions,
+			profileId: profileId || doc.profileId || undefined,
 		},
 		updateProgress: async (progress: number) => {
 			// Scale progress from 20-100 since we already used 0-20

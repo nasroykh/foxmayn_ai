@@ -25,6 +25,7 @@ export const documentRoutes = {
 				file: z.file(),
 				title: z.string().optional(),
 				source: z.string().optional(),
+				profileId: z.string().optional(),
 				metadata: z.string().optional(),
 			})
 		)
@@ -37,11 +38,12 @@ export const documentRoutes = {
 			})
 		)
 		.handler(async ({ input }) => {
-			const { file, title, source, metadata } = input;
+			const { file, title, source, metadata, profileId } = input;
 			const { documentId, jobId } = await indexDocument({
 				file,
 				title,
 				source,
+				profileId,
 				metadata: metadata ? JSON.parse(metadata) : undefined,
 			});
 

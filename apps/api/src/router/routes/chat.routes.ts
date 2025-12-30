@@ -19,6 +19,7 @@ const queryBodySchema = z.object({
 			scoreThreshold: z.number().min(0).max(1).optional(),
 			documentId: z.string().optional(),
 			source: z.string().optional(),
+			profileId: z.string().optional(),
 		})
 		.optional(),
 });
@@ -35,8 +36,9 @@ export const chatRoutes = {
 			const { query, options } = input;
 
 			const result = await queryRAG(query, {
-				limit: options?.limit || 5,
-				scoreThreshold: options?.scoreThreshold || 0.3,
+				limit: options?.limit,
+				scoreThreshold: options?.scoreThreshold,
+				profileId: options?.profileId,
 				filter: {
 					documentId: options?.documentId,
 					source: options?.source,
@@ -81,6 +83,7 @@ export const chatRoutes = {
 			const stream = queryRAGStream(query, {
 				limit: options?.limit,
 				scoreThreshold: options?.scoreThreshold,
+				profileId: options?.profileId,
 				filter: {
 					documentId: options?.documentId,
 					source: options?.source,

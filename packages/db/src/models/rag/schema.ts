@@ -7,6 +7,8 @@ import {
 	jsonb,
 	pgEnum,
 	index,
+	boolean,
+	real,
 } from "drizzle-orm/pg-core";
 
 // Enums
@@ -23,11 +25,64 @@ export const messageRoleEnum = pgEnum("message_role", [
 	"system",
 ]);
 
+// RAG Profile table - stores all settings for the pipeline
+export const ragProfile = pgTable("rag_profile", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	description: text("description"),
+	isDefault: boolean("is_default").default(false).notNull(),
+
+	// Document Processing
+	embeddingModel: text("embedding_model")
+		.default("openai/text-embedding-3-small")
+		.notNull(),
+	chunkSize: integer("chunk_size").default(500).notNull(),
+	chunkOverlap: integer("chunk_overlap").default(50).notNull(),
+	separators: jsonb("separators")
+		.$type<string[]>()
+		.default(["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""])
+		.notNull(),
+	addContextualPrefix: boolean("add_contextual_prefix").default(true).notNull(),
+
+	// Retrieval Settings
+	retrievalStrategy: text("retrieval_strategy").default("similarity").notNull(), // similarity, mmr, hybrid
+	scoreThreshold: real("score_threshold").default(0.3).notNull(),
+	topK: integer("top_k").default(5).notNull(),
+
+	// LLM Generation
+	model: text("model").default("google/gemini-2.5-flash-lite").notNull(),
+	temperature: real("temperature").default(0.7).notNull(),
+	topP: real("top_p").default(1.0).notNull(),
+	maxTokens: integer("max_tokens").default(2048).notNull(),
+	reasoningEffort: text("reasoning_effort").default("none").notNull(), // none, minimal, moderate, high
+
+	// Personality
+	assistantName: text("assistant_name").default("Assistant").notNull(),
+	companyName: text("company_name"),
+	domain: text("domain"),
+	tone: text("tone").default("friendly").notNull(),
+	responseLength: text("response_length").default("balanced").notNull(),
+	language: text("language").default("English").notNull(),
+	enableCitations: boolean("enable_citations").default(true).notNull(),
+	systemPrompt: text("system_prompt"),
+	customInstructions: jsonb("custom_instructions")
+		.$type<string[]>()
+		.default([])
+		.notNull(),
+
+	createdAt: timestamp("created_at").defaultNow().notNull(),
+	updatedAt: timestamp("updated_at")
+		.defaultNow()
+		.$onUpdate(() => new Date())
+		.notNull(),
+});
+
 // Documents table - stores document metadata
 export const document = pgTable(
 	"document",
 	{
 		id: text("id").primaryKey(),
+		profileId: text("profile_id").references(() => ragProfile.id),
 		title: text("title").notNull(),
 		content: text("content").notNull(),
 		source: text("source"),
@@ -40,7 +95,10 @@ export const document = pgTable(
 			.$onUpdate(() => new Date())
 			.notNull(),
 	},
-	(table) => [index("document_status_idx").on(table.status)]
+	(table) => [
+		index("document_status_idx").on(table.status),
+		index("document_profile_idx").on(table.profileId),
+	]
 );
 
 // Document chunks table - stores chunked content with vector references
@@ -69,16 +127,21 @@ export const documentChunk = pgTable(
 );
 
 // Conversations table - stores chat history
-export const conversation = pgTable("conversation", {
-	id: text("id").primaryKey(),
-	title: text("title"),
-	metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
-	createdAt: timestamp("created_at").defaultNow().notNull(),
-	updatedAt: timestamp("updated_at")
-		.defaultNow()
-		.$onUpdate(() => new Date())
-		.notNull(),
-});
+export const conversation = pgTable(
+	"conversation",
+	{
+		id: text("id").primaryKey(),
+		profileId: text("profile_id").references(() => ragProfile.id),
+		title: text("title"),
+		metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
+		createdAt: timestamp("created_at").defaultNow().notNull(),
+		updatedAt: timestamp("updated_at")
+			.defaultNow()
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(table) => [index("conversation_profile_idx").on(table.profileId)]
+);
 
 // Messages table - stores individual messages
 export const message = pgTable(
@@ -102,8 +165,17 @@ export const message = pgTable(
 );
 
 // Relations
-export const documentRelations = relations(document, ({ many }) => ({
+export const ragProfileRelations = relations(ragProfile, ({ many }) => ({
+	documents: many(document),
+	conversations: many(conversation),
+}));
+
+export const documentRelations = relations(document, ({ one, many }) => ({
 	chunks: many(documentChunk),
+	profile: one(ragProfile, {
+		fields: [document.profileId],
+		references: [ragProfile.id],
+	}),
 }));
 
 export const documentChunkRelations = relations(documentChunk, ({ one }) => ({
@@ -113,9 +185,16 @@ export const documentChunkRelations = relations(documentChunk, ({ one }) => ({
 	}),
 }));
 
-export const conversationRelations = relations(conversation, ({ many }) => ({
-	messages: many(message),
-}));
+export const conversationRelations = relations(
+	conversation,
+	({ one, many }) => ({
+		messages: many(message),
+		profile: one(ragProfile, {
+			fields: [conversation.profileId],
+			references: [ragProfile.id],
+		}),
+	})
+);
 
 export const messageRelations = relations(message, ({ one }) => ({
 	conversation: one(conversation, {
@@ -123,4 +202,3 @@ export const messageRelations = relations(message, ({ one }) => ({
 		references: [conversation.id],
 	}),
 }));
-

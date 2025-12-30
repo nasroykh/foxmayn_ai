@@ -4,7 +4,13 @@ import {
 	createSelectSchema,
 	createUpdateSchema,
 } from "drizzle-zod";
-import { document, documentChunk, conversation, message } from "./schema";
+import {
+	document,
+	documentChunk,
+	conversation,
+	message,
+	ragProfile,
+} from "./schema";
 
 // Document schemas
 export const documentSelectSchema = createSelectSchema(document);
@@ -37,3 +43,12 @@ export type Message = z.infer<typeof messageSelectSchema>;
 export const messageInsertSchema = createInsertSchema(message);
 export type MessageInsert = z.infer<typeof messageInsertSchema>;
 
+// RAG Profile schemas
+export const ragProfileSelectSchema = createSelectSchema(ragProfile);
+export type RagProfile = z.infer<typeof ragProfileSelectSchema>;
+
+export const ragProfileInsertSchema = createInsertSchema(ragProfile);
+export type RagProfileInsert = z.infer<typeof ragProfileInsertSchema>;
+
+export const ragProfileUpdateSchema = createUpdateSchema(ragProfile);
+export type RagProfileUpdate = z.infer<typeof ragProfileUpdateSchema>;
