@@ -8,13 +8,13 @@ import {
 	indexDocument,
 } from "../../services/rag.service";
 import { getDocumentJobStatus, getPendingDocumentJobs } from "../../jobs";
-import { publicProcedure } from "../middleware";
+import { authProcedure } from "../middleware";
 import { env } from "../../config/env";
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
 export const documentRoutes = {
-	createDocument: publicProcedure
+	createDocument: authProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/documents`,
@@ -55,7 +55,7 @@ export const documentRoutes = {
 			};
 		}),
 
-	getJobStatus: publicProcedure
+	getJobStatus: authProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/documents/jobs/{jobId}`,
@@ -96,7 +96,7 @@ export const documentRoutes = {
 			};
 		}),
 
-	getPendingJobs: publicProcedure
+	getPendingJobs: authProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/documents/jobs`,
@@ -106,7 +106,7 @@ export const documentRoutes = {
 			return await getPendingDocumentJobs();
 		}),
 
-	getDocument: publicProcedure
+	getDocument: authProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/documents/{id}`,
@@ -147,7 +147,7 @@ export const documentRoutes = {
 			};
 		}),
 
-	listDocuments: publicProcedure
+	listDocuments: authProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/documents`,
@@ -193,7 +193,7 @@ export const documentRoutes = {
 			};
 		}),
 
-	deleteDocument: publicProcedure
+	deleteDocument: authProcedure
 		.route({
 			method: "DELETE",
 			path: `${PREFIX}/documents/{id}`,

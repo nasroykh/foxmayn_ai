@@ -4,7 +4,7 @@ import {
 	queryRAGStream,
 	searchChunks,
 } from "../../services/rag.service";
-import { publicProcedure } from "../middleware";
+import { authProcedure, publicProcedure } from "../middleware";
 import { env } from "../../config/env";
 import { OPENROUTER_AI_MODELS } from "../../utils/openrouter";
 
@@ -25,7 +25,7 @@ const queryBodySchema = z.object({
 });
 
 export const chatRoutes = {
-	query: publicProcedure
+	query: authProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/query`,
@@ -48,7 +48,7 @@ export const chatRoutes = {
 			return result;
 		}),
 
-	search: publicProcedure
+	search: authProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/search`,
@@ -70,7 +70,7 @@ export const chatRoutes = {
 			return { results };
 		}),
 
-	queryStream: publicProcedure
+	queryStream: authProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/query/stream`,

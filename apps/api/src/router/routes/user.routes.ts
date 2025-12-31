@@ -121,7 +121,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// Create User
 	// -------------------------------------------------------------------------
-	createUser: publicProcedure
+	createUser: adminProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/admin/users`,

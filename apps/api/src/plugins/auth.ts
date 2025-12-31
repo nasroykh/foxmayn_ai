@@ -21,7 +21,14 @@ const initSuperAdmin = async () => {
 			.where(eq(user.email, env.SUPER_ADMIN_EMAIL))
 			.limit(1);
 
-		if (superAdminExists) return;
+		if (superAdminExists) {
+			// Ensure super admin has admin role
+			await db
+				.update(user)
+				.set({ role: "admin" })
+				.where(eq(user.id, superAdminExists.id));
+			return;
+		}
 
 		await auth.api.createUser({
 			body: {
