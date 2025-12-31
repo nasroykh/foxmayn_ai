@@ -65,7 +65,7 @@ export const auth = betterAuth({
 	],
 	emailAndPassword: {
 		enabled: true,
-		requireEmailVerification: true,
+		// requireEmailVerification: true,
 	},
 	session: {
 		cookieCache: {

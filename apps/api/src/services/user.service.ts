@@ -56,6 +56,21 @@ export type SessionTokenInput = {
 	sessionToken: string;
 };
 
+export type LoginUserInput = {
+	email: string;
+	password: string;
+};
+
+export const loginUser = async (input: LoginUserInput, headers: Headers) => {
+	return auth.api.signInEmail({
+		body: {
+			email: input.email,
+			password: input.password,
+		},
+		headers,
+	});
+};
+
 // =============================================================================
 // User CRUD Operations
 // =============================================================================
