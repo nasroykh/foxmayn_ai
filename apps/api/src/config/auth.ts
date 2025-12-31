@@ -1,6 +1,6 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { admin, emailOTP, organization } from "better-auth/plugins";
+import { admin, emailOTP, organization, apiKey } from "better-auth/plugins";
 import Stripe from "stripe";
 import { stripe } from "@better-auth/stripe";
 
@@ -21,6 +21,7 @@ export const auth = betterAuth({
 	}),
 	plugins: [
 		admin(),
+		apiKey(),
 		organization({
 			async sendInvitationEmail(data) {
 				const inviteLink = `${process.env.APP_URL}/invite/${data.id}`;

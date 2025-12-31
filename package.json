@@ -14,7 +14,7 @@
 		"dev:app": "pnpm --filter=app dev",
 		"start:api": "pnpm --filter=api start",
 		"start:app": "pnpm --filter=app start",
-		"auth:generate": "cd apps/api && pnpm dlx @better-auth/cli generate --config src/utils/auth.ts --output ../../packages/db/src/models/auth/schema.ts",
+		"auth:generate": "cd apps/api && pnpm dlx @better-auth/cli generate --config src/config/auth.ts --output ../../packages/db/src/models/auth/schema.ts",
 		"db:generate": "pnpm --filter=db db:generate",
 		"db:migrate": "pnpm --filter=db db:migrate",
 		"db:push": "pnpm --filter=db db:push"
