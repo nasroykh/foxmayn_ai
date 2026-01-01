@@ -24,3 +24,19 @@ const authMiddleware = base.middleware(async ({ context, next }) => {
 export const publicProcedure = base;
 
 export const authProcedure = base.use(authMiddleware);
+
+export const adminProcedure = base
+	.use(authMiddleware)
+	.use(async ({ context, next }) => {
+		const userRole = context.user.role;
+
+		// Check if user has admin role (can be comma-separated for multiple roles)
+		const roles = userRole?.split(",").map((r: string) => r.trim()) ?? [];
+		if (!roles.includes("admin")) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "Admin access required",
+			});
+		}
+
+		return next({ context });
+	});

@@ -6,7 +6,9 @@ import { randomUUID } from "node:crypto";
 /**
  * Create a new RAG profile
  */
-export const createProfile = async (data: RagProfileInsert) => {
+export const createProfile = async (
+	data: Omit<RagProfileInsert, "id" | "createdAt" | "updatedAt">
+) => {
 	const id = randomUUID();
 	const [newProfile] = await db
 		.insert(ragProfile)

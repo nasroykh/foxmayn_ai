@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ORPCError } from "@orpc/server";
 
-import { authProcedure, publicProcedure } from "../middleware";
+import { adminProcedure, authProcedure, publicProcedure } from "../middleware";
 import { env } from "../../config/env";
 import {
 	createUser,
@@ -79,24 +79,6 @@ const sessionTokenSchema = z.object({
 });
 
 // =============================================================================
-// Admin Middleware
-// =============================================================================
-
-const adminProcedure = authProcedure.use(async ({ context, next }) => {
-	const userRole = context.user.role;
-
-	// Check if user has admin role (can be comma-separated for multiple roles)
-	const roles = userRole?.split(",").map((r: string) => r.trim()) ?? [];
-	if (!roles.includes("admin")) {
-		throw new ORPCError("FORBIDDEN", {
-			message: "Admin access required",
-		});
-	}
-
-	return next({ context });
-});
-
-// =============================================================================
 // User CRUD Routes
 // =============================================================================
 
@@ -118,6 +100,21 @@ export const userRoutes = {
 			return user;
 		}),
 
+	me: authProcedure
+		.route({
+			method: "GET",
+			path: `${PREFIX}/auth/me`,
+			description: "Get the current user",
+		})
+		.handler(async ({ context }) => {
+			if (!context.user)
+				throw new ORPCError("UNAUTHORIZED", {
+					message: "User not authenticated",
+				});
+
+			return context.user;
+		}),
+
 	// -------------------------------------------------------------------------
 	// Create User
 	// -------------------------------------------------------------------------
@@ -136,7 +133,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// List Users
 	// -------------------------------------------------------------------------
-	listUsers: authProcedure
+	listUsers: adminProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/admin/users`,
@@ -151,7 +148,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// Get User by ID
 	// -------------------------------------------------------------------------
-	getUser: authProcedure
+	getUser: adminProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/admin/users/{userId}`,
@@ -179,7 +176,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// Update User
 	// -------------------------------------------------------------------------
-	updateUser: authProcedure
+	updateUser: adminProcedure
 		.route({
 			method: "PUT",
 			path: `${PREFIX}/admin/users/{userId}`,
@@ -194,7 +191,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// Delete User
 	// -------------------------------------------------------------------------
-	deleteUser: authProcedure
+	deleteUser: adminProcedure
 		.route({
 			method: "DELETE",
 			path: `${PREFIX}/admin/users/{userId}`,
@@ -209,7 +206,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// Set User Role
 	// -------------------------------------------------------------------------
-	setUserRole: authProcedure
+	setUserRole: adminProcedure
 		.route({
 			method: "PUT",
 			path: `${PREFIX}/admin/users/{userId}/role`,
@@ -224,7 +221,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// Set User Password
 	// -------------------------------------------------------------------------
-	setUserPassword: authProcedure
+	setUserPassword: adminProcedure
 		.route({
 			method: "PUT",
 			path: `${PREFIX}/admin/users/{userId}/password`,
@@ -239,7 +236,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// Ban User
 	// -------------------------------------------------------------------------
-	banUser: authProcedure
+	banUser: adminProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/admin/users/{userId}/ban`,
@@ -254,7 +251,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// Unban User
 	// -------------------------------------------------------------------------
-	unbanUser: authProcedure
+	unbanUser: adminProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/admin/users/{userId}/unban`,
@@ -269,7 +266,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// List User Sessions
 	// -------------------------------------------------------------------------
-	listUserSessions: authProcedure
+	listUserSessions: adminProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/admin/users/{userId}/sessions`,
@@ -284,7 +281,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// Revoke User Session
 	// -------------------------------------------------------------------------
-	revokeSession: authProcedure
+	revokeSession: adminProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/admin/sessions/revoke`,
@@ -299,7 +296,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// Revoke All User Sessions
 	// -------------------------------------------------------------------------
-	revokeAllUserSessions: authProcedure
+	revokeAllUserSessions: adminProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/admin/users/{userId}/sessions/revoke-all`,
@@ -314,7 +311,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// Impersonate User
 	// -------------------------------------------------------------------------
-	impersonateUser: authProcedure
+	impersonateUser: adminProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/admin/users/{userId}/impersonate`,
@@ -329,7 +326,7 @@ export const userRoutes = {
 	// -------------------------------------------------------------------------
 	// Stop Impersonating
 	// -------------------------------------------------------------------------
-	stopImpersonating: authProcedure
+	stopImpersonating: adminProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/admin/impersonation/stop`,

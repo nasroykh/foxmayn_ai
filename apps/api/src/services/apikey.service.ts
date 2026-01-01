@@ -31,7 +31,10 @@ export type UpdateApiKeyInput = {
 /**
  * Create a new API key
  */
-export async function createApiKey(input: CreateApiKeyInput, headers: Headers) {
+export async function createApiKey(
+	input: CreateApiKeyInput,
+	headers?: Headers
+) {
 	return auth.api.createApiKey({
 		body: input,
 		headers,

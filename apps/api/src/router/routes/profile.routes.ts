@@ -29,7 +29,7 @@ export const profileRoutes = {
 			})
 		)
 		.handler(async ({ input }) => {
-			const profile = await createProfile(input as any);
+			const profile = await createProfile(input);
 			return profile;
 		}),
 

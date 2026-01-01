@@ -29,6 +29,10 @@ export const auth = betterAuth({
 		admin(),
 		bearer(),
 		apiKey({
+			rateLimit: {
+				maxRequests: 100,
+				timeWindow: 1000 * 60 * 5, // 5 minutes
+			},
 			enableSessionForAPIKeys: true,
 		}),
 		organization({

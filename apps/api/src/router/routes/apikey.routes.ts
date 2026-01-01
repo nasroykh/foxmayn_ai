@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { authProcedure } from "../middleware";
+import { adminProcedure, authProcedure } from "../middleware";
 import {
 	createApiKey,
 	getApiKey,
@@ -17,6 +17,42 @@ export const PREFIX = env.API_V1_PREFIX as `/${string}`;
  * These routes allow users to manage their personal API keys.
  */
 export const apiKeyRoutes = {
+	createApiKeyForUser: adminProcedure
+		.route({
+			method: "POST",
+			path: `${PREFIX}/admin/api-keys`,
+			description: "Create a new API key for a user",
+		})
+		.input(
+			z.object({
+				userId: z.string().min(1).describe("User ID for the API key"),
+				name: z
+					.string()
+					.optional()
+					.describe("A descriptive name for the API key"),
+				expiresIn: z.number().optional().describe("Expiration time in seconds"),
+				prefix: z
+					.string()
+					.optional()
+					.describe("Custom prefix for the generated key"),
+				remaining: z
+					.number()
+					.optional()
+					.describe("Initial number of remaining requests"),
+				permissions: z
+					.record(z.string(), z.array(z.string()))
+					.optional()
+					.describe("Permissions for the API key"),
+				metadata: z
+					.record(z.string(), z.unknown())
+					.optional()
+					.describe("Additional metadata"),
+			})
+		)
+		.handler(async ({ input }) => {
+			return await createApiKey(input);
+		}),
+
 	/**
 	 * Create a new API key
 	 */
