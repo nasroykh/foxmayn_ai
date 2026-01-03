@@ -9,6 +9,8 @@ import {
 	type Point,
 } from "@repo/qdrant";
 import { eq } from "@repo/db/drizzle-orm";
+import { OpenRouterEmbed } from "@repo/llm/openrouter";
+import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
 import { redisConnection } from "../connection";
 import {
 	type IndexDocumentJobData,
@@ -18,9 +20,7 @@ import {
 	DocumentJobNames,
 } from "./types";
 import { chunkText, calculateTokens } from "../../services/chunking.service";
-import { OpenRouterEmbedBatch } from "../../utils/openrouter";
 import { env } from "../../config/env";
-import { OPENROUTER_EMBEDDING_MODELS } from "../../utils/openrouter";
 import { getProfile, getDefaultProfile } from "../../services/profile.service";
 
 // Constants
@@ -114,7 +114,7 @@ async function processIndexDocument(
 			const batchTexts = batchChunks.map((c) => c.content);
 
 			// Batch embedding call - single API request for multiple texts
-			const batchEmbeddings = await OpenRouterEmbedBatch(
+			const batchEmbeddings = await OpenRouterEmbed(
 				embeddingModelId as any,
 				batchTexts
 			);
@@ -158,7 +158,7 @@ async function processIndexDocument(
 				chunkIndex: chunk.index,
 				tokenCount: calculateTokens(
 					chunk.content,
-					(embeddingModelId as any).includes("large")
+					embeddingModelId.includes("large")
 						? "text-embedding-3-large"
 						: "text-embedding-3-small"
 				),

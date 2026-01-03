@@ -1,119 +1,69 @@
-# FoxMayn AI - Full-Stack RAG Application
+# FoxMayn AI - Enterprise RAG Monorepo
 
-This is a full-stack, AI-powered application built with a modern technology stack. It's architected as a monorepo using pnpm workspaces, featuring a React/Vite frontend and a Hono backend, with a complete RAG (Retrieval-Augmented Generation) pipeline for advanced AI capabilities.
+Foxmayn AI is a professional, full-stack application designed for managing knowledge bases through a complete RAG (Retrieval-Augmented Generation) pipeline. It provides a robust, type-safe architecture for indexing documents and generating AI responses with high precision.
 
----
+## 🏗️ Architecture & Stack
 
-## Technology Stack
+### Core Hubs
 
-### Core Technologies
+- **[API Service](file:///Users/nas/Desktop/Foxmayn/foxmayn_ai/apps/api/README.md)**: Hono backend powering the ORPC engine, auth, and background jobs.
+- **Frontend App**: Modern React 19 interface (TanStack Router, Query, Jotai).
 
-*   **Monorepo:** pnpm Workspaces
-*   **Runtime:** Node.js
-*   **Language:** TypeScript
+### Shared Intelligence (`packages/`)
 
-### Frontend (`apps/app`)
+- **[@repo/db](file:///Users/nas/Desktop/Foxmayn/foxmayn_ai/packages/db/README.md)**: Drizzle ORM models for Auth and RAG modules.
+- **[@repo/llm](file:///Users/nas/Desktop/Foxmayn/foxmayn_ai/packages/llm/README.md)**: OpenRouter SDK wrapper for chat and batch embeddings.
+- **[@repo/qdrant](file:///Users/nas/Desktop/Foxmayn/foxmayn_ai/packages/qdrant/README.md)**: High-performance vector database client and utilities.
 
-*   **Framework:** React 19
-*   **Build Tool:** Vite
-*   **Routing:** TanStack Router
-*   **Data Fetching:** TanStack Query
-*   **API Client:** oRPC Client (for type-safe API calls)
-*   **State Management:** Jotai
-*   **Styling:** Tailwind CSS 4
-*   **UI Components:** Radix UI, Lucide React, Sonner (notifications)
-*   **Authentication:** Better Auth
+## 🚀 Key Features
 
-### Backend (`apps/api`)
+- **End-to-End Type Safety**: Shared types across the entire stack using ORPC.
+- **Flexible RAG Pipeline**: Multiple strategy supports via customizable RAG Profiles.
+- **Multi-Tenant Auth**: Advanced user management with Better Auth (API Keys, Orgs, Admin).
+- **Background Processing**: BullMQ-powered document ingestion and email services.
+- **Serverless Ready**: Hono core adaptable to multiple environments.
 
-*   **Framework:** Hono
-*   **API Protocol:** oRPC (Open RPC) with OpenAPI generation
-*   **Database:** PostgreSQL with Drizzle ORM
-*   **Vector Database:** Qdrant for RAG
-*   **Background Jobs:** BullMQ (Redis)
-*   **Authentication:** Better Auth
-*   **Payments:** Stripe Integration
-*   **AI/RAG:** OpenAI SDK, LangChain.js
+## 🛠️ Getting Started
 
-### Shared Packages
+### 1. Prerequisites
 
-*   `@repo/db`: Manages database schema (Drizzle), connections, and migrations.
-*   `@repo/qdrant`: Provides a configured client for interacting with the Qdrant vector database.
+- **Node.js**: v20+
+- **pnpm**: v9+
+- **Docker**: For PostgreSQL, Redis, and Qdrant local instances.
 
----
-
-## Getting Started
-
-### Prerequisites
-
-*   **Node.js**: Version 20 or higher recommended.
-*   **pnpm**: Version 9 or higher.
-*   **Docker**: Required for running local instances of PostgreSQL, Redis, and Qdrant.
-
-### 1. Installation
-
-Clone the repository and install all dependencies using pnpm.
+### 2. Installation
 
 ```bash
-git clone <repository-url>
-cd foxmayn_ai
 pnpm install
 ```
 
-### 2. Environment Setup
+### 3. Environment Setup
 
-The project uses `.env` files for managing environment variables. Examples are provided in each app and package.
+Create `.env` files in:
 
-1.  Navigate to `apps/api`, `apps/app`, `packages/db`, and `packages/qdrant`.
-2.  In each directory, copy the `.env.example` file to a new `.env` file:
-    ```bash
-    cp .env.example .env
-    ```
-3.  Review and update the variables in each `.env` file to match your local setup (e.g., database credentials, API keys for OpenAI/Stripe, etc.).
+- `apps/api`
+- `apps/app`
+- `packages/db`
+- `packages/qdrant`
+- `packages/llm`
 
-### 3. Start Local Services
-
-If you have Docker installed, you can start the required services (PostgreSQL, Redis, Qdrant). A `docker-compose.yml` file should be present in the root of the project or will need to be created.
+### 4. Database Setup
 
 ```bash
-# (Assuming a docker-compose.yml is available)
-docker compose up -d
-```
-
-### 4. Database Migrations
-
-Before starting the application, run the database migrations to set up your PostgreSQL schema.
-
-```bash
-# Push schema directly (for initial development)
+# Push schema to local DB
 pnpm --filter=@repo/db db:push
-
-# Or, to generate and run migration files:
-pnpm --filter=@repo/db db:generate
-pnpm --filter=@repo/db db:migrate
 ```
 
-### 5. Run in Development Mode
-
-Start the frontend and backend servers concurrently.
+### 5. Running
 
 ```bash
+# Start both API and Frontend
 pnpm dev
-```
 
-This will start:
-*   **Backend API** on `http://localhost:3000` (or the port specified in `apps/api/.env`).
-*   **Frontend App** on `http://localhost:33460` (or the port specified in `apps/app/package.json`).
+# Start background jobs worker
+pnpm --filter=api run dev:worker
+```
 
 ---
 
-## Monorepo Structure
-
-The project is organized into `apps` and `packages` to maintain a clean separation of concerns.
-
-*   `apps/`: Contains the deployable applications.
-    *   `api/`: The Hono backend server, handling all business logic, AI processing, and database interactions.
-    *   `app/`: The React frontend, providing the user interface.
-*   `packages/`: Contains shared code and configurations used across different apps.
-    *   `db/`: Drizzle ORM schemas, database client, and migration scripts.
-    *   `qdrant/`: Client and helper functions for the Qdrant vector database.
+_Designed & Developed by Foxmayn AI Team_

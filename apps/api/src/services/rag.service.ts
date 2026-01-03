@@ -6,11 +6,8 @@ import {
 	searchVectors,
 } from "@repo/qdrant";
 import { eq } from "@repo/db/drizzle-orm";
-import {
-	OPENROUTER_EMBEDDING_MODELS,
-	OpenRouterEmbed,
-	OpenRouterQuery,
-} from "../utils/openrouter";
+import { OpenRouterQuery, OpenRouterEmbed } from "@repo/llm/openrouter";
+import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
 import { env } from "../config/env";
 import { getProfile, getDefaultProfile } from "./profile.service";
 import {
@@ -78,10 +75,16 @@ interface VectorPayload extends Record<string, unknown> {
 }
 
 // Types
+export interface ChatMessage {
+	role: "user" | "assistant" | "system";
+	content: string;
+}
+
 export interface QueryOptions {
 	limit?: number;
 	scoreThreshold?: number;
 	profileId?: string;
+	messages?: ChatMessage[];
 	filter?: {
 		documentId?: string;
 		source?: string;
@@ -205,7 +208,7 @@ export const searchChunks = async (
 	const collectionName = await ensureCollection(embeddingModelId);
 
 	// Generate query embedding
-	const embedding = await OpenRouterEmbed(embeddingModelId as any, query);
+	const embeddings = await OpenRouterEmbed(embeddingModelId as any, [query]);
 
 	// Build filter
 	let qdrantFilter = undefined;
@@ -223,7 +226,7 @@ export const searchChunks = async (
 	}
 
 	// Search Qdrant
-	const results = await searchVectors(qdrant, collectionName, embedding, {
+	const results = await searchVectors(qdrant, collectionName, embeddings[0], {
 		limit,
 		scoreThreshold,
 		filter: qdrantFilter,
@@ -258,28 +261,30 @@ export const queryRAG = async (
 		.map((r, i) => `[${i + 1}] ${r.content}`)
 		.join("\n\n");
 
+	const systemPrompt = GET_MAIN_SYSTEM_PROMPT({
+		context,
+		assistantName: profile?.assistantName || "Assistant",
+		companyName: profile?.companyName || undefined,
+		tone: (profile?.tone as any) || "friendly",
+		domain: profile?.domain || undefined,
+		enableCitations: profile?.enableCitations ?? true,
+		responseLength: (profile?.responseLength as any) || "balanced",
+		language: profile?.language || "English",
+		customInstructions: profile?.customInstructions || [],
+	});
+
 	// Generate answer
 	const answer = await OpenRouterQuery(
 		{
-			model: (profile?.model as any) || "google/gemini-2.5-flash-lite",
-			temperature: profile?.temperature ?? 0.7,
-			topP: profile?.topP ?? 1.0,
-			maxTokens: profile?.maxTokens ?? 2048,
-			reasoningEffort: (profile?.reasoningEffort as any) || "none",
+			model: profile?.model as any,
+			temperature: profile?.temperature,
+			topP: profile?.topP,
+			maxTokens: profile?.maxTokens,
+			reasoning: profile?.reasoningEffort,
 			stream: false,
 		},
-		undefined,
-		GET_MAIN_SYSTEM_PROMPT({
-			context,
-			assistantName: profile?.assistantName || "Assistant",
-			companyName: profile?.companyName || undefined,
-			tone: (profile?.tone as any) || "friendly",
-			domain: profile?.domain || undefined,
-			enableCitations: profile?.enableCitations ?? true,
-			responseLength: (profile?.responseLength as any) || "balanced",
-			language: profile?.language || "English",
-			customInstructions: profile?.customInstructions || [],
-		}),
+		options.messages, // Chat history (without system/final user)
+		systemPrompt,
 		query
 	);
 
@@ -342,24 +347,23 @@ export async function* queryRAGStream(
 	// Generate streaming answer
 	const stream = await OpenRouterQuery(
 		{
-			model: (profile?.model as any) || "google/gemini-2.5-flash-lite",
-			temperature: profile?.temperature ?? 0.7,
-			topP: profile?.topP ?? 1.0,
-			maxTokens: profile?.maxTokens ?? 2048,
-			reasoningEffort: (profile?.reasoningEffort as any) || "none",
+			model: profile?.model as any,
+			temperature: profile?.temperature,
+			topP: profile?.topP,
+			maxTokens: profile?.maxTokens,
+			reasoning: profile?.reasoningEffort,
 			stream: true,
 		},
-		undefined,
+		options.messages, // Chat history (without system/final user)
 		systemPrompt,
 		query
 	);
 
 	// Handle streaming response
 	if (typeof stream !== "string" && Symbol.asyncIterator in stream) {
-		for await (const chunk of stream) {
-			const content = chunk.choices[0]?.delta?.content;
-			if (content) {
-				yield { type: "token", data: content };
+		for await (const delta of stream) {
+			if (delta) {
+				yield { type: "token", data: delta };
 			}
 		}
 	}

@@ -6,10 +6,15 @@ import {
 	listDocuments,
 	deleteDocument,
 	indexDocument,
+	extractTextFromDocument,
 } from "../../services/rag.service";
 import { getDocumentJobStatus, getPendingDocumentJobs } from "../../jobs";
-import { authProcedure } from "../middleware";
+import { authProcedure, publicProcedure } from "../middleware";
 import { env } from "../../config/env";
+import {
+	calculateTokens,
+	TIKTOKEN_MODELS,
+} from "../../services/chunking.service";
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
@@ -222,5 +227,28 @@ export const documentRoutes = {
 				message: "Document deletion queued",
 				jobId,
 			};
+		}),
+
+	countTokens: publicProcedure
+		.route({
+			method: "POST",
+			path: `${PREFIX}/documents/tokens`,
+			description: "Count tokens in a document",
+		})
+		.input(
+			z.object({
+				file: z.file(),
+				model: z.enum(TIKTOKEN_MODELS),
+			})
+		)
+		.output(z.number())
+		.handler(async ({ input }) => {
+			const { file } = input;
+
+			const text = await extractTextFromDocument(file);
+
+			const tokens = calculateTokens(text, input.model);
+
+			return tokens;
 		}),
 };

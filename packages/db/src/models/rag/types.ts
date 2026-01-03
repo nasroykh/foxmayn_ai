@@ -36,12 +36,18 @@ export type Conversation = z.infer<typeof conversationSelectSchema>;
 export const conversationInsertSchema = createInsertSchema(conversation);
 export type ConversationInsert = z.infer<typeof conversationInsertSchema>;
 
+export const conversationUpdateSchema = createUpdateSchema(conversation);
+export type ConversationUpdate = z.infer<typeof conversationUpdateSchema>;
+
 // Message schemas
 export const messageSelectSchema = createSelectSchema(message);
 export type Message = z.infer<typeof messageSelectSchema>;
 
 export const messageInsertSchema = createInsertSchema(message);
 export type MessageInsert = z.infer<typeof messageInsertSchema>;
+
+export const messageUpdateSchema = createUpdateSchema(message);
+export type MessageUpdate = z.infer<typeof messageUpdateSchema>;
 
 // RAG Profile schemas
 export const ragProfileSelectSchema = createSelectSchema(ragProfile);

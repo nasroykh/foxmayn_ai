@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { type ReasoningEffort } from "openai/resources";
-import { env } from "../config/env";
+import { env } from "./config/env";
 
 export const OPENROUTER_AI_MODELS = [
 	{ id: "anthropic/claude-opus-4.5", inputPrice: 0.1, outputPrice: 0.2 },
