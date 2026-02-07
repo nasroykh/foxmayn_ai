@@ -17,7 +17,11 @@
 		"auth:generate": "cd apps/api && pnpm dlx @better-auth/cli generate --config src/config/auth.ts --output ../../packages/db/src/models/auth/schema.ts",
 		"db:generate": "pnpm --filter=db db:generate",
 		"db:migrate": "pnpm --filter=db db:migrate",
-		"db:push": "pnpm --filter=db db:push"
+		"db:push": "pnpm --filter=db db:push",
+		"skills:symlink:claude": "mkdir -p .claude/skills/ && rm -rf .claude/skills/* && cd .claude/skills/ && ln -s ../../.agents/skills/*/ .",
+		"skills:symlink:cursor": "mkdir -p .cursor/skills/ && rm -rf .cursor/skills/* && cd .cursor/skills/ && ln -s ../../.agents/skills/*/ .",
+		"skills:symlink:agent": "mkdir -p .agent/skills/ && rm -rf .agent/skills/* && cd .agent/skills/ && ln -s ../../.agents/skills/*/ .",
+		"skills:symlink:all": "pnpm skills:symlink:claude && pnpm skills:symlink:cursor && pnpm skills:symlink:agent"
 	},
 	"devDependencies": {
 		"concurrently": "^9.2.1"
