@@ -27,24 +27,33 @@ export const createConversation = async (
 };
 
 /**
- * Get a conversation by ID
+ * Get a conversation by ID (scoped to user)
  */
-export const getConversation = async (id: string) => {
+export const getConversation = async (id: string, userId?: string) => {
+	const conditions = [eq(conversation.id, id)];
+	if (userId) conditions.push(eq(conversation.userId, userId));
+
 	const [conv] = await db
 		.select()
 		.from(conversation)
-		.where(eq(conversation.id, id));
+		.where(and(...conditions));
 	return conv || null;
 };
 
 /**
- * Get a conversation by ID with its messages
+ * Get a conversation by ID with its messages (scoped to user)
  */
-export const getConversationWithMessages = async (id: string) => {
+export const getConversationWithMessages = async (
+	id: string,
+	userId?: string
+) => {
+	const conditions = [eq(conversation.id, id)];
+	if (userId) conditions.push(eq(conversation.userId, userId));
+
 	const [conv] = await db
 		.select()
 		.from(conversation)
-		.where(eq(conversation.id, id));
+		.where(and(...conditions));
 
 	if (!conv) return null;
 
@@ -58,13 +67,18 @@ export const getConversationWithMessages = async (id: string) => {
 };
 
 /**
- * List all conversations with optional profile filter
+ * List all conversations with optional profile filter (scoped to user)
  */
 export const listConversations = async (
 	limit = 20,
 	offset = 0,
-	profileId?: string
+	profileId?: string,
+	userId?: string
 ) => {
+	const conditions = [];
+	if (userId) conditions.push(eq(conversation.userId, userId));
+	if (profileId) conditions.push(eq(conversation.profileId, profileId));
+
 	const query = db
 		.select()
 		.from(conversation)
@@ -72,48 +86,63 @@ export const listConversations = async (
 		.offset(offset)
 		.orderBy(desc(conversation.updatedAt));
 
-	if (profileId) {
-		return await query.where(eq(conversation.profileId, profileId));
+	if (conditions.length > 0) {
+		return await query.where(and(...conditions));
 	}
 
 	return await query;
 };
 
 /**
- * Count total conversations with optional profile filter
+ * Count total conversations with optional profile filter (scoped to user)
  */
-export const countConversations = async (profileId?: string) => {
-	const query = db.select({ count: count() }).from(conversation);
+export const countConversations = async (
+	profileId?: string,
+	userId?: string
+) => {
+	const conditions = [];
+	if (userId) conditions.push(eq(conversation.userId, userId));
+	if (profileId) conditions.push(eq(conversation.profileId, profileId));
 
-	if (profileId) {
-		const [result] = await query.where(eq(conversation.profileId, profileId));
+	if (conditions.length > 0) {
+		const [result] = await db
+			.select({ count: count() })
+			.from(conversation)
+			.where(and(...conditions));
 		return result?.count ?? 0;
 	}
 
-	const [result] = await query;
+	const [result] = await db.select({ count: count() }).from(conversation);
 	return result?.count ?? 0;
 };
 
 /**
- * Update a conversation
+ * Update a conversation (scoped to user)
  */
 export const updateConversation = async (
 	id: string,
-	data: Omit<ConversationUpdate, "id" | "createdAt">
+	data: Partial<ConversationUpdate>,
+	userId?: string
 ) => {
+	const conditions = [eq(conversation.id, id)];
+	if (userId) conditions.push(eq(conversation.userId, userId));
+
 	const [updatedConversation] = await db
 		.update(conversation)
 		.set(data)
-		.where(eq(conversation.id, id))
+		.where(and(...conditions))
 		.returning();
 	return updatedConversation;
 };
 
 /**
- * Delete a conversation (cascades to messages)
+ * Delete a conversation (cascades to messages, scoped to user)
  */
-export const deleteConversation = async (id: string) => {
-	await db.delete(conversation).where(eq(conversation.id, id));
+export const deleteConversation = async (id: string, userId?: string) => {
+	const conditions = [eq(conversation.id, id)];
+	if (userId) conditions.push(eq(conversation.userId, userId));
+
+	await db.delete(conversation).where(and(...conditions));
 };
 
 // ============================================================================
@@ -182,7 +211,7 @@ export const countMessages = async (conversationId: string) => {
  */
 export const updateMessage = async (
 	id: string,
-	data: Omit<MessageUpdate, "id" | "conversationId" | "createdAt">
+	data: Partial<MessageUpdate>
 ) => {
 	const [updatedMessage] = await db
 		.update(message)

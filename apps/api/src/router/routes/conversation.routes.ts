@@ -43,12 +43,16 @@ export const conversationRoutes = {
 		.input(
 			conversationInsertSchema.omit({
 				id: true,
+				userId: true,
 				createdAt: true,
 				updatedAt: true,
 			})
 		)
-		.handler(async ({ input }) => {
-			const conv = await createConversation(input);
+		.handler(async ({ input, context }) => {
+			const conv = await createConversation({
+				...input,
+				userId: context.user.id,
+			});
 			return conv;
 		}),
 
@@ -80,11 +84,12 @@ export const conversationRoutes = {
 				total: z.number(),
 			})
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			const { limit = 20, offset = 0, profileId } = input;
+			const userId = context.user.id;
 			const [conversations, total] = await Promise.all([
-				listConversations(limit, offset, profileId),
-				countConversations(profileId),
+				listConversations(limit, offset, profileId, userId),
+				countConversations(profileId, userId),
 			]);
 
 			return {
@@ -117,8 +122,8 @@ export const conversationRoutes = {
 				updatedAt: z.string(),
 			})
 		)
-		.handler(async ({ input }) => {
-			const conv = await getConversation(input.id);
+		.handler(async ({ input, context }) => {
+			const conv = await getConversation(input.id, context.user.id);
 			if (!conv) {
 				throw new ORPCError("NOT_FOUND", { message: "Conversation not found" });
 			}
@@ -139,8 +144,11 @@ export const conversationRoutes = {
 			description: "Get a conversation with all its messages",
 		})
 		.input(z.object({ id: z.string() }))
-		.handler(async ({ input }) => {
-			const conv = await getConversationWithMessages(input.id);
+		.handler(async ({ input, context }) => {
+			const conv = await getConversationWithMessages(
+				input.id,
+				context.user.id
+			);
 			if (!conv) {
 				throw new ORPCError("NOT_FOUND", { message: "Conversation not found" });
 			}
@@ -174,12 +182,17 @@ export const conversationRoutes = {
 				id: z.string(),
 				data: conversationUpdateSchema.omit({
 					id: true,
+					userId: true,
 					createdAt: true,
 				}),
 			})
 		)
-		.handler(async ({ input }) => {
-			const conv = await updateConversation(input.id, input.data as any);
+		.handler(async ({ input, context }) => {
+			const conv = await updateConversation(
+				input.id,
+				input.data,
+				context.user.id
+			);
 			if (!conv) {
 				throw new ORPCError("NOT_FOUND", { message: "Conversation not found" });
 			}
@@ -201,12 +214,12 @@ export const conversationRoutes = {
 		})
 		.input(z.object({ id: z.string() }))
 		.output(z.object({ message: z.string() }))
-		.handler(async ({ input }) => {
-			const conv = await getConversation(input.id);
+		.handler(async ({ input, context }) => {
+			const conv = await getConversation(input.id, context.user.id);
 			if (!conv) {
 				throw new ORPCError("NOT_FOUND", { message: "Conversation not found" });
 			}
-			await deleteConversation(input.id);
+			await deleteConversation(input.id, context.user.id);
 			return { message: "Conversation deleted" };
 		}),
 
@@ -229,8 +242,11 @@ export const conversationRoutes = {
 				}),
 			})
 		)
-		.handler(async ({ input }) => {
-			const conv = await getConversation(input.conversationId);
+		.handler(async ({ input, context }) => {
+			const conv = await getConversation(
+				input.conversationId,
+				context.user.id
+			);
 			if (!conv) {
 				throw new ORPCError("NOT_FOUND", { message: "Conversation not found" });
 			}
@@ -282,10 +298,10 @@ export const conversationRoutes = {
 				total: z.number(),
 			})
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			const { conversationId, limit = 50, offset = 0 } = input;
 
-			const conv = await getConversation(conversationId);
+			const conv = await getConversation(conversationId, context.user.id);
 			if (!conv) {
 				throw new ORPCError("NOT_FOUND", { message: "Conversation not found" });
 			}
@@ -322,7 +338,16 @@ export const conversationRoutes = {
 				id: z.string(),
 			})
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
+			// Verify conversation ownership first
+			const conv = await getConversation(
+				input.conversationId,
+				context.user.id
+			);
+			if (!conv) {
+				throw new ORPCError("NOT_FOUND", { message: "Message not found" });
+			}
+
 			const msg = await getMessage(input.id);
 			if (!msg || msg.conversationId !== input.conversationId) {
 				throw new ORPCError("NOT_FOUND", { message: "Message not found" });
@@ -356,13 +381,22 @@ export const conversationRoutes = {
 				}),
 			})
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
+			// Verify conversation ownership
+			const conv = await getConversation(
+				input.conversationId,
+				context.user.id
+			);
+			if (!conv) {
+				throw new ORPCError("NOT_FOUND", { message: "Message not found" });
+			}
+
 			const existingMsg = await getMessage(input.id);
 			if (!existingMsg || existingMsg.conversationId !== input.conversationId) {
 				throw new ORPCError("NOT_FOUND", { message: "Message not found" });
 			}
 
-			const msg = await updateMessage(input.id, input.data as any);
+			const msg = await updateMessage(input.id, input.data);
 			if (!msg) {
 				throw new ORPCError("NOT_FOUND", { message: "Message not found" });
 			}
@@ -392,7 +426,16 @@ export const conversationRoutes = {
 			})
 		)
 		.output(z.object({ message: z.string() }))
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
+			// Verify conversation ownership
+			const conv = await getConversation(
+				input.conversationId,
+				context.user.id
+			);
+			if (!conv) {
+				throw new ORPCError("NOT_FOUND", { message: "Message not found" });
+			}
+
 			const existingMsg = await getMessage(input.id);
 			if (!existingMsg || existingMsg.conversationId !== input.conversationId) {
 				throw new ORPCError("NOT_FOUND", { message: "Message not found" });
@@ -410,8 +453,11 @@ export const conversationRoutes = {
 		})
 		.input(z.object({ conversationId: z.string() }))
 		.output(z.object({ message: z.string() }))
-		.handler(async ({ input }) => {
-			const conv = await getConversation(input.conversationId);
+		.handler(async ({ input, context }) => {
+			const conv = await getConversation(
+				input.conversationId,
+				context.user.id
+			);
 			if (!conv) {
 				throw new ORPCError("NOT_FOUND", { message: "Conversation not found" });
 			}

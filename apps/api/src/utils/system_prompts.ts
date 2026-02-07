@@ -1,11 +1,11 @@
 type SystemPromptParams = {
 	context: string;
 	assistantName?: string;
-	tone?: "casual" | "professional" | "friendly" | "formal";
+	tone?: "casual" | "professional" | "friendly" | "formal" | (string & {});
 	domain?: string; // e.g., "tech support", "legal", "healthcare"
 	companyName?: string;
 	enableCitations?: boolean;
-	responseLength?: "concise" | "detailed" | "balanced";
+	responseLength?: "concise" | "detailed" | "balanced" | (string & {});
 	customInstructions?: string[];
 	language?: string;
 };

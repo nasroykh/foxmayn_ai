@@ -16,8 +16,11 @@ const openrouter = new OpenRouter({
 	httpReferer: env.APP_URL || "https://foxmayn.ai", // Optional. Site URL for rankings on openrouter.ai.
 });
 
+export type AIModelId = (typeof OPENROUTER_AI_MODELS)[number]["id"];
+export type EmbeddingModelId = (typeof OPENROUTER_EMBEDDING_MODELS)[number]["id"];
+
 type AISettings = {
-	model: (typeof OPENROUTER_AI_MODELS)[number]["id"];
+	model: AIModelId | (string & {});
 	temperature: number;
 	topP?: number;
 	maxTokens: number;
@@ -42,7 +45,7 @@ export const OpenRouterQuery = async (
 	try {
 		const messages = chatHistory && chatHistory.length ? [...chatHistory] : [];
 
-		if (!prompt && !prompt?.trim()) throw new Error("Prompt is required");
+		if (!prompt || !prompt.trim()) throw new Error("Prompt is required");
 
 		if (systemPrompt && systemPrompt.trim()) {
 			messages.unshift({ role: "system", content: systemPrompt });
@@ -101,7 +104,7 @@ export const OpenRouterQuery = async (
  * @returns Array of embedding vectors in the same order as input text chunks
  */
 export const OpenRouterEmbed = async (
-	model: (typeof OPENROUTER_EMBEDDING_MODELS)[number]["id"],
+	model: EmbeddingModelId | (string & {}),
 	chunks: string[]
 ): Promise<number[][]> => {
 	if (!chunks.length) throw new Error("Chunks are required");

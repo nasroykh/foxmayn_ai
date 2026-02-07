@@ -61,6 +61,7 @@ async function resolveChatHistory(input: {
 	messages?: Array<{ role: "user" | "assistant" | "system"; content: string }>;
 	conversationId?: string;
 	profileId?: string;
+	userId: string;
 }): Promise<{
 	messages: ChatMessage[];
 	conversationId: string | null;
@@ -78,7 +79,7 @@ async function resolveChatHistory(input: {
 	// Mode 2: Server-managed - we handle storage
 	if (input.conversationId) {
 		// Continuing an existing conversation
-		const conv = await getConversation(input.conversationId);
+		const conv = await getConversation(input.conversationId, input.userId);
 		if (!conv) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Conversation not found",
@@ -102,6 +103,7 @@ async function resolveChatHistory(input: {
 	// Mode 2: New conversation (no conversationId provided, no messages)
 	// Create a new conversation - will be populated after first exchange
 	const conv = await createConversation({
+		userId: input.userId,
 		profileId: input.profileId ?? null,
 		title: null, // Will be set later or remain null
 	});
@@ -145,7 +147,7 @@ export const chatRoutes = {
 				"Non-streaming query endpoint. Supports client-managed (messages array) or server-managed (conversationId) history.",
 		})
 		.input(queryBodySchema)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			const { query, messages, conversationId, options } = input;
 
 			// Resolve history mode
@@ -153,6 +155,7 @@ export const chatRoutes = {
 				messages: messages as ChatMessage[] | undefined,
 				conversationId,
 				profileId: options?.profileId,
+				userId: context.user.id,
 			});
 
 			const result = await queryRAG(query, {
@@ -213,7 +216,7 @@ export const chatRoutes = {
 				"Streaming query endpoint. Supports client-managed (messages array) or server-managed (conversationId) history.",
 		})
 		.input(queryBodySchema)
-		.handler(async function* ({ input }) {
+		.handler(async function* ({ input, context }) {
 			const { query, messages, conversationId, options } = input;
 
 			// Resolve history mode
@@ -221,6 +224,7 @@ export const chatRoutes = {
 				messages: messages as ChatMessage[] | undefined,
 				conversationId,
 				profileId: options?.profileId,
+				userId: context.user.id,
 			});
 
 			// Yield conversationId first for server-managed mode

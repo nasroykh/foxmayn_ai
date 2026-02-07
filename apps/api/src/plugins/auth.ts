@@ -42,5 +42,6 @@ const initSuperAdmin = async () => {
 		console.log("Super admin initialized successfully");
 	} catch (error) {
 		console.error("Failed to initialize super admin:", error);
+		throw error;
 	}
 };

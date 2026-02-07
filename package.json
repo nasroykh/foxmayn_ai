@@ -1,10 +1,10 @@
 {
-	"name": "app_template",
+	"name": "foxmayn-ai",
 	"private": true,
 	"version": "0.0.0",
 	"scripts": {
-		"build": "pnpm --filter=db build && pnpm --filter=qdrant build && pnpm --filter=api build && pnpm --filter=app build",
-		"dev": "pnpm --filter=db build && pnpm --filter=qdrant build && pnpm --filter=api build && concurrently -n api,app -c blue,green \"pnpm --filter=api dev\" \"pnpm --filter=app dev\"",
+		"build": "turbo build",
+		"dev": "turbo build && concurrently -n api,worker,app -c blue,yellow,green \"pnpm --filter=api dev\" \"pnpm --filter=api dev:worker\" \"pnpm --filter=app dev\"",
 		"start": "concurrently -n api,app -c blue,green \"pnpm --filter=api start\" \"pnpm --filter=app start\"",
 		"build:db": "pnpm --filter=db build",
 		"build:qdrant": "pnpm --filter=qdrant build",
@@ -21,10 +21,14 @@
 		"skills:symlink:claude": "mkdir -p .claude/skills/ && rm -rf .claude/skills/* && cd .claude/skills/ && ln -s ../../.agents/skills/*/ .",
 		"skills:symlink:cursor": "mkdir -p .cursor/skills/ && rm -rf .cursor/skills/* && cd .cursor/skills/ && ln -s ../../.agents/skills/*/ .",
 		"skills:symlink:agent": "mkdir -p .agent/skills/ && rm -rf .agent/skills/* && cd .agent/skills/ && ln -s ../../.agents/skills/*/ .",
-		"skills:symlink:all": "pnpm skills:symlink:claude && pnpm skills:symlink:cursor && pnpm skills:symlink:agent"
+		"skills:symlink:all": "pnpm skills:symlink:claude && pnpm skills:symlink:cursor && pnpm skills:symlink:agent",
+		"lint": "eslint .",
+		"format": "prettier --write .",
+		"format:check": "prettier --check ."
 	},
 	"devDependencies": {
-		"concurrently": "^9.2.1"
+		"concurrently": "^9.2.1",
+		"turbo": "^2.3.3"
 	},
 	"pnpm": {
 		"onlyBuiltDependencies": [

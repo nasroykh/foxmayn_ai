@@ -1,14 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { db, document } from "@repo/db";
-import {
-	createQdrantClient,
-	createCollection,
-	searchVectors,
-} from "@repo/qdrant";
-import { eq } from "@repo/db/drizzle-orm";
+import { searchVectors } from "@repo/qdrant";
+import { eq, and, count } from "@repo/db/drizzle-orm";
 import { OpenRouterQuery, OpenRouterEmbed } from "@repo/llm/openrouter";
-import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
-import { env } from "../config/env";
 import { getProfile, getDefaultProfile } from "./profile.service";
 import {
 	addIndexDocumentJob,
@@ -18,6 +12,11 @@ import {
 import { parseDocx, parseHTML, parsePDF, parseXlsx } from "../utils/parsers";
 import { ORPCError } from "@orpc/server";
 import { GET_MAIN_SYSTEM_PROMPT } from "../utils/system_prompts";
+import {
+	qdrant,
+	ensureCollection,
+	type VectorPayload,
+} from "./qdrant.shared";
 
 const ALLOWED_FILE_TYPES = [
 	"text/plain",
@@ -33,46 +32,6 @@ const ALLOWED_FILE_TYPES = [
 	// "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ];
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-
-// Constants
-const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME || "foxmayn_ai";
-
-// Initialize Qdrant client
-const qdrant = createQdrantClient({ url: env.QDRANT_URL });
-
-// Collection initialization map to handle multiple embedding models (dimensions)
-const initializedCollections = new Set<string>();
-
-const ensureCollection = async (modelId: string) => {
-	const model = OPENROUTER_EMBEDDING_MODELS.find((m) => m.id === modelId);
-	if (!model) {
-		throw new Error(`Embedding model not found: ${modelId}`);
-	}
-
-	const collectionName = `${COLLECTION_NAME}_${model.dimensions}`;
-
-	if (initializedCollections.has(collectionName)) return collectionName;
-
-	await createCollection(qdrant, collectionName, {
-		size: model.dimensions,
-		distance: "Cosine",
-		keywordFields: ["documentId", "source"],
-		textFields: ["content"],
-	});
-
-	initializedCollections.add(collectionName);
-	return collectionName;
-};
-
-// Payload type for Qdrant vectors
-interface VectorPayload extends Record<string, unknown> {
-	documentId: string;
-	chunkId: string;
-	content: string;
-	chunkIndex: number;
-	source?: string;
-	metadata?: Record<string, unknown>;
-}
 
 // Types
 export interface ChatMessage {
@@ -122,8 +81,9 @@ export const indexDocument = async (options: {
 	source?: string;
 	profileId?: string;
 	metadata?: Record<string, unknown>;
+	userId: string;
 }): Promise<{ documentId: string; jobId: string | undefined }> => {
-	const { file, title, source, profileId, metadata } = options;
+	const { file, title, source, profileId, metadata, userId } = options;
 
 	if (!file || !file.name || !file.type)
 		throw new ORPCError("BAD_REQUEST", {
@@ -157,6 +117,7 @@ export const indexDocument = async (options: {
 	// Create document record with status "processing"
 	await db.insert(document).values({
 		id: documentId,
+		userId,
 		profileId,
 		title: docTitle,
 		content,
@@ -208,7 +169,7 @@ export const searchChunks = async (
 	const collectionName = await ensureCollection(embeddingModelId);
 
 	// Generate query embedding
-	const embeddings = await OpenRouterEmbed(embeddingModelId as any, [query]);
+	const embeddings = await OpenRouterEmbed(embeddingModelId, [query]);
 
 	// Build filter
 	let qdrantFilter = undefined;
@@ -265,10 +226,10 @@ export const queryRAG = async (
 		context,
 		assistantName: profile?.assistantName || "Assistant",
 		companyName: profile?.companyName || undefined,
-		tone: (profile?.tone as any) || "friendly",
+		tone: profile?.tone || "friendly",
 		domain: profile?.domain || undefined,
 		enableCitations: profile?.enableCitations ?? true,
-		responseLength: (profile?.responseLength as any) || "balanced",
+		responseLength: profile?.responseLength || "balanced",
 		language: profile?.language || "English",
 		customInstructions: profile?.customInstructions || [],
 	});
@@ -276,7 +237,7 @@ export const queryRAG = async (
 	// Generate answer
 	const answer = await OpenRouterQuery(
 		{
-			model: profile?.model as any,
+			model: profile?.model || "google/gemini-2.5-flash-lite",
 			temperature: profile?.temperature,
 			topP: profile?.topP,
 			maxTokens: profile?.maxTokens,
@@ -336,10 +297,10 @@ export async function* queryRAGStream(
 			context,
 			assistantName: profile?.assistantName || "Assistant",
 			companyName: profile?.companyName || undefined,
-			tone: (profile?.tone as any) || "friendly",
+			tone: profile?.tone || "friendly",
 			domain: profile?.domain || undefined,
 			enableCitations: profile?.enableCitations ?? true,
-			responseLength: (profile?.responseLength as any) || "balanced",
+			responseLength: profile?.responseLength || "balanced",
 			language: profile?.language || "English",
 			customInstructions: profile?.customInstructions || [],
 		});
@@ -347,7 +308,7 @@ export async function* queryRAGStream(
 	// Generate streaming answer
 	const stream = await OpenRouterQuery(
 		{
-			model: profile?.model as any,
+			model: profile?.model || "google/gemini-2.5-flash-lite",
 			temperature: profile?.temperature,
 			topP: profile?.topP,
 			maxTokens: profile?.maxTokens,
@@ -360,7 +321,10 @@ export async function* queryRAGStream(
 	);
 
 	// Handle streaming response
-	if (typeof stream !== "string" && Symbol.asyncIterator in stream) {
+	if (typeof stream === "string") {
+		// Non-stream fallback: OpenRouterQuery returned a plain string
+		yield { type: "token", data: stream };
+	} else if (Symbol.asyncIterator in stream) {
 		for await (const delta of stream) {
 			if (delta) {
 				yield { type: "token", data: delta };
@@ -382,23 +346,52 @@ export const deleteDocument = async (
 };
 
 /**
- * Get document by ID
+ * Get document by ID (scoped to user)
  */
-export const getDocument = async (documentId: string) => {
+export const getDocument = async (documentId: string, userId?: string) => {
+	const conditions = [eq(document.id, documentId)];
+	if (userId) conditions.push(eq(document.userId, userId));
+
 	const [doc] = await db
 		.select()
 		.from(document)
-		.where(eq(document.id, documentId));
+		.where(and(...conditions));
 
 	return doc || null;
 };
 
 /**
- * List documents
+ * List documents (scoped to user)
  */
-export const listDocuments = async (limit = 20, offset = 0) => {
-	const docs = await db.select().from(document).limit(limit).offset(offset);
-	return docs;
+export const listDocuments = async (
+	limit = 20,
+	offset = 0,
+	userId?: string
+) => {
+	if (userId) {
+		return await db
+			.select()
+			.from(document)
+			.where(eq(document.userId, userId))
+			.limit(limit)
+			.offset(offset);
+	}
+	return await db.select().from(document).limit(limit).offset(offset);
+};
+
+/**
+ * Count total documents (scoped to user)
+ */
+export const countDocuments = async (userId?: string) => {
+	if (userId) {
+		const [result] = await db
+			.select({ count: count() })
+			.from(document)
+			.where(eq(document.userId, userId));
+		return result?.count ?? 0;
+	}
+	const [result] = await db.select({ count: count() }).from(document);
+	return result?.count ?? 0;
 };
 
 export const extractTextFromDocument = async (file: File) => {

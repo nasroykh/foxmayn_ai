@@ -2,8 +2,6 @@ import { Worker, Job } from "bullmq";
 import { randomUUID } from "crypto";
 import { db, document, documentChunk } from "@repo/db";
 import {
-	createQdrantClient,
-	createCollection,
 	upsertVectors,
 	deleteVectorsByFilter,
 	type Point,
@@ -20,50 +18,17 @@ import {
 	DocumentJobNames,
 } from "./types";
 import { chunkText, calculateTokens } from "../../services/chunking.service";
-import { env } from "../../config/env";
 import { getProfile, getDefaultProfile } from "../../services/profile.service";
+import {
+	COLLECTION_NAME,
+	qdrant,
+	ensureCollection,
+	type VectorPayload,
+} from "../../services/qdrant.shared";
 
 // Constants
 const QUEUE_NAME = "document";
-const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME || "foxmayn_ai";
 const EMBEDDING_BATCH_SIZE = 20; // Process embeddings in batches of 20
-
-// Initialize Qdrant client
-const qdrant = createQdrantClient({ url: env.QDRANT_URL });
-
-// Collection initialization map to handle multiple embedding models (dimensions)
-const initializedCollections = new Set<string>();
-
-const ensureCollection = async (modelId: string) => {
-	const model = OPENROUTER_EMBEDDING_MODELS.find((m) => m.id === modelId);
-	if (!model) {
-		throw new Error(`Embedding model not found: ${modelId}`);
-	}
-
-	const collectionName = `${COLLECTION_NAME}_${model.dimensions}`;
-
-	if (initializedCollections.has(collectionName)) return collectionName;
-
-	await createCollection(qdrant, collectionName, {
-		size: model.dimensions,
-		distance: "Cosine",
-		keywordFields: ["documentId", "source"],
-		textFields: ["content"],
-	});
-
-	initializedCollections.add(collectionName);
-	return collectionName;
-};
-
-// Payload type for Qdrant vectors
-interface VectorPayload extends Record<string, unknown> {
-	documentId: string;
-	chunkId: string;
-	content: string;
-	chunkIndex: number;
-	source?: string;
-	metadata?: Record<string, unknown>;
-}
 
 /**
  * Process document indexing job
@@ -115,7 +80,7 @@ async function processIndexDocument(
 
 			// Batch embedding call - single API request for multiple texts
 			const batchEmbeddings = await OpenRouterEmbed(
-				embeddingModelId as any,
+				embeddingModelId,
 				batchTexts
 			);
 
@@ -158,9 +123,7 @@ async function processIndexDocument(
 				chunkIndex: chunk.index,
 				tokenCount: calculateTokens(
 					chunk.content,
-					embeddingModelId.includes("large")
-						? "text-embedding-3-large"
-						: "text-embedding-3-small"
+					"gpt-4o"
 				),
 				qdrantPointId: chunkId,
 			};
@@ -204,6 +167,11 @@ async function processIndexDocument(
 			processingTimeMs,
 		};
 	} catch (error) {
+		// Clean up any chunk records that were inserted before failure
+		await db
+			.delete(documentChunk)
+			.where(eq(documentChunk.documentId, documentId));
+
 		// Mark document as failed
 		await db
 			.update(document)

@@ -4,6 +4,7 @@ import { ORPCError } from "@orpc/server";
 import {
 	getDocument,
 	listDocuments,
+	countDocuments,
 	deleteDocument,
 	indexDocument,
 	extractTextFromDocument,
@@ -42,14 +43,27 @@ export const documentRoutes = {
 				status: z.string(),
 			})
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			const { file, title, source, metadata, profileId } = input;
+
+			let parsedMetadata: Record<string, unknown> | undefined;
+			if (metadata) {
+				try {
+					parsedMetadata = JSON.parse(metadata);
+				} catch {
+					throw new ORPCError("BAD_REQUEST", {
+						message: "Invalid metadata JSON",
+					});
+				}
+			}
+
 			const { documentId, jobId } = await indexDocument({
 				file,
 				title,
 				source,
 				profileId,
-				metadata: metadata ? JSON.parse(metadata) : undefined,
+				metadata: parsedMetadata,
+				userId: context.user.id,
 			});
 
 			return {
@@ -130,9 +144,9 @@ export const documentRoutes = {
 				updatedAt: z.string(),
 			})
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			const { id } = input;
-			const doc = await getDocument(id);
+			const doc = await getDocument(id, context.user.id);
 
 			if (!doc) {
 				throw new ORPCError("NOT_FOUND", {
@@ -180,9 +194,13 @@ export const documentRoutes = {
 				total: z.number(),
 			})
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			const { limit = 20, offset = 0 } = input;
-			const docs = await listDocuments(limit, offset);
+			const userId = context.user.id;
+			const [docs, total] = await Promise.all([
+				listDocuments(limit, offset, userId),
+				countDocuments(userId),
+			]);
 
 			return {
 				documents: docs.map((doc) => ({
@@ -194,7 +212,7 @@ export const documentRoutes = {
 					createdAt: doc.createdAt.toISOString(),
 					updatedAt: doc.updatedAt.toISOString(),
 				})),
-				total: docs.length,
+				total,
 			};
 		}),
 
@@ -211,9 +229,9 @@ export const documentRoutes = {
 				jobId: z.string().optional(),
 			})
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			const { id } = input;
-			const doc = await getDocument(id);
+			const doc = await getDocument(id, context.user.id);
 
 			if (!doc) {
 				throw new ORPCError("NOT_FOUND", {

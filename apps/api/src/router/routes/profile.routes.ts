@@ -8,14 +8,14 @@ import {
 	deleteProfile,
 	getDefaultProfile,
 } from "../../services/profile.service";
-import { publicProcedure } from "../middleware";
+import { authProcedure } from "../middleware";
 import { env } from "../../config/env";
 import { ragProfileInsertSchema, ragProfileUpdateSchema } from "@repo/db/types";
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
 export const profileRoutes = {
-	createProfile: publicProcedure
+	createProfile: authProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/profiles`,
@@ -24,16 +24,20 @@ export const profileRoutes = {
 		.input(
 			ragProfileInsertSchema.omit({
 				id: true,
+				userId: true,
 				createdAt: true,
 				updatedAt: true,
 			})
 		)
-		.handler(async ({ input }) => {
-			const profile = await createProfile(input);
+		.handler(async ({ input, context }) => {
+			const profile = await createProfile({
+				...input,
+				userId: context.user.id,
+			});
 			return profile;
 		}),
 
-	listProfiles: publicProcedure
+	listProfiles: authProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/profiles`,
@@ -45,35 +49,35 @@ export const profileRoutes = {
 				limit: z.coerce.number().min(1).max(100).optional(),
 			})
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			const { limit = 20, offset = 0 } = input;
-			const profiles = await listProfiles(limit, offset);
+			const profiles = await listProfiles(limit, offset, context.user.id);
 			return { profiles };
 		}),
 
-	getProfile: publicProcedure
+	getProfile: authProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/profiles/{id}`,
 			description: "Get a profile by ID",
 		})
 		.input(z.object({ id: z.string() }))
-		.handler(async ({ input }) => {
-			const profile = await getProfile(input.id);
+		.handler(async ({ input, context }) => {
+			const profile = await getProfile(input.id, context.user.id);
 			if (!profile) {
 				throw new ORPCError("NOT_FOUND", { message: "Profile not found" });
 			}
 			return profile;
 		}),
 
-	getDefaultProfile: publicProcedure
+	getDefaultProfile: authProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/profiles/default`,
 			description: "Get the default profile",
 		})
-		.handler(async () => {
-			const profile = await getDefaultProfile();
+		.handler(async ({ context }) => {
+			const profile = await getDefaultProfile(context.user.id);
 			if (!profile) {
 				throw new ORPCError("NOT_FOUND", {
 					message: "Default profile not found",
@@ -82,7 +86,7 @@ export const profileRoutes = {
 			return profile;
 		}),
 
-	updateProfile: publicProcedure
+	updateProfile: authProcedure
 		.route({
 			method: "PUT",
 			path: `${PREFIX}/profiles/{id}`,
@@ -93,28 +97,33 @@ export const profileRoutes = {
 				id: z.string(),
 				data: ragProfileUpdateSchema.omit({
 					id: true,
+					userId: true,
 					createdAt: true,
 					updatedAt: true,
 				}),
 			})
 		)
-		.handler(async ({ input }) => {
-			const profile = await updateProfile(input.id, input.data as any);
+		.handler(async ({ input, context }) => {
+			const profile = await updateProfile(
+				input.id,
+				input.data,
+				context.user.id
+			);
 			if (!profile) {
 				throw new ORPCError("NOT_FOUND", { message: "Profile not found" });
 			}
 			return profile;
 		}),
 
-	deleteProfile: publicProcedure
+	deleteProfile: authProcedure
 		.route({
 			method: "DELETE",
 			path: `${PREFIX}/profiles/{id}`,
 			description: "Delete a profile",
 		})
 		.input(z.object({ id: z.string() }))
-		.handler(async ({ input }) => {
-			await deleteProfile(input.id);
+		.handler(async ({ input, context }) => {
+			await deleteProfile(input.id, context.user.id);
 			return { message: "Profile deleted" };
 		}),
 };

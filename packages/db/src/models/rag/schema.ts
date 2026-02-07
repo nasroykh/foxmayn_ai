@@ -10,6 +10,7 @@ import {
 	boolean,
 	real,
 } from "drizzle-orm/pg-core";
+import { user } from "../auth/schema";
 
 // Enums
 export const documentStatusEnum = pgEnum("document_status", [
@@ -28,6 +29,9 @@ export const messageRoleEnum = pgEnum("message_role", [
 // RAG Profile table - stores all settings for the pipeline
 export const ragProfile = pgTable("rag_profile", {
 	id: text("id").primaryKey(),
+	userId: text("user_id")
+		.references(() => user.id, { onDelete: "cascade" })
+		.notNull(),
 	name: text("name").notNull(),
 	description: text("description"),
 	isDefault: boolean("is_default").default(false).notNull(),
@@ -82,6 +86,9 @@ export const document = pgTable(
 	"document",
 	{
 		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.references(() => user.id, { onDelete: "cascade" })
+			.notNull(),
 		profileId: text("profile_id").references(() => ragProfile.id),
 		title: text("title").notNull(),
 		content: text("content").notNull(),
@@ -98,6 +105,7 @@ export const document = pgTable(
 	(table) => [
 		index("document_status_idx").on(table.status),
 		index("document_profile_idx").on(table.profileId),
+		index("document_userId_idx").on(table.userId),
 	]
 );
 
@@ -131,6 +139,9 @@ export const conversation = pgTable(
 	"conversation",
 	{
 		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.references(() => user.id, { onDelete: "cascade" })
+			.notNull(),
 		profileId: text("profile_id").references(() => ragProfile.id),
 		title: text("title"),
 		metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
@@ -140,7 +151,10 @@ export const conversation = pgTable(
 			.$onUpdate(() => new Date())
 			.notNull(),
 	},
-	(table) => [index("conversation_profile_idx").on(table.profileId)]
+	(table) => [
+		index("conversation_profile_idx").on(table.profileId),
+		index("conversation_userId_idx").on(table.userId),
+	]
 );
 
 // Messages table - stores individual messages
@@ -165,12 +179,20 @@ export const message = pgTable(
 );
 
 // Relations
-export const ragProfileRelations = relations(ragProfile, ({ many }) => ({
+export const ragProfileRelations = relations(ragProfile, ({ one, many }) => ({
+	user: one(user, {
+		fields: [ragProfile.userId],
+		references: [user.id],
+	}),
 	documents: many(document),
 	conversations: many(conversation),
 }));
 
 export const documentRelations = relations(document, ({ one, many }) => ({
+	user: one(user, {
+		fields: [document.userId],
+		references: [user.id],
+	}),
 	chunks: many(documentChunk),
 	profile: one(ragProfile, {
 		fields: [document.profileId],
@@ -188,6 +210,10 @@ export const documentChunkRelations = relations(documentChunk, ({ one }) => ({
 export const conversationRelations = relations(
 	conversation,
 	({ one, many }) => ({
+		user: one(user, {
+			fields: [conversation.userId],
+			references: [user.id],
+		}),
 		messages: many(message),
 		profile: one(ragProfile, {
 			fields: [conversation.profileId],
