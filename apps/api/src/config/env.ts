@@ -3,6 +3,9 @@ import "dotenv/config";
 
 // Define the schema for your environment variables
 const envSchema = z.object({
+	// Redis Configuration
+	REDIS_URL: z.url(),
+
 	// Super Admin Configuration
 	SUPER_ADMIN_EMAIL: z.email(),
 	SUPER_ADMIN_PASSWORD: z.string().min(8),
@@ -39,6 +42,13 @@ const envSchema = z.object({
 
 	// Better Auth Configuration
 	BETTER_AUTH_SECRET: z.string(),
+
+	// OpenRouter Configuration
+	OPENROUTER_API_KEY: z.string(),
+
+	// Qdrant Configuration
+	QDRANT_URL: z.url(),
+	QDRANT_COLLECTION_NAME: z.string(),
 });
 
 // Validate the environment variables and export the result

@@ -1,9 +1,12 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { admin } from "better-auth/plugins/admin";
-import { emailOTP } from "better-auth/plugins/email-otp";
-import { organization } from "better-auth/plugins/organization";
-import { bearer } from "better-auth/plugins/bearer";
+import {
+	organization,
+	emailOTP,
+	admin,
+	bearer,
+	apiKey,
+} from "better-auth/plugins";
 
 import { db } from "@repo/db";
 import * as schema from "@repo/db/schema";
@@ -20,6 +23,13 @@ export const auth = betterAuth({
 	plugins: [
 		admin(),
 		bearer(),
+		apiKey({
+			rateLimit: {
+				maxRequests: 100,
+				timeWindow: 1000 * 60 * 5, // 5 minutes
+			},
+			enableSessionForAPIKeys: true,
+		}),
 		organization({
 			async sendInvitationEmail(data) {
 				const inviteLink = `${env.APP_URL}/invite/${data.id}`;

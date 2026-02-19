@@ -1,11 +1,23 @@
-import { userRoutes } from "./routes/user.routes";
-import { organizationRoutes } from "./routes/organization.routes";
-import { healthRoutes } from "./routes/health.routes";
+import {
+	organizationRoutes,
+	documentRoutes,
+	chatRoutes,
+	profileRoutes,
+	apiKeyRoutes,
+	conversationRoutes,
+	healthRoutes,
+	userRoutes,
+} from "./routes/index.routes";
 
 export const router = {
 	health: healthRoutes,
 	users: userRoutes,
 	organization: organizationRoutes,
+	documents: documentRoutes,
+	chat: chatRoutes,
+	profiles: profileRoutes,
+	apikeys: apiKeyRoutes,
+	conversations: conversationRoutes,
 };
 
 export type AppRouter = typeof router;

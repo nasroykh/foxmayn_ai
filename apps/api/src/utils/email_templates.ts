@@ -1,7 +1,7 @@
 export const INVITATION_EMAIL_HTML = (
 	inviterName: string,
 	organizationName: string,
-	inviteLink: string
+	inviteLink: string,
 ) => `
 <!DOCTYPE html>
 <html lang="en">
