@@ -17,7 +17,8 @@ const openrouter = new OpenRouter({
 });
 
 export type AIModelId = (typeof OPENROUTER_AI_MODELS)[number]["id"];
-export type EmbeddingModelId = (typeof OPENROUTER_EMBEDDING_MODELS)[number]["id"];
+export type EmbeddingModelId =
+	(typeof OPENROUTER_EMBEDDING_MODELS)[number]["id"];
 
 type AISettings = {
 	model: AIModelId | (string & {});
@@ -40,7 +41,7 @@ export const OpenRouterQuery = async (
 	settings: AISettings,
 	chatHistory?: { role: "system" | "user" | "assistant"; content: string }[],
 	systemPrompt?: string,
-	prompt?: string
+	prompt?: string,
 ) => {
 	try {
 		const messages = chatHistory && chatHistory.length ? [...chatHistory] : [];
@@ -95,33 +96,35 @@ export const OpenRouterQuery = async (
 	}
 };
 
-/**
- * Batch embedding - generates embeddings for multiple text chunks in a single API call
- * MUCH more efficient than calling OpenRouterEmbed in a loop
- *
- * @param model - Embedding model to use
- * @param chunks - Array of text chunks to embed (max ~100 for best performance)
- * @returns Array of embedding vectors in the same order as input text chunks
- */
+// /**
+//  * Batch embedding - generates embeddings for multiple text chunks in a single API call
+//  * MUCH more efficient than calling OpenRouterEmbed in a loop
+//  *
+//  * @param model - Embedding model to use
+//  * @param chunks - Array of text chunks to embed (max ~100 for best performance)
+//  * @returns Array of embedding vectors in the same order as input text chunks
+//  */
 export const OpenRouterEmbed = async (
 	model: EmbeddingModelId | (string & {}),
-	chunks: string[]
+	chunks: string[],
 ): Promise<number[][]> => {
 	if (!chunks.length) throw new Error("Chunks are required");
 
 	try {
 		const dimensions = OPENROUTER_EMBEDDING_MODELS.find(
-			(m) => m.id === model
+			(m) => m.id === model,
 		)?.dimensions;
 
 		if (!dimensions) throw new Error("Invalid model");
 
 		// OpenRouter SDK uses .generate() instead of .create()
 		const response = await openrouter.embeddings.generate({
-			model,
-			input: chunks,
-			encodingFormat: "float",
-			dimensions,
+			requestBody: {
+				input: chunks,
+				model,
+				encodingFormat: "float",
+				dimensions,
+			},
 		});
 
 		// Response can be a string or object, validation required
@@ -136,7 +139,7 @@ export const OpenRouterEmbed = async (
 		// Response data is sorted by index
 		// Sort by index to ensure order matches input
 		const sorted = response.data.sort(
-			(a, b) => (a.index ?? 0) - (b.index ?? 0)
+			(a, b) => (a.index ?? 0) - (b.index ?? 0),
 		);
 
 		return sorted.map((item) => {

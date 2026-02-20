@@ -1,5 +1,5 @@
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { encodingForModel, TiktokenModel } from "js-tiktoken";
+import { encodingForModel } from "js-tiktoken";
 
 /**
  * Text chunking service using LangChain's RecursiveCharacterTextSplitter
@@ -37,7 +37,7 @@ export const TIKTOKEN_MODELS=["gpt-4o","gpt-4o-2024-05-13","gpt-4o-2024-08-06","
  */
 export const calculateTokens = (
 	text: string,
-	encoding: (typeof TIKTOKEN_MODELS)[number]
+	encoding: (typeof TIKTOKEN_MODELS)[number],
 ): number => {
 	return encodingForModel(encoding).encode(text).length;
 };
@@ -47,7 +47,7 @@ export const calculateTokens = (
  */
 export const chunkText = async (
 	text: string,
-	options: ChunkOptions = {}
+	options: ChunkOptions = {},
 ): Promise<Chunk[]> => {
 	const {
 		chunkSize = 500, // ~500 tokens
@@ -64,7 +64,7 @@ export const chunkText = async (
 	const textChunks = await splitter.splitText(text);
 
 	return textChunks
-		.map((content, index) => content.trim())
+		.map((content) => content.trim())
 		.filter((content) => content.length > 0)
 		.map((content, index) => ({ content, index }));
 };
@@ -75,7 +75,7 @@ export const chunkText = async (
 export const addContextualPrefix = (
 	chunks: Chunk[],
 	documentTitle: string,
-	documentSummary?: string
+	documentSummary?: string,
 ): Chunk[] => {
 	const prefix = documentSummary
 		? `Document: ${documentTitle}\nSummary: ${documentSummary}\n\nContent: `

@@ -31,6 +31,7 @@ async function seed() {
 		language: "English",
 		enableCitations: true,
 		customInstructions: [],
+		userId: "1234567890",
 	});
 
 	console.log("✅ Default profile created");

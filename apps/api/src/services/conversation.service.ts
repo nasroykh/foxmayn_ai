@@ -1,10 +1,10 @@
 import { db, conversation, message } from "@repo/db";
 import { eq, desc, and, count } from "@repo/db/drizzle-orm";
 import {
-	ConversationInsert,
-	ConversationUpdate,
-	MessageInsert,
-	MessageUpdate,
+	type ConversationInsert,
+	type ConversationUpdate,
+	type MessageInsert,
+	type MessageUpdate,
 } from "@repo/db/types";
 import { randomUUID } from "node:crypto";
 
@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
  * Create a new conversation
  */
 export const createConversation = async (
-	data: Omit<ConversationInsert, "id" | "createdAt" | "updatedAt">
+	data: Omit<ConversationInsert, "id" | "createdAt" | "updatedAt">,
 ) => {
 	const id = randomUUID();
 	const [newConversation] = await db
@@ -45,7 +45,7 @@ export const getConversation = async (id: string, userId?: string) => {
  */
 export const getConversationWithMessages = async (
 	id: string,
-	userId?: string
+	userId?: string,
 ) => {
 	const conditions = [eq(conversation.id, id)];
 	if (userId) conditions.push(eq(conversation.userId, userId));
@@ -73,7 +73,7 @@ export const listConversations = async (
 	limit = 20,
 	offset = 0,
 	profileId?: string,
-	userId?: string
+	userId?: string,
 ) => {
 	const conditions = [];
 	if (userId) conditions.push(eq(conversation.userId, userId));
@@ -98,7 +98,7 @@ export const listConversations = async (
  */
 export const countConversations = async (
 	profileId?: string,
-	userId?: string
+	userId?: string,
 ) => {
 	const conditions = [];
 	if (userId) conditions.push(eq(conversation.userId, userId));
@@ -122,7 +122,7 @@ export const countConversations = async (
 export const updateConversation = async (
 	id: string,
 	data: Partial<ConversationUpdate>,
-	userId?: string
+	userId?: string,
 ) => {
 	const conditions = [eq(conversation.id, id)];
 	if (userId) conditions.push(eq(conversation.userId, userId));
@@ -153,7 +153,7 @@ export const deleteConversation = async (id: string, userId?: string) => {
  * Create a new message
  */
 export const createMessage = async (
-	data: Omit<MessageInsert, "id" | "createdAt" | "updatedAt">
+	data: Omit<MessageInsert, "id" | "createdAt" | "updatedAt">,
 ) => {
 	const id = randomUUID();
 	const [newMessage] = await db
@@ -184,7 +184,7 @@ export const getMessage = async (id: string) => {
 export const listMessages = async (
 	conversationId: string,
 	limit = 50,
-	offset = 0
+	offset = 0,
 ) => {
 	return await db
 		.select()
@@ -211,7 +211,7 @@ export const countMessages = async (conversationId: string) => {
  */
 export const updateMessage = async (
 	id: string,
-	data: Partial<MessageUpdate>
+	data: Partial<MessageUpdate>,
 ) => {
 	const [updatedMessage] = await db
 		.update(message)

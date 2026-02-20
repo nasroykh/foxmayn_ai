@@ -1,16 +1,12 @@
 {
-	"extends": "../../tsconfig.base.json",
+	"extends": "@repo/tsconfig/node.json",
 	"compilerOptions": {
-		"outDir": "dist",
 		"rootDir": "src",
+		"outDir": "dist",
 		"module": "CommonJS",
 		"moduleResolution": "node10",
-		"types": ["node"],
 		"tsBuildInfoFile": "./dist/.tsbuildinfo"
 	},
 	"include": ["src/**/*"],
-	"ts-node": {
-		"esm": true,
-		"experimentalSpecifierResolution": "node"
-	}
+	"exclude": ["node_modules", "dist"]
 }

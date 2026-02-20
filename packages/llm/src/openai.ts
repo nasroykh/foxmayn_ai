@@ -52,7 +52,7 @@ export const OPENROUTER_EMBEDDING_MODELS = [
 
 // Default settings
 export const DEFAULT_OPENROUTER_MODEL = OPENROUTER_AI_MODELS.find(
-	(m) => m.id === "google/gemini-2.5-flash-lite"
+	(m) => m.id === "google/gemini-2.5-flash-lite",
 );
 export const DEFAULT_TEMPERATURE = 1.0;
 export const DEFAULT_MAX_TOKENS = 500;
@@ -71,97 +71,97 @@ const openai = new OpenAI({
 	},
 });
 
-type AISettings = {
-	model: (typeof OPENROUTER_AI_MODELS)[number]["id"];
-	temperature: number;
-	topP?: number;
-	maxTokens: number;
-	reasoningEffort: ReasoningEffort;
-	stream?: boolean;
-};
+// // type AISettings = {
+// // 	model: (typeof OPENROUTER_AI_MODELS)[number]["id"];
+// // 	temperature: number;
+// // 	topP?: number;
+// // 	maxTokens: number;
+// // 	reasoningEffort: ReasoningEffort;
+// // 	stream?: boolean;
+// // };
 
-export const OpenRouterQuery = async (
-	settings: AISettings,
-	chatHistory?: OpenAI.ChatCompletionMessageParam[],
-	systemPrompt?: string,
-	prompt?: string
-) => {
-	try {
-		const messages = chatHistory ? [...chatHistory] : [];
+// // export const OpenRouterQuery = async (
+// // 	settings: AISettings,
+// // 	chatHistory?: OpenAI.ChatCompletionMessageParam[],
+// // 	systemPrompt?: string,
+// // 	prompt?: string
+// // ) => {
+// // 	try {
+// // 		const messages = chatHistory ? [...chatHistory] : [];
 
-		if (systemPrompt && systemPrompt.trim()) {
-			messages.unshift({ role: "system", content: systemPrompt });
-		}
+// // 		if (systemPrompt && systemPrompt.trim()) {
+// // 			messages.unshift({ role: "system", content: systemPrompt });
+// // 		}
 
-		if (prompt && prompt.trim()) {
-			messages.push({ role: "user", content: prompt });
-		} else {
-			throw new Error("Prompt is required");
-		}
+// // 		if (prompt && prompt.trim()) {
+// // 			messages.push({ role: "user", content: prompt });
+// // 		} else {
+// // 			throw new Error("Prompt is required");
+// // 		}
 
-		if (messages.length === 0) {
-			throw new Error("No messages provided");
-		}
+// // 		if (messages.length === 0) {
+// // 			throw new Error("No messages provided");
+// // 		}
 
-		if (settings.temperature && settings.temperature !== 0) {
-			if (settings.temperature < 0 || settings.temperature > 2) {
-				throw new Error("Temperature must be between 0 and 2");
-			}
-		}
+// // 		if (settings.temperature && settings.temperature !== 0) {
+// // 			if (settings.temperature < 0 || settings.temperature > 2) {
+// // 				throw new Error("Temperature must be between 0 and 2");
+// // 			}
+// // 		}
 
-		if (settings.maxTokens && settings.maxTokens <= 0) {
-			throw new Error("Max tokens must be greater than 0");
-		}
+// // 		if (settings.maxTokens && settings.maxTokens <= 0) {
+// // 			throw new Error("Max tokens must be greater than 0");
+// // 		}
 
-		if (settings.stream && settings.stream === true) {
-			const stream = await openai.chat.completions.create({
-				messages,
-				model: settings.model || DEFAULT_OPENROUTER_MODEL,
-				temperature: settings.temperature || DEFAULT_TEMPERATURE,
-				top_p: settings.topP ?? 1.0,
-				max_completion_tokens: settings.maxTokens || DEFAULT_MAX_TOKENS,
-				reasoning_effort:
-					(settings.reasoningEffort as ReasoningEffort) ||
-					DEFAULT_REASONING_EFFORT,
-				stream: true,
-			});
+// // 		if (settings.stream && settings.stream === true) {
+// // 			const stream = await openai.chat.completions.create({
+// // 				messages,
+// // 				model: settings.model || DEFAULT_OPENROUTER_MODEL,
+// // 				temperature: settings.temperature || DEFAULT_TEMPERATURE,
+// // 				top_p: settings.topP ?? 1.0,
+// // 				max_completion_tokens: settings.maxTokens || DEFAULT_MAX_TOKENS,
+// // 				reasoning_effort:
+// // 					(settings.reasoningEffort as ReasoningEffort) ||
+// // 					DEFAULT_REASONING_EFFORT,
+// // 				stream: true,
+// // 			});
 
-			return stream;
-		} else {
-			const { choices } = await openai.chat.completions.create({
-				messages,
-				model: settings.model || DEFAULT_OPENROUTER_MODEL,
-				temperature: settings.temperature || DEFAULT_TEMPERATURE,
-				top_p: settings.topP ?? 1.0,
-				max_completion_tokens: settings.maxTokens || DEFAULT_MAX_TOKENS,
-				reasoning_effort:
-					(settings.reasoningEffort as ReasoningEffort) ||
-					DEFAULT_REASONING_EFFORT,
-			});
+// // 			return stream;
+// // 		} else {
+// // 			const { choices } = await openai.chat.completions.create({
+// // 				messages,
+// // 				model: settings.model || DEFAULT_OPENROUTER_MODEL,
+// // 				temperature: settings.temperature || DEFAULT_TEMPERATURE,
+// // 				top_p: settings.topP ?? 1.0,
+// // 				max_completion_tokens: settings.maxTokens || DEFAULT_MAX_TOKENS,
+// // 				reasoning_effort:
+// // 					(settings.reasoningEffort as ReasoningEffort) ||
+// // 					DEFAULT_REASONING_EFFORT,
+// // 			});
 
-			if (choices.length <= 0) {
-				throw new Error("No choices returned from completion");
-			}
+// // 			if (choices.length <= 0) {
+// // 				throw new Error("No choices returned from completion");
+// // 			}
 
-			if (!choices[0]?.message.content) {
-				throw new Error("No message returned from completion");
-			}
+// // 			if (!choices[0]?.message.content) {
+// // 				throw new Error("No message returned from completion");
+// // 			}
 
-			return choices[0].message.content;
-		}
-	} catch (error) {
-		console.error(error);
-		throw error;
-	}
-};
+// // 			return choices[0].message.content;
+// // 		}
+// // 	} catch (error) {
+// // 		console.error(error);
+// // 		throw error;
+// // 	}
+// // };
 
 export const OpenRouterEmbed = async (
 	model: (typeof OPENROUTER_EMBEDDING_MODELS)[number]["id"],
-	text: string
+	text: string,
 ) => {
 	try {
 		let dimensions = OPENROUTER_EMBEDDING_MODELS.find(
-			(m) => m.id === model
+			(m) => m.id === model,
 		)?.dimensions;
 
 		if (!dimensions) {
@@ -196,7 +196,7 @@ export const OpenRouterEmbed = async (
  */
 export const OpenRouterEmbedBatch = async (
 	model: (typeof OPENROUTER_EMBEDDING_MODELS)[number]["id"],
-	texts: string[]
+	texts: string[],
 ): Promise<number[][]> => {
 	if (texts.length === 0) {
 		return [];
@@ -210,7 +210,7 @@ export const OpenRouterEmbedBatch = async (
 
 	try {
 		let dimensions = OPENROUTER_EMBEDDING_MODELS.find(
-			(m) => m.id === model
+			(m) => m.id === model,
 		)?.dimensions;
 
 		if (!dimensions) {

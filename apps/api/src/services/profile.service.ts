@@ -1,13 +1,13 @@
 import { db, ragProfile } from "@repo/db";
 import { eq, desc, and } from "@repo/db/drizzle-orm";
-import { RagProfileInsert, RagProfileUpdate } from "@repo/db/types";
+import type { RagProfileInsert, RagProfileUpdate } from "@repo/db/types";
 import { randomUUID } from "node:crypto";
 
 /**
  * Create a new RAG profile
  */
 export const createProfile = async (
-	data: Omit<RagProfileInsert, "id" | "createdAt" | "updatedAt">
+	data: Omit<RagProfileInsert, "id" | "createdAt" | "updatedAt">,
 ) => {
 	const id = randomUUID();
 	const [newProfile] = await db
@@ -49,11 +49,7 @@ export const getDefaultProfile = async (userId?: string) => {
 /**
  * List all RAG profiles (scoped to user)
  */
-export const listProfiles = async (
-	limit = 20,
-	offset = 0,
-	userId?: string
-) => {
+export const listProfiles = async (limit = 20, offset = 0, userId?: string) => {
 	if (userId) {
 		return await db
 			.select()
@@ -77,7 +73,7 @@ export const listProfiles = async (
 export const updateProfile = async (
 	id: string,
 	data: Partial<RagProfileUpdate>,
-	userId?: string
+	userId?: string,
 ) => {
 	const conditions = [eq(ragProfile.id, id)];
 	if (userId) conditions.push(eq(ragProfile.userId, userId));

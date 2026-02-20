@@ -4,7 +4,7 @@ import {
 	queryRAG,
 	queryRAGStream,
 	searchChunks,
-	ChatMessage,
+	type ChatMessage,
 } from "../../services/rag.service";
 import {
 	createConversation,
@@ -50,7 +50,7 @@ const queryBodySchema = z
 	})
 	.refine(
 		(data) => !(data.messages && data.conversationId),
-		"Cannot provide both 'messages' and 'conversationId'. Choose one mode."
+		"Cannot provide both 'messages' and 'conversationId'. Choose one mode.",
 	);
 
 /**
@@ -121,7 +121,7 @@ async function resolveChatHistory(input: {
 async function storeMessages(
 	conversationId: string,
 	userQuery: string,
-	assistantResponse: string
+	assistantResponse: string,
 ): Promise<void> {
 	// Store user message
 	await createMessage({
@@ -191,7 +191,7 @@ export const chatRoutes = {
 			z.object({
 				query: z.string().min(1).max(10000),
 				options: queryOptionsSchema,
-			})
+			}),
 		)
 		.handler(async ({ input }) => {
 			const { query, options } = input;
@@ -271,7 +271,7 @@ export const chatRoutes = {
 			z.object({
 				sortType: z.enum(["price", "contextLength"]).optional(),
 				sortOrder: z.enum(["asc", "desc"]).optional(),
-			})
+			}),
 		)
 		.output(
 			z.object({
@@ -281,9 +281,9 @@ export const chatRoutes = {
 						inputPrice: z.number(),
 						outputPrice: z.number(),
 						contextLength: z.number(),
-					})
+					}),
 				),
-			})
+			}),
 		)
 		.handler(async ({ input }) => {
 			const { sortType, sortOrder } = input;
