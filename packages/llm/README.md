@@ -48,7 +48,7 @@ const answer = await OpenRouterQuery(
 	},
 	[{ role: "user", content: "Hello!" }],
 	"You are a helpful assistant.",
-	"What is the capital of France?"
+	"What is the capital of France?",
 );
 ```
 
@@ -67,7 +67,7 @@ const stream = await OpenRouterQuery(
 	},
 	[],
 	"You are a helpful assistant.",
-	"Tell me a long story."
+	"Tell me a long story.",
 );
 
 for await (const chunk of stream) {
@@ -83,7 +83,7 @@ import { OpenRouterEmbed } from "@repo/llm";
 const chunks = ["Hello world", "Artificial intelligence is cool"];
 const embeddings = await OpenRouterEmbed(
 	"openai/text-embedding-3-small",
-	chunks
+	chunks,
 );
 
 console.log(embeddings.length); // 2

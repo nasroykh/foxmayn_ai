@@ -1,44 +1,43 @@
-# Project Overview
+# GEMINI.md
 
-This is a high-performance full-stack web application starter kit built with a monorepo architecture using **pnpm workspaces** and **Turbo**. It features a type-safe communication layer, robust authentication, and a modern, responsive UI.
+## Project Overview
+
+This is a full-stack web application built with a monorepo architecture using pnpm workspaces. The project consists of a React frontend, a Hono (Node.js) backend, and shared database/utility packages.
 
 **Technologies:**
 
 - **Frontend (`apps/app`):**
-  - **Framework:** React 19, Vite, TypeScript
-  - **Routing:** TanStack Router (Type-safe routing)
-  - **State Management:**
-    - Server state: TanStack Query (via @orpc/tanstack-query)
-    - Global client state: Jotai
-  - **API Client:** ORPC Client (End-to-end type safety for business logic)
-  - **Auth:** Better Auth (`authClient` with emailOTP, organization, admin plugins)
-  - **Forms:** React Hook Form, Zod
-  - **UI/Styling:** Tailwind CSS 4, Base UI Primitives, Tabler Icons
-  - **Components:** Sonner (Toast), Vaul (Drawer/Bottom Sheet), CMDK, Recharts, Embla Carousel
-  - **Theme:** Next Themes
-
+  - **Framework:** React 19
+  - **Build Tool:** Vite
+  - **Language:** TypeScript
+  - **Routing:** TanStack Router
+  - **Data Fetching:** TanStack Query + oRPC Client
+  - **State Management:** Jotai
+  - **Auth:** Better Auth (Client)
+  - **Styling:** Tailwind CSS 4
+  - **UI Components:** Radix UI, Lucide React, Sonner, Vaul
 - **Backend (`apps/api`):**
   - **Runtime:** Node.js
-  - **Framework:** Hono (running on @hono/node-server)
+  - **Framework:** Hono
   - **Language:** TypeScript
-  - **API:** ORPC (Type-safe), OpenAPI (Scalar/Swagger) support
-  - **Database:** Drizzle ORM
-  - **Auth:** Better Auth (with Drizzle adapter, Bearer plugin)
-  - **Email:** Nodemailer
-
-- **Database (`packages/db`):**
-  - **Engine:** PostgreSQL 18
-  - **ORM:** Drizzle ORM
-  - **Tools:** Drizzle Kit (Migrations & Studio)
-  - **Validation:** Zod (via drizzle-zod)
+  - **API Protocol:** oRPC (Open RPC) + OpenAPI
+  - **Database:** PostgreSQL + Drizzle ORM
+  - **Vector DB:** Qdrant
+  - **Queues:** BullMQ (Redis)
+  - **Auth:** Better Auth
+  - **Payments:** Stripe
+  - **AI/RAG:** OpenAI SDK, LangChain Text Splitters
+- **Packages:**
+  - `@repo/db`: PostgreSQL configuration, Drizzle ORM schemas, and migrations.
+  - `@repo/qdrant`: Qdrant vector database client and configuration.
 
 ## Building and Running
 
 ### Prerequisites
 
-- **Node.js**: >= 24
-- **pnpm**: >= 10.0.0
-- **Docker**: (Optional) For running local PostgreSQL
+- Node.js (>=20)
+- pnpm (>=9.0.0)
+- Docker (for local PostgreSQL, Qdrant, Redis)
 
 ### Development
 
@@ -49,61 +48,42 @@ This is a high-performance full-stack web application starter kit built with a m
     ```
 
 2.  **Set up environment variables:**
-    - Create a `.env` file in `apps/api` (refer to `.env.example`).
-    - Create a `.env` file in `packages/db` (refer to `.env.example`).
-    - Configure Database, Auth, and SMTP details.
+    - Copy `.env.example` to `.env` in `apps/api`, `apps/app`, `packages/db`, and `packages/qdrant`.
+    - Update the `.env` files with your local configuration (DB credentials, API keys, etc.).
 
-3.  **Generate Auth Schema (if needed):**
-
-    ```bash
-    pnpm auth:generate
-    ```
-
-4.  **Start the development servers:**
+3.  **Start the development servers:**
     ```bash
     pnpm dev
     ```
-    This starts the frontend, backend, and database services concurrently using Turbo.
-    - **Frontend**: `http://localhost:33460`
-    - **Backend**: `http://localhost:33450`
-    - **Swagger UI**: `http://localhost:33450/docs`
+    This will likely start the frontend and backend in parallel.
+    - **Frontend:** `http://localhost:33460` (or similar, check console)
+    - **Backend:** `http://localhost:3000` (or defined port)
 
-### Database Management
+### Database & Migrations
 
 - **Generate migrations:**
+
   ```bash
-  pnpm db:generate
+  pnpm --filter=@repo/db db:generate
   ```
+
 - **Run migrations:**
+
   ```bash
-  pnpm db:migrate
-  ```
-  ```bash
-  pnpm db:push
+  pnpm --filter=@repo/db db:migrate
   ```
 
-### Skill Management (AI Agents)
-
-- **Symlink skills:**
+- **Push schema changes (dev only):**
   ```bash
-  pnpm skills:symlink:all
+  pnpm --filter=@repo/db db:push
   ```
-
-### Production
-
-- **Build:** `pnpm build`
-- **Start:** `pnpm start`
 
 ## Development Conventions
 
-- **Monorepo Structure**:
-  - `apps/api`: Hono backend with ORPC routers and services.
-  - `apps/app`: React frontend with TanStack Router.
-  - `packages/db`: Shared Drizzle schema, models, and database client.
-- **Type Safety**: End-to-end type safety is maintained via **ORPC**, connecting Hono routers directly to React hooks.
-  - Backend routes are defined in `apps/api/src/router/routes` using `publicProcedure`, `authProcedure`, or `adminProcedure`.
-  - Frontend consumes these via the `orpc` utility in `apps/app/src/lib/orpc.ts`.
-- **Authentication**: Managed natively by **Better Auth** — mounted as a Hono plugin at `/auth/*` on the backend, consumed via `authClient` on the frontend. Auth types (`User`, `Session`) are exported from the backend and shared with the frontend. Supports email OTP, organizations, and admin roles. Auth flows do NOT go through oRPC.
-- **Styling**: Uses **Tailwind CSS 4** for a modern utility-first approach with **Base UI** for accessible primitives.
-- **Validation**: Shared **Zod** schemas between frontend and backend for input validation and data integrity.
-- **API Design**: Business routes follow a structured pattern with `PREFIX` (e.g., `/api/v1`) via oRPC. Auth routes are served separately by Better Auth at `/api/v1/auth/*`.
+- **Monorepo Structure:**
+  - `apps/`: Deployable applications (api, app).
+  - `packages/`: Shared libraries (db, qdrant).
+- **API Communication:** The project uses **oRPC** for type-safe communication between frontend and backend.
+- **Authentication:** implemented using **Better Auth**.
+- **Styling:** Tailwind CSS v4 is used.
+- **Strictness:** Follow the "100% honest, strict, unbiased and harsh" persona. Do not make assumptions. Verify against the codebase.

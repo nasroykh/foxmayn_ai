@@ -1,89 +1,89 @@
-# API Service
+# Foxmayn API Service
 
-This is the backend service for the application, built with **Hono** and **ORPC**.
+The core backend service for Foxmayn AI, built with **Hono**, **ORPC**, and **Better Auth**. It provides a type-safe, high-performance API for document management, RAG processing, and AI chat interactions.
 
-## Technologies
+## Core Pillars
 
-- **Framework**: [Hono](https://hono.dev/) running on `@hono/node-server`.
-- **API Engine**: [ORPC](https://orpc.run/) for type-safe procedures with OpenAPI/Scalar support.
-- **Authentication**: [Better Auth](https://www.better-auth.com/) with Drizzle adapter.
-- **Database ORM**: [Drizzle ORM](https://orm.drizzle.team/) (using `@repo/db` package).
-- **Email**: [Nodemailer](https://nodemailer.com/).
-- **Validation**: [Zod](https://zod.dev/).
+- **Type-Safety**: End-to-end types using ORPC and Zod.
+- **Unified Auth**: Personal API keys and session-based authentication via Better Auth.
+- **Advanced RAG**: Customizable pipeline with profiles, chunking, and vector retrieval.
+- **Background Processing**: Reliable job execution using BullMQ and Redis.
 
 ## Getting Started
 
+### Prerequisites
+
+| Service    | Version | Purpose             |
+| ---------- | ------- | ------------------- |
+| Node.js    | >=20    | Runtime environment |
+| Redis      | >=7.0   | Queue management    |
+| PostgreSQL | >=15    | Primary database    |
+| Qdrant     | Latest  | Vector database     |
+
 ### Environment Variables
 
-Ensure you have a `.env` file with the following:
+Copy `.env.example` to `.env` and configure:
 
-- `PORT`: Port the server will listen on (default 33450).
-- `DB_URL`: PostgreSQL connection string.
-- `BETTER_AUTH_SECRET`: Secret for auth sessions.
-- `SMTP_*`: SMTP configuration for emails.
+- `DB_URL`: PostgreSQL connection
+- `REDIS_URL`: Redis connection (e.g., `redis://localhost:6379`)
+- `OPENROUTER_API_KEY`: For LLM and embeddings
+- `BETTER_AUTH_SECRET`: Random string for encryption
+- `QDRANT_URL`: Vector database endpoint
 
-### Development
-
-```bash
-pnpm dev          # Start with tsx watch (auto-reload)
-```
-
-### Production
+### Installation & Development
 
 ```bash
-pnpm build        # Compile TypeScript to dist/
-pnpm start        # Run production build
+# Install dependencies (managed via root)
+pnpm install
+
+# Start the API server
+pnpm dev
+
+# Start the worker process (required for document indexing)
+pnpm dev:worker
 ```
 
-### Docker
+## API Route Summary
 
-The API is fully containerized for production. **It is highly recommended to use the `Makefile` at the project root** for all Docker operations.
+### 🔐 Authentication
 
-**Production Deployment (from root):**
+- `/api/v1/auth/*`: Better Auth endpoints (login, signup, session, etc.)
+- Supports `Bearer` token (API Key) or Cookie-based sessions.
 
-```bash
-make up          # Build and start
-make logs-api    # Watch migrations and API logs
-```
+### 👥 User & Admin (`/api/v1/admin/users`)
 
-**Manual Operations (from root):**
+- Full user management for admins.
+- Roles, banning, session revocation, and impersonation.
 
-```bash
-make migrate     # Run migrations manually
-make shell-api   # Access container terminal
-make down        # Stop services
-```
+### 🔑 API Keys (`/api/v1/api-keys`)
 
-Alternatively, using Docker Compose directly:
+- Create, list, rotate, and delete personal API keys.
+- Configurable rate limits and permissions.
 
-```bash
-docker-compose up --build -d
-docker-compose logs -f api
-```
+### ⚙️ RAG Profiles (`/api/v1/profiles`)
 
-**Note:** For local development, use `pnpm dev` directly on your host machine. Docker is configured for production deployments only.
+- Manage RAG configurations.
+- Define models, chunk size, temperature, and personality traits.
 
-## Architecture
+### 📄 Documents (`/api/v1/documents`)
 
-- `src/index.ts`: Entry point — initializes DB, registers plugins (CORS, ORPC, OpenAPI/Scalar, Auth), serves on `@hono/node-server`.
-- `src/config/`: Environment and service configurations (`env.ts`, `auth.ts`, `nodemailer.ts`).
-- `src/plugins/`: Modular Hono middleware registration — CORS, ORPC handler, OpenAPI spec, Scalar docs UI, Better Auth handler.
-- `src/router/`: ORPC routers and procedure definitions.
-  - `middleware.ts`: Defines `publicProcedure`, `authProcedure`, `adminProcedure` with ORPC middleware chains that add auth context.
-  - `routes/`: Route files using ORPC procedures. Each file exports a route group.
-  - `index.ts`: Aggregates all routes into `router` object, exports `AppRouter` type consumed by the frontend.
-- `src/services/`: Business logic and external service integrations.
-- `src/utils/`: Helper functions.
+- Upload and index documents.
+- Supported formats: `.txt`, `.md`, `.pdf`, `.docx`, `.xlsx`.
+- Background indexing with progress tracking.
 
-### Adding a Route
+### 💬 Chat & Conversations (`/api/v1/chat`, `/api/v1/conversations`)
 
-1. Create `src/router/routes/your.routes.ts`
-2. Import a procedure from `../middleware` (`publicProcedure`, `authProcedure`, or `adminProcedure`)
-3. Define route with `.input()` (Zod schema) and `.handler()`
-4. Add to the router object in `src/router/index.ts`
+- **Query**: Direct RAG query with optional streaming.
+- **Search**: Semantic search for document chunks.
+- **Flexible History**:
+  - **Client-Managed**: Provide a `messages` array in the request.
+  - **Server-Managed**: Provide a `conversationId` to persist history on the server.
 
-The `AppRouter` type is exported via `package.json` `"./orpc"` export so the frontend can import it for end-to-end type safety.
+## Monitoring
 
-## API Documentation
+- **Swagger/OpenAPI**: Available at `/docs` in development.
+- **Queue Dashboard**: Access BullMQ status at `/api/v1/queues` (Admin only).
 
-When running in development, you can access the Swagger UI at `http://localhost:33450/docs`.
+---
+
+_Last Updated: January 2026_
