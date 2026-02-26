@@ -1,11 +1,7 @@
 import { Worker, Job } from "bullmq";
 import { randomUUID } from "crypto";
 import { db, document, documentChunk } from "@repo/db";
-import {
-	upsertVectors,
-	deleteVectorsByFilter,
-	type Point,
-} from "@repo/qdrant";
+import { upsertVectors, deleteVectorsByFilter, type Point } from "@repo/qdrant";
 import { eq } from "@repo/db/drizzle-orm";
 import { OpenRouterEmbed } from "@repo/llm/openrouter";
 import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
@@ -25,6 +21,7 @@ import {
 	ensureCollection,
 	type VectorPayload,
 } from "../../services/qdrant.shared";
+import { logUsageAndDeduct } from "../../services/usage.service";
 
 // Constants
 const QUEUE_NAME = "document";
@@ -34,16 +31,24 @@ const EMBEDDING_BATCH_SIZE = 20; // Process embeddings in batches of 20
  * Process document indexing job
  */
 async function processIndexDocument(
-	job: Job<IndexDocumentJobData>
+	job: Job<IndexDocumentJobData>,
 ): Promise<IndexDocumentJobResult> {
 	const startTime = Date.now();
-	const { documentId, content, source, metadata, chunkOptions, profileId } =
-		job.data;
+	const {
+		documentId,
+		content,
+		source,
+		metadata,
+		chunkOptions,
+		profileId,
+		organizationId,
+		userId,
+	} = job.data;
 
 	console.log(
 		`[Document Worker] Starting indexing for document: ${documentId} with profile: ${
 			profileId || "default"
-		}`
+		}`,
 	);
 
 	const profile = profileId
@@ -65,26 +70,26 @@ async function processIndexDocument(
 			separators: profile?.separators || undefined,
 		});
 		console.log(
-			`[Document Worker] Document ${documentId}: Created ${chunks.length} chunks`
+			`[Document Worker] Document ${documentId}: Created ${chunks.length} chunks`,
 		);
 
 		await job.updateProgress(20);
 
-		// Step 2: Generate embeddings in batches (CRITICAL PERFORMANCE FIX)
+		// Step 2: Generate embeddings in batches
 		const embeddings: number[][] = [];
 		const totalBatches = Math.ceil(chunks.length / EMBEDDING_BATCH_SIZE);
+		let totalEmbeddingTokens = 0;
 
 		for (let i = 0; i < chunks.length; i += EMBEDDING_BATCH_SIZE) {
 			const batchChunks = chunks.slice(i, i + EMBEDDING_BATCH_SIZE);
 			const batchTexts = batchChunks.map((c) => c.content);
 
-			// Batch embedding call - single API request for multiple texts
-			const batchEmbeddings = await OpenRouterEmbed(
-				embeddingModelId,
-				batchTexts
-			);
+			// Batch embedding call — now returns usage data
+			const { embeddings: batchEmbeddings, usage: batchUsage } =
+				await OpenRouterEmbed(embeddingModelId, batchTexts);
 
 			embeddings.push(...batchEmbeddings);
+			totalEmbeddingTokens += batchUsage.totalTokens;
 
 			// Update progress: 20% to 70% during embedding generation
 			const batchNumber = Math.floor(i / EMBEDDING_BATCH_SIZE) + 1;
@@ -92,7 +97,7 @@ async function processIndexDocument(
 			await job.updateProgress(progress);
 
 			console.log(
-				`[Document Worker] Document ${documentId}: Embedded batch ${batchNumber}/${totalBatches}`
+				`[Document Worker] Document ${documentId}: Embedded batch ${batchNumber}/${totalBatches}`,
 			);
 		}
 
@@ -121,10 +126,7 @@ async function processIndexDocument(
 				documentId,
 				content: chunk.content,
 				chunkIndex: chunk.index,
-				tokenCount: calculateTokens(
-					chunk.content,
-					"gpt-4o"
-				),
+				tokenCount: calculateTokens(chunk.content, "gpt-4o"),
 				qdrantPointId: chunkId,
 			};
 		});
@@ -145,7 +147,29 @@ async function processIndexDocument(
 
 		await job.updateProgress(95);
 
-		// Step 6: Update document status to indexed
+		// Step 6: Log embedding usage and deduct credits
+		if (organizationId && userId) {
+			await logUsageAndDeduct({
+				organizationId,
+				userId,
+				operationType: "embedding",
+				model: embeddingModelId,
+				inputTokens: totalEmbeddingTokens,
+				outputTokens: 0,
+				metadata: {
+					documentId,
+					chunkCount: chunks.length,
+					context: "document_indexing",
+				},
+			}).catch((err) =>
+				console.error(
+					`[Document Worker] Failed to log embedding usage for ${documentId}:`,
+					err,
+				),
+			);
+		}
+
+		// Step 7: Update document status to indexed
 		await db
 			.update(document)
 			.set({
@@ -158,7 +182,7 @@ async function processIndexDocument(
 
 		const processingTimeMs = Date.now() - startTime;
 		console.log(
-			`[Document Worker] Document ${documentId}: Indexed successfully in ${processingTimeMs}ms`
+			`[Document Worker] Document ${documentId}: Indexed successfully in ${processingTimeMs}ms`,
 		);
 
 		return {
@@ -180,7 +204,7 @@ async function processIndexDocument(
 
 		console.error(
 			`[Document Worker] Document ${documentId}: Indexing failed`,
-			error
+			error,
 		);
 		throw error;
 	}
@@ -190,17 +214,15 @@ async function processIndexDocument(
  * Process document deletion job
  */
 async function processDeleteDocument(
-	job: Job<DeleteDocumentJobData>
+	job: Job<DeleteDocumentJobData>,
 ): Promise<void> {
 	const { documentId } = job.data;
 
 	console.log(
-		`[Document Worker] Starting deletion for document: ${documentId}`
+		`[Document Worker] Starting deletion for document: ${documentId}`,
 	);
 
 	// Delete from Qdrant first
-	// We need to delete from ALL possible collections since we don't know which model was used
-	// Or we find the document's model. Let's find the document.
 	const [doc] = await db
 		.select()
 		.from(document)
@@ -209,7 +231,7 @@ async function processDeleteDocument(
 		const profile = await getProfile(doc.profileId);
 		if (profile?.embeddingModel) {
 			const model = OPENROUTER_EMBEDDING_MODELS.find(
-				(m) => m.id === profile.embeddingModel
+				(m) => m.id === profile.embeddingModel,
 			);
 			if (model) {
 				const collectionName = `${COLLECTION_NAME}_${model.dimensions}`;
@@ -240,12 +262,13 @@ async function processDeleteDocument(
  * Process document re-indexing job
  */
 async function processReindexDocument(
-	job: Job<ReindexDocumentJobData>
+	job: Job<ReindexDocumentJobData>,
 ): Promise<IndexDocumentJobResult> {
-	const { documentId, chunkOptions, profileId } = job.data;
+	const { documentId, chunkOptions, profileId, organizationId, userId } =
+		job.data;
 
 	console.log(
-		`[Document Worker] Starting re-indexing for document: ${documentId}`
+		`[Document Worker] Starting re-indexing for document: ${documentId}`,
 	);
 
 	// Get existing document
@@ -261,12 +284,11 @@ async function processReindexDocument(
 	await job.updateProgress(10);
 
 	// Delete existing vectors
-	// Similar deletion logic as processDeleteDocument
 	if (doc.profileId) {
 		const profile = await getProfile(doc.profileId);
 		if (profile?.embeddingModel) {
 			const model = OPENROUTER_EMBEDDING_MODELS.find(
-				(m) => m.id === profile.embeddingModel
+				(m) => m.id === profile.embeddingModel,
 			);
 			if (model) {
 				const collectionName = `${COLLECTION_NAME}_${model.dimensions}`;
@@ -306,6 +328,8 @@ async function processReindexDocument(
 			metadata: doc.metadata ?? undefined,
 			chunkOptions,
 			profileId: profileId || doc.profileId || undefined,
+			organizationId,
+			userId,
 		},
 		updateProgress: async (progress: number) => {
 			// Scale progress from 20-100 since we already used 0-20
@@ -322,7 +346,7 @@ async function processReindexDocument(
 async function processJob(
 	job: Job<
 		IndexDocumentJobData | DeleteDocumentJobData | ReindexDocumentJobData
-	>
+	>,
 ) {
 	switch (job.name) {
 		case DocumentJobNames.INDEX:
@@ -342,24 +366,21 @@ async function processJob(
 export function createDocumentWorker() {
 	const worker = new Worker(QUEUE_NAME, processJob, {
 		connection: redisConnection,
-		// Concurrency: how many jobs to process in parallel
-		// Keep low for embedding jobs since they're API-bound
 		concurrency: 2,
-		// Lock duration: how long a job can run before considered stalled
 		lockDuration: 1000 * 60 * 10, // 10 minutes for large documents
 	});
 
 	worker.on("completed", (job, result) => {
 		console.log(
 			`[Document Worker] Job ${job.id} (${job.name}) completed:`,
-			result
+			result,
 		);
 	});
 
 	worker.on("failed", (job, err) => {
 		console.error(
 			`[Document Worker] Job ${job?.id} (${job?.name}) failed:`,
-			err.message
+			err.message,
 		);
 	});
 

@@ -1,5 +1,6 @@
 import { os, ORPCError } from "@orpc/server";
 import { auth } from "../config/auth";
+import { hasEnoughCredits } from "../services/credits.service";
 
 const base = os.$context<{ headers: Headers }>();
 
@@ -42,3 +43,45 @@ export const adminProcedure = base
 
 		return next({ context });
 	});
+
+/**
+ * Requires an active organization on the session.
+ * Injects `organizationId` into the context.
+ */
+export const orgProcedure = base
+	.use(authMiddleware)
+	.use(async ({ context, next }) => {
+		const orgId = context.session.activeOrganizationId;
+		if (!orgId) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "No active organization. Set an active organization first.",
+			});
+		}
+
+		return next({
+			context: {
+				...context,
+				organizationId: orgId,
+			},
+		});
+	});
+
+/**
+ * Requires an active organization AND sufficient credits (balance > 0).
+ * Use this for AI-consuming endpoints (chat, embedding, indexing).
+ */
+export const creditsProcedure = orgProcedure.use(async ({ context, next }) => {
+	const hasCredits = await hasEnoughCredits(
+		context.organizationId,
+		0.0001, // Minimum threshold (~$0.0001)
+	);
+
+	if (!hasCredits) {
+		throw new ORPCError("FORBIDDEN", {
+			message:
+				"Insufficient credits. Please top up your organization's balance.",
+		});
+	}
+
+	return next({ context });
+});

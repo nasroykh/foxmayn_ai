@@ -6,6 +6,8 @@ import { chatRoutes } from "./routes/chat.routes";
 import { profileRoutes } from "./routes/profile.routes";
 import { apiKeyRoutes } from "./routes/apikey.routes";
 import { conversationRoutes } from "./routes/conversation.routes";
+import { creditsRoutes } from "./routes/credits.routes";
+import { usageRoutes } from "./routes/usage.routes";
 
 export const router = {
 	health: healthRoutes,
@@ -16,6 +18,8 @@ export const router = {
 	profiles: profileRoutes,
 	apikeys: apiKeyRoutes,
 	conversations: conversationRoutes,
+	credits: creditsRoutes,
+	usage: usageRoutes,
 };
 
 export type AppRouter = typeof router;

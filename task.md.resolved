@@ -1,0 +1,39 @@
+# AI Usage Tracking & Credits System
+
+## Phase 0: Analysis
+- [x] Analyze project structure, DB schemas, LLM wrappers, services, routes, workers, auth config
+
+## Phase 1: Planning
+- [x] Write implementation plan
+- [x] Get user approval
+
+## Phase 2: Database Schema
+- [x] Create `ai_usage_log` table
+- [x] Create `credit_transaction` table
+- [x] Add `credits_balance` column to `organization` table
+- [x] Generate and run Drizzle migration
+
+## Phase 3: LLM Wrapper Enhancement
+- [x] Modify [OpenRouterQuery](file:///home/nas/personal_projects/foxmayn_ai/packages/llm/src/openai.ts#83-157) to return [QueryResultWithUsage](file:///home/nas/personal_projects/foxmayn_ai/packages/llm/src/openrouter.ts#33-37) / [StreamQueryResultWithUsage](file:///home/nas/personal_projects/foxmayn_ai/packages/llm/src/openrouter.ts#38-42)
+- [x] Modify [OpenRouterEmbed](file:///home/nas/personal_projects/foxmayn_ai/packages/llm/src/openrouter.ts#185-249) to return [EmbedResultWithUsage](file:///home/nas/personal_projects/foxmayn_ai/packages/llm/src/openrouter.ts#43-47)
+- [x] Create cost calculation utility ([utils/cost.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/utils/cost.ts))
+
+## Phase 4: Credits Service
+- [x] Create [credits.service.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/credits.service.ts) (getBalance, hasEnoughCredits, deductCredits, addCredits, getTransactionHistory)
+
+## Phase 5: Usage Tracking Service
+- [x] Create [usage.service.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/usage.service.ts) (logUsageAndDeduct, getUsageStats, getUsageHistory)
+
+## Phase 6: Route Integration
+- [x] Create `orgProcedure` and `creditsProcedure` middleware
+- [x] Switch chat routes to `creditsProcedure`, pass org context
+- [x] Switch document upload to `creditsProcedure`, pass org context
+- [x] Create [credits.routes.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/router/routes/credits.routes.ts) (balance, transactions, topup)
+- [x] Create [usage.routes.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/router/routes/usage.routes.ts) (stats, history)
+- [x] Register new routes in [router/index.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/router/index.ts)
+- [x] Update [document.worker.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/jobs/document/document.worker.ts) with usage tracking
+- [x] Update [document/types.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/jobs/document/types.ts) with organizationId/userId
+
+## Phase 7: Verification
+- [/] Type-check build verification
+- [ ] Create walkthrough

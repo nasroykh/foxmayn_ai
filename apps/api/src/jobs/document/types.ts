@@ -17,6 +17,8 @@ export interface IndexDocumentJobData {
 		chunkOverlap?: number;
 	};
 	profileId?: string;
+	organizationId?: string;
+	userId?: string;
 }
 
 export interface DeleteDocumentJobData {
@@ -31,6 +33,8 @@ export interface ReindexDocumentJobData {
 		chunkOverlap?: number;
 	};
 	profileId?: string;
+	organizationId?: string;
+	userId?: string;
 }
 
 // ============================================================================

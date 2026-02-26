@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { db, document } from "@repo/db";
 import { searchVectors } from "@repo/qdrant";
 import { eq, and, count } from "@repo/db/drizzle-orm";
-import { OpenRouterQuery, OpenRouterEmbed } from "@repo/llm/openrouter";
+import {
+	OpenRouterQuery,
+	OpenRouterEmbed,
+	type AIUsage,
+} from "@repo/llm/openrouter";
 import { getProfile, getDefaultProfile } from "./profile.service";
 import {
 	addIndexDocumentJob,
@@ -12,11 +16,8 @@ import {
 import { parseDocx, parseHTML, parsePDF, parseXlsx } from "../utils/parsers";
 import { ORPCError } from "@orpc/server";
 import { GET_MAIN_SYSTEM_PROMPT } from "../utils/system_prompts";
-import {
-	qdrant,
-	ensureCollection,
-	type VectorPayload,
-} from "./qdrant.shared";
+import { qdrant, ensureCollection, type VectorPayload } from "./qdrant.shared";
+import { logUsageAndDeduct } from "./usage.service";
 
 const ALLOWED_FILE_TYPES = [
 	"text/plain",
@@ -48,6 +49,9 @@ export interface QueryOptions {
 		documentId?: string;
 		source?: string;
 	};
+	// Usage tracking context
+	organizationId?: string;
+	userId?: string;
 }
 
 export interface QueryResult {
@@ -58,6 +62,7 @@ export interface QueryResult {
 		content: string;
 		score: number;
 	}>;
+	usage?: AIUsage;
 }
 
 export interface SearchResult {
@@ -82,8 +87,10 @@ export const indexDocument = async (options: {
 	profileId?: string;
 	metadata?: Record<string, unknown>;
 	userId: string;
+	organizationId?: string;
 }): Promise<{ documentId: string; jobId: string | undefined }> => {
-	const { file, title, source, profileId, metadata, userId } = options;
+	const { file, title, source, profileId, metadata, userId, organizationId } =
+		options;
 
 	if (!file || !file.name || !file.type)
 		throw new ORPCError("BAD_REQUEST", {
@@ -127,6 +134,7 @@ export const indexDocument = async (options: {
 	});
 
 	// Add job to queue - returns immediately
+	// Pass organizationId so the worker can track usage
 	const { jobId } = await addIndexDocumentJob({
 		documentId,
 		title: docTitle,
@@ -134,6 +142,8 @@ export const indexDocument = async (options: {
 		source,
 		metadata,
 		profileId,
+		organizationId,
+		userId,
 	});
 
 	return { documentId, jobId };
@@ -147,13 +157,14 @@ export const getIndexingStatus = async (jobId: string) => {
 };
 
 /**
- * Search for relevant chunks
+ * Search for relevant chunks.
+ * Logs embedding usage if organizationId is provided.
  */
 export const searchChunks = async (
 	query: string,
-	options: QueryOptions = {}
+	options: QueryOptions = {},
 ): Promise<SearchResult[]> => {
-	const { profileId, filter } = options;
+	const { profileId, filter, organizationId, userId } = options;
 
 	// Load profile or use default
 	const profile = profileId
@@ -168,8 +179,26 @@ export const searchChunks = async (
 
 	const collectionName = await ensureCollection(embeddingModelId);
 
-	// Generate query embedding
-	const embeddings = await OpenRouterEmbed(embeddingModelId, [query]);
+	// Generate query embedding — now returns usage data
+	const { embeddings, usage: embedUsage } = await OpenRouterEmbed(
+		embeddingModelId,
+		[query],
+	);
+
+	// Log embedding usage if org context is available
+	if (organizationId && userId) {
+		await logUsageAndDeduct({
+			organizationId,
+			userId,
+			operationType: "embedding",
+			model: embeddingModelId,
+			inputTokens: embedUsage.totalTokens,
+			outputTokens: 0,
+			metadata: { context: "search_query" },
+		}).catch((err) =>
+			console.error("[Usage] Failed to log search embedding usage:", err),
+		);
+	}
 
 	// Build filter
 	let qdrantFilter = undefined;
@@ -205,11 +234,12 @@ export const searchChunks = async (
 };
 
 /**
- * Query the RAG system
+ * Query the RAG system (non-streaming).
+ * Tracks usage and deducts credits.
  */
 export const queryRAG = async (
 	query: string,
-	options: QueryOptions = {}
+	options: QueryOptions = {},
 ): Promise<QueryResult> => {
 	const profile = options.profileId
 		? await getProfile(options.profileId)
@@ -234,36 +264,54 @@ export const queryRAG = async (
 		customInstructions: profile?.customInstructions || [],
 	});
 
-	// Generate answer
-	const answer = await OpenRouterQuery(
+	const modelId = profile?.model || "google/gemini-2.5-flash-lite";
+
+	// Generate answer — now returns text + usage
+	const result = await OpenRouterQuery(
 		{
-			model: profile?.model || "google/gemini-2.5-flash-lite",
-			temperature: profile?.temperature,
+			model: modelId,
+			temperature: profile?.temperature ?? 1.0,
 			topP: profile?.topP,
-			maxTokens: profile?.maxTokens,
-			reasoning: profile?.reasoningEffort,
+			maxTokens: profile?.maxTokens ?? 2048,
+			reasoning: (profile?.reasoningEffort as "none") || "none",
 			stream: false,
 		},
-		options.messages, // Chat history (without system/final user)
+		options.messages,
 		systemPrompt,
-		query
+		query,
 	);
 
+	// Log chat usage if org context is available
+	if (options.organizationId && options.userId) {
+		await logUsageAndDeduct({
+			organizationId: options.organizationId,
+			userId: options.userId,
+			operationType: "chat",
+			model: modelId,
+			inputTokens: result.usage.inputTokens,
+			outputTokens: result.usage.outputTokens,
+			metadata: { context: "query" },
+		}).catch((err) => console.error("[Usage] Failed to log chat usage:", err));
+	}
+
 	return {
-		answer: answer as string,
+		answer: result.text,
 		sources: searchResults,
+		usage: result.usage,
 	};
 };
 
 /**
- * Query the RAG system with streaming
+ * Query the RAG system with streaming.
+ * Tracks usage after stream completes.
  */
 export async function* queryRAGStream(
 	query: string,
-	options: QueryOptions = {}
+	options: QueryOptions = {},
 ): AsyncGenerator<
 	| { type: "sources"; data: SearchResult[] }
 	| { type: "token"; data: string }
+	| { type: "usage"; data: AIUsage }
 	| { type: "done" },
 	void,
 	unknown
@@ -305,31 +353,47 @@ export async function* queryRAGStream(
 			customInstructions: profile?.customInstructions || [],
 		});
 
-	// Generate streaming answer
-	const stream = await OpenRouterQuery(
+	const modelId = profile?.model || "google/gemini-2.5-flash-lite";
+
+	// Generate streaming answer — now returns stream + getUsage()
+	const { stream, getUsage } = OpenRouterQuery(
 		{
-			model: profile?.model || "google/gemini-2.5-flash-lite",
-			temperature: profile?.temperature,
+			model: modelId,
+			temperature: profile?.temperature ?? 1.0,
 			topP: profile?.topP,
-			maxTokens: profile?.maxTokens,
-			reasoning: profile?.reasoningEffort,
+			maxTokens: profile?.maxTokens ?? 2048,
+			reasoning: (profile?.reasoningEffort as "none") || "none",
 			stream: true,
 		},
-		options.messages, // Chat history (without system/final user)
+		options.messages,
 		systemPrompt,
-		query
+		query,
 	);
 
-	// Handle streaming response
-	if (typeof stream === "string") {
-		// Non-stream fallback: OpenRouterQuery returned a plain string
-		yield { type: "token", data: stream };
-	} else if (Symbol.asyncIterator in stream) {
-		for await (const delta of stream) {
-			if (delta) {
-				yield { type: "token", data: delta };
-			}
+	// Stream tokens
+	for await (const delta of stream) {
+		if (delta) {
+			yield { type: "token", data: delta };
 		}
+	}
+
+	// After stream completes, get usage and log it
+	const usage = await getUsage();
+	yield { type: "usage", data: usage };
+
+	// Log chat usage if org context is available
+	if (options.organizationId && options.userId) {
+		await logUsageAndDeduct({
+			organizationId: options.organizationId,
+			userId: options.userId,
+			operationType: "chat",
+			model: modelId,
+			inputTokens: usage.inputTokens,
+			outputTokens: usage.outputTokens,
+			metadata: { context: "query_stream" },
+		}).catch((err) =>
+			console.error("[Usage] Failed to log stream chat usage:", err),
+		);
 	}
 
 	yield { type: "done" };
@@ -339,7 +403,7 @@ export async function* queryRAGStream(
  * Delete a document and its vectors (ASYNC - via background job)
  */
 export const deleteDocument = async (
-	documentId: string
+	documentId: string,
 ): Promise<{ jobId: string | undefined }> => {
 	const { jobId } = await addDeleteDocumentJob({ documentId });
 	return { jobId };
@@ -366,7 +430,7 @@ export const getDocument = async (documentId: string, userId?: string) => {
 export const listDocuments = async (
 	limit = 20,
 	offset = 0,
-	userId?: string
+	userId?: string,
 ) => {
 	if (userId) {
 		return await db
