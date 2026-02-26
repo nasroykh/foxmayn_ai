@@ -8,7 +8,7 @@ This document provides comprehensive guidance for running the application using 
 
 ```bash
 # Copy environment file
-cp .env.docker .env
+cp .env.example .env
 
 # Start all services with hot reload
 docker-compose -f docker-compose.yml -f docker-compose.dev.yml up --build
@@ -28,7 +28,7 @@ docker-compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 ```bash
 # Ensure .env file is configured
-cp .env.docker .env
+cp .env.example .env
 # Edit .env with production values
 
 # Start services in detached mode
@@ -94,7 +94,7 @@ Both the API and frontend applications use optimized multi-stage Docker builds:
 
 ### Environment Variables
 
-Copy `.env.docker` to `.env` and configure:
+Copy `.env.example` to `.env` and configure:
 
 ```bash
 # Database

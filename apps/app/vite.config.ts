@@ -19,6 +19,8 @@ export default defineConfig({
 			"@": path.resolve(__dirname, "./src"),
 		},
 	},
+	// Load .env from monorepo root
+	envDir: "../../",
 	server: {
 		port: 33460,
 	},

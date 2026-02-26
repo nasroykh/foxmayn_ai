@@ -1,9 +1,11 @@
 {
 	"$schema": "https://turbo.build/schema.json",
+	"globalEnv": ["NODE_ENV", "CI"],
 	"tasks": {
 		"build": {
 			"dependsOn": ["^build"],
-			"outputs": ["dist/**"]
+			"outputs": ["dist/**"],
+			"inputs": ["$TURBO_DEFAULT$", "../../.env", "../../.env.local"]
 		},
 		"dev": {
 			"cache": false,
@@ -16,7 +18,8 @@
 		},
 		"lint": {
 			"dependsOn": ["^build"],
-			"outputs": []
+			"outputs": [],
+			"inputs": ["$TURBO_DEFAULT$"]
 		},
 		"db:generate": {
 			"cache": false

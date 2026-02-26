@@ -31,9 +31,10 @@ pnpm dev
 
 ## Environment
 
-Copy `.env.example` to `.env` in:
+Copy the root `.env.example` to `.env`:
 
-- `apps/api/`
-- `apps/app/`
-- `packages/db/`
-- `packages/qdrant/`
+```bash
+cp .env.example .env
+```
+
+All apps and packages read from this single file. For Docker, use `make env-setup`.

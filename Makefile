@@ -81,10 +81,10 @@ buildx-build: ## Build multi-architecture images (amd64, arm64)
 	docker buildx bake -f docker-compose.yml --set *.platform=linux/amd64,linux/arm64
 
 # Environment setup
-env-setup: ## Copy .env.docker to .env if .env doesn't exist
+env-setup: ## Copy .env.example to .env if .env doesn't exist
 	@if [ ! -f .env ]; then \
-		cp .env.docker .env; \
-		echo "Created .env from .env.docker"; \
+		cp .env.example .env; \
+		echo "Created .env from .env.example"; \
 		echo "Please update secrets in .env"; \
 	else \
 		echo ".env already exists"; \

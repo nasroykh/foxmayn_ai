@@ -70,14 +70,14 @@ echo ""
 
 # Check environment files
 echo "✓ Checking environment configuration..."
-if [ ! -f ".env.docker" ]; then
-    echo "⚠️  .env.docker template not found"
+if [ ! -f ".env.example" ]; then
+    echo "⚠️  .env.example template not found"
 else
-    echo "  .env.docker exists (template)"
+    echo "  .env.example exists (template)"
 fi
 
 if [ ! -f ".env" ]; then
-    echo "⚠️  Root .env not found (copy from .env.docker)"
+    echo "⚠️  Root .env not found (copy from .env.example)"
 else
     echo "  Root .env exists"
 
@@ -104,7 +104,7 @@ echo ""
 echo "✅ Docker configuration validation complete!"
 echo ""
 echo "Next steps:"
-echo "  1. Configure .env from .env.docker"
+echo "  1. Configure .env from .env.example"
 echo "  2. Build and run: make up"
 echo "  3. Monitor migrations: make logs-api"
 echo ""
