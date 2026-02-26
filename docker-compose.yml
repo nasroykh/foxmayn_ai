@@ -2,12 +2,12 @@ services:
   # PostgreSQL Database
   postgres:
     image: postgres:18.2-alpine
-    container_name: app_template_postgres
+    container_name: foxmayn_ai_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${DB_USER:-app_template_user}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-app_template_password}
-      POSTGRES_DB: ${DB_NAME:-app_template_db}
+      POSTGRES_USER: ${DB_USER:-foxmayn_ai_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-foxmayn_ai_password}
+      POSTGRES_DB: ${DB_NAME:-foxmayn_ai_db}
     ports:
       - "${DB_PORT:-5432}:5432"
     volumes:
@@ -19,7 +19,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "pg_isready -U ${DB_USER:-app_template_user} -d ${DB_NAME:-app_template_db}",
+          "pg_isready -U ${DB_USER:-foxmayn_ai_user} -d ${DB_NAME:-foxmayn_ai_db}",
         ]
       interval: 10s
       timeout: 5s
@@ -42,7 +42,7 @@ services:
       target: production
       args:
         NODE_ENV: production
-    container_name: app_template_api
+    container_name: foxmayn_ai_api
     restart: unless-stopped
     depends_on:
       postgres:
@@ -54,12 +54,12 @@ services:
       PORT: 33450
       HOST: 0.0.0.0
       API_V1_PREFIX: /api/v1
-      DB_URL: "postgresql://${DB_USER:-app_template_user}:${DB_PASSWORD:-app_template_password}@postgres:5432/${DB_NAME:-app_template_db}?sslmode=disable"
-      DB_USER: ${DB_USER:-app_template_user}
-      DB_PASSWORD: ${DB_PASSWORD:-app_template_password}
+      DB_URL: "postgresql://${DB_USER:-foxmayn_ai_user}:${DB_PASSWORD:-foxmayn_ai_password}@postgres:5432/${DB_NAME:-foxmayn_ai_db}?sslmode=disable"
+      DB_USER: ${DB_USER:-foxmayn_ai_user}
+      DB_PASSWORD: ${DB_PASSWORD:-foxmayn_ai_password}
       DB_HOST: postgres
       DB_PORT: ${DB_PORT:-5432}
-      DB_NAME: ${DB_NAME:-app_template_db}
+      DB_NAME: ${DB_NAME:-foxmayn_ai_db}
       DB_SSL_MODE: disable
       TOKEN_SECRET_KEY: ${TOKEN_SECRET_KEY}
       TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY}
@@ -116,7 +116,7 @@ services:
       args:
         NODE_ENV: production
         VITE_API_URL: ${VITE_API_URL:-http://localhost:33450/api/v1}
-    container_name: app_template_app
+    container_name: foxmayn_ai_app
     restart: unless-stopped
     depends_on:
       api:
@@ -158,7 +158,7 @@ services:
   # Redis (BullMQ queue broker)
   redis:
     image: redis:8.0.6-alpine
-    container_name: app_template_redis
+    container_name: foxmayn_ai_redis
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -184,7 +184,7 @@ services:
   # Qdrant vector database
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: app_template_qdrant
+    container_name: foxmayn_ai_qdrant
     restart: unless-stopped
     ports:
       - "6333:6333"
@@ -216,7 +216,7 @@ services:
       target: production
       args:
         NODE_ENV: production
-    container_name: app_template_worker
+    container_name: foxmayn_ai_worker
     restart: unless-stopped
     depends_on:
       postgres:
@@ -227,12 +227,12 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
-      DB_URL: "postgresql://${DB_USER:-app_template_user}:${DB_PASSWORD:-app_template_password}@postgres:5432/${DB_NAME:-app_template_db}?sslmode=disable"
-      DB_USER: ${DB_USER:-app_template_user}
-      DB_PASSWORD: ${DB_PASSWORD:-app_template_password}
+      DB_URL: "postgresql://${DB_USER:-foxmayn_ai_user}:${DB_PASSWORD:-foxmayn_ai_password}@postgres:5432/${DB_NAME:-foxmayn_ai_db}?sslmode=disable"
+      DB_USER: ${DB_USER:-foxmayn_ai_user}
+      DB_PASSWORD: ${DB_PASSWORD:-foxmayn_ai_password}
       DB_HOST: postgres
       DB_PORT: ${DB_PORT:-5432}
-      DB_NAME: ${DB_NAME:-app_template_db}
+      DB_NAME: ${DB_NAME:-foxmayn_ai_db}
       DB_SSL_MODE: disable
       REDIS_URL: redis://redis:6379
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}

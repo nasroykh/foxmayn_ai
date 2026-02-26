@@ -98,9 +98,9 @@ Copy `.env.example` to `.env` and configure:
 
 ```bash
 # Database
-DB_USER=app_template_user
-DB_PASSWORD=app_template_password
-DB_NAME=app_template_db
+DB_USER=foxmayn_ai_user
+DB_PASSWORD=foxmayn_ai_password
+DB_NAME=foxmayn_ai_db
 
 # Authentication
 TOKEN_SECRET_KEY=<your-secret-key>
@@ -160,17 +160,17 @@ docker-compose logs -f api
 # Run migrations
 docker-compose exec api pnpm --filter @repo/db db:migrate
 
-# Generate migrations
+# Generate migrations (not normally needed — db:generate runs automatically during `make build`)
 docker-compose exec api pnpm --filter @repo/db db:generate
 
 # Open Drizzle Studio
 docker-compose exec api pnpm --filter @repo/db db:studio
 
 # Access PostgreSQL shell
-docker-compose exec postgres psql -U app_template_user -d app_template_db
+docker-compose exec postgres psql -U foxmayn_ai_user -d foxmayn_ai_db
 
 # Run SQL file
-docker-compose exec -T postgres psql -U app_template_user -d app_template_db < backup.sql
+docker-compose exec -T postgres psql -U foxmayn_ai_user -d foxmayn_ai_db < backup.sql
 ```
 
 ### Container Management
@@ -332,18 +332,17 @@ deploy:
 docker-compose build
 
 # 2. Tag images
-docker tag app_template_api:latest registry.example.com/app_template_api:latest
-docker tag app_template_app:latest registry.example.com/app_template_app:latest
+docker tag foxmayn_ai_api:latest registry.example.com/foxmayn_ai_api:latest
+docker tag foxmayn_ai_app:latest registry.example.com/foxmayn_ai_app:latest
 
 # 3. Push to registry
-docker push registry.example.com/app_template_api:latest
-docker push registry.example.com/app_template_app:latest
+docker push registry.example.com/foxmayn_ai_api:latest
+docker push registry.example.com/foxmayn_ai_app:latest
 
 # 4. Deploy on production server
 docker-compose up -d
 
-# 5. Run migrations
-docker-compose exec api pnpm --filter @repo/db db:migrate
+# 5. Migrations run automatically on API container startup — no manual step needed
 
 # 6. Verify health
 docker-compose ps

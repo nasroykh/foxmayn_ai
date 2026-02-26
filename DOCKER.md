@@ -48,11 +48,10 @@ Run `make validate` to check if your system is ready for the build. It checks:
 
 ### 2. Automatic Migrations
 
-The API container includes a `docker-entrypoint.sh` script that:
+Migration generation and application are fully automated — no manual steps required:
 
-- Waits for PostgreSQL to be healthy.
-- Automatically runs `pnpm db:migrate` on startup.
-- Only starts the API server after migrations succeed.
+- **`make build`** — runs `pnpm db:generate` during the Docker build stage, producing fresh migration files from the schema.
+- **`make up`** — the `docker-entrypoint.sh` script waits for PostgreSQL to be healthy, then automatically runs `pnpm db:migrate` before starting the API server.
 
 ### 3. Service Health Checks
 

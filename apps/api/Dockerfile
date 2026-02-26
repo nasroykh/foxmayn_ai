@@ -23,6 +23,13 @@ RUN pnpm --filter @repo/db build
 RUN pnpm --filter @repo/llm build
 RUN pnpm --filter @repo/qdrant build
 
+# Generate migrations from schema (drizzle-kit generate doesn't connect to DB;
+# all DB_* vars are only needed to satisfy env validation, not for generation itself)
+RUN DB_URL=postgresql://build:build@localhost:5432/build \
+    DB_USER=build DB_PASSWORD=build DB_HOST=localhost DB_PORT=5432 \
+    DB_NAME=build DB_SSL_MODE=disable \
+    pnpm --filter @repo/db db:generate
+
 # Build the API
 RUN pnpm --filter api build
 

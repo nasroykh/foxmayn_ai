@@ -96,8 +96,8 @@ This is a high-performance **Turbo** monorepo using **pnpm workspaces**.
 ### C. Database Changes
 
 1.  Modify schema in `packages/db/src/models/`.
-2.  Run `pnpm db:generate`.
-3.  Run `pnpm db:migrate` (prod) or `pnpm db:push` (dev).
+2.  **Local dev**: Run `pnpm db:generate` then `pnpm db:migrate` (or `pnpm db:push` to skip migration files).
+3.  **Docker**: `db:generate` runs automatically during `make build`; `db:migrate` runs automatically on container startup. No manual steps needed.
 
 ## 4. Key Commands
 

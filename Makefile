@@ -51,7 +51,7 @@ shell-app: ## Open shell in running App container
 	docker compose exec app sh
 
 shell-db: ## Open shell in running Database container
-	docker compose exec postgres psql -U app_template_user -d app_template_db
+	docker compose exec postgres psql -U foxmayn_ai_user -d foxmayn_ai_db
 
 validate: ## Validate Docker configuration
 	@chmod +x docker-validate.sh
@@ -69,8 +69,8 @@ stats: ## Show container resource usage
 
 # Security scanning
 scan: ## Scan API and App images for vulnerabilities (requires Docker Scout)
-	@docker scout quickview app_template_api:latest || echo "Docker Scout not available for API"
-	@docker scout quickview app_template_app:latest || echo "Docker Scout not available for App"
+	@docker scout quickview foxmayn_ai_api:latest || echo "Docker Scout not available for API"
+	@docker scout quickview foxmayn_ai_app:latest || echo "Docker Scout not available for App"
 
 # Multi-architecture builds
 buildx-setup: ## Set up buildx for multi-arch builds

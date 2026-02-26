@@ -17,10 +17,12 @@ PostgreSQL database layer using Drizzle ORM.
 ## Scripts
 
 ```bash
-pnpm db:generate  # Generate migrations from schema changes
-pnpm db:migrate   # Run pending migrations
+pnpm db:generate  # Generate migrations from schema changes (local dev)
+pnpm db:migrate   # Run pending migrations (local dev)
 pnpm db:push      # Push schema directly (dev only)
 ```
+
+**Docker**: `db:generate` runs automatically during `make build`; `db:migrate` runs automatically on container startup. No manual steps needed.
 
 ## Key Exports
 

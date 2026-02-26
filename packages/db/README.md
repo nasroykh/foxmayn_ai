@@ -42,6 +42,8 @@ Handles all data related to the AI pipeline and context.
 | `pnpm db:push`     | Push schema changes directly (dev only)      |
 | `pnpm db:studio`   | Launch Drizzle Studio UI                     |
 
+> **Docker**: `db:generate` runs automatically during `make build`; `db:migrate` runs automatically on container startup. No manual steps needed.
+
 ## Configuration
 
 ### Environment Variables
