@@ -147,7 +147,11 @@ export function OpenRouterQuery(
 						(response.usage?.inputTokens ?? 0) +
 						(response.usage?.outputTokens ?? 0),
 				};
-			} catch {
+			} catch (error) {
+				console.error(
+					"[OpenRouter] Failed to retrieve usage data after stream — token counts will be zero and billing may be inaccurate:",
+					error,
+				);
 				return { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 			}
 		};

@@ -195,9 +195,7 @@ export const searchChunks = async (
 			inputTokens: embedUsage.totalTokens,
 			outputTokens: 0,
 			metadata: { context: "search_query" },
-		}).catch((err) =>
-			console.error("[Usage] Failed to log search embedding usage:", err),
-		);
+		});
 	}
 
 	// Build filter
@@ -291,7 +289,7 @@ export const queryRAG = async (
 			inputTokens: result.usage.inputTokens,
 			outputTokens: result.usage.outputTokens,
 			metadata: { context: "query" },
-		}).catch((err) => console.error("[Usage] Failed to log chat usage:", err));
+		});
 	}
 
 	return {
@@ -381,7 +379,9 @@ export async function* queryRAGStream(
 	const usage = await getUsage();
 	yield { type: "usage", data: usage };
 
-	// Log chat usage if org context is available
+	// Log chat usage after streaming completes.
+	// Tokens are already delivered — we cannot abort or retry the response at this point.
+	// If deduction fails (e.g. balance drained by concurrent operations), log it and continue.
 	if (options.organizationId && options.userId) {
 		await logUsageAndDeduct({
 			organizationId: options.organizationId,
@@ -392,7 +392,10 @@ export async function* queryRAGStream(
 			outputTokens: usage.outputTokens,
 			metadata: { context: "query_stream" },
 		}).catch((err) =>
-			console.error("[Usage] Failed to log stream chat usage:", err),
+			console.error(
+				"[Usage] Post-stream credit deduction failed — response was already delivered to client:",
+				err,
+			),
 		);
 	}
 

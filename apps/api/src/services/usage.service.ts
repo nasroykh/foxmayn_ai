@@ -44,15 +44,17 @@ export interface UsageStatsResult {
  *
  * This is the single entry point for recording usage — it:
  * 1. Calculates the cost based on model pricing
- * 2. Inserts a row into ai_usage_log
- * 3. Deducts credits atomically
+ * 2. Deducts credits atomically — throws if insufficient balance
+ * 3. Inserts a row into ai_usage_log (best-effort; deduction already committed)
  *
+ * @throws If the organization has insufficient credits to cover the cost
  * @returns The usage log entry and deduction result
  */
 export async function logUsageAndDeduct(input: LogUsageInput): Promise<{
 	usageId: string;
 	costCredits: number;
-	deductionResult: { newBalance: number; transactionId: string } | null;
+	newBalance: number;
+	transactionId: string;
 }> {
 	const {
 		organizationId,
@@ -67,23 +69,10 @@ export async function logUsageAndDeduct(input: LogUsageInput): Promise<{
 	const totalTokens = inputTokens + outputTokens;
 	const costCredits = calculateCost(model, inputTokens, outputTokens);
 
-	// 1. Insert usage log
+	// Pre-generate so deductCredits can reference it as referenceId
 	const usageId = randomUUID();
-	await db.insert(aiUsageLog).values({
-		id: usageId,
-		organizationId,
-		userId,
-		operationType,
-		model,
-		inputTokens,
-		outputTokens,
-		totalTokens,
-		costCredits,
-		metadata: metadata ?? {},
-	});
 
-	// 2. Deduct credits (will return null if insufficient — but we already
-	//    did a pre-check, so this is a safety net)
+	// 1. Deduct credits first (atomic). Returns null if balance is insufficient.
 	const deductionResult = await deductCredits({
 		orgId: organizationId,
 		amount: costCredits,
@@ -92,7 +81,41 @@ export async function logUsageAndDeduct(input: LogUsageInput): Promise<{
 		userId,
 	});
 
-	return { usageId, costCredits, deductionResult };
+	if (!deductionResult) {
+		throw new Error(
+			`Insufficient credits: ${operationType} on ${model} costs $${costCredits.toFixed(6)} but organization ${organizationId} has an insufficient balance`,
+		);
+	}
+
+	// 2. Insert usage log after successful deduction.
+	//    If this fails, credits were still deducted — log the error but don't re-throw.
+	await db
+		.insert(aiUsageLog)
+		.values({
+			id: usageId,
+			organizationId,
+			userId,
+			operationType,
+			model,
+			inputTokens,
+			outputTokens,
+			totalTokens,
+			costCredits,
+			metadata: metadata ?? {},
+		})
+		.catch((err) => {
+			console.error(
+				`[Usage] Failed to insert usage log ${usageId} after successful deduction — credits were still charged:`,
+				err,
+			);
+		});
+
+	return {
+		usageId,
+		costCredits,
+		newBalance: deductionResult.newBalance,
+		transactionId: deductionResult.transactionId,
+	};
 }
 
 // ============================================================================

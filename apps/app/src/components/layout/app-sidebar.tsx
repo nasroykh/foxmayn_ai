@@ -9,6 +9,12 @@ import {
 	IconDeviceDesktop,
 	IconCheck,
 	IconBuilding,
+	IconMessage,
+	IconFileText,
+	IconBrain,
+	IconKey,
+	IconCoins,
+	IconUsers,
 } from "@tabler/icons-react";
 
 import {
@@ -17,6 +23,7 @@ import {
 	SidebarFooter,
 	SidebarGroup,
 	SidebarGroupContent,
+	SidebarGroupLabel,
 	SidebarHeader,
 	SidebarMenu,
 	SidebarMenuButton,
@@ -41,14 +48,46 @@ import { toast } from "sonner";
 import { useNavigate } from "@tanstack/react-router";
 import { authClient, type User } from "@/lib/auth";
 
-const navItems = [{ title: "Dashboard", icon: IconHome, href: "/" }];
+const mainNavItems = [
+	{ title: "Dashboard", icon: IconHome, href: "/" },
+	{ title: "Chat", icon: IconMessage, href: "/chat" },
+	{ title: "Documents", icon: IconFileText, href: "/documents" },
+	{ title: "Profiles", icon: IconBrain, href: "/profiles" },
+];
+
+const accountNavItems = [
+	{ title: "API Keys", icon: IconKey, href: "/api-keys" },
+	{ title: "Credits", icon: IconCoins, href: "/credits" },
+	{ title: "Settings", icon: IconSettings, href: "/settings" },
+];
+
+const adminNavItems = [
+	{ title: "Users", icon: IconUsers, href: "/admin/users" },
+];
+
+function NavItem({ item }: { item: { title: string; icon: React.ElementType; href: string } }) {
+	const location = useLocation();
+	const isActive =
+		item.href === "/"
+			? location.pathname === item.href
+			: location.pathname.startsWith(item.href);
+
+	return (
+		<SidebarMenuItem>
+			<SidebarMenuButton render={<Link to={item.href} />} isActive={isActive}>
+				<item.icon />
+				<span>{item.title}</span>
+			</SidebarMenuButton>
+		</SidebarMenuItem>
+	);
+}
 
 export function AppSidebar({ user }: { user?: User | null }) {
-	const location = useLocation();
 	const navigate = useNavigate();
 	const [theme, setTheme] = useAtom(themeAtom);
 	const { data: activeOrg } = authClient.useActiveOrganization();
 	const { data: organizations } = authClient.useListOrganizations();
+	const isAdmin = user?.role === "admin";
 
 	const themeOptions: { value: Theme; label: string; icon: typeof IconSun }[] =
 		[
@@ -61,13 +100,8 @@ export function AppSidebar({ user }: { user?: User | null }) {
 		if (organizationId === activeOrg?.id) return;
 
 		try {
-			await authClient.organization.setActive({
-				organizationId,
-			});
-
-			// Refetch session to get updated active organization
+			await authClient.organization.setActive({ organizationId });
 			await authClient.getSession();
-
 			toast.success("Organization switched successfully");
 		} catch (error: any) {
 			toast.error(error.message || "Failed to switch organization");
@@ -78,9 +112,7 @@ export function AppSidebar({ user }: { user?: User | null }) {
 		try {
 			await authClient.signOut({
 				fetchOptions: {
-					onSuccess: () => {
-						navigate({ to: "/auth/login" });
-					},
+					onSuccess: () => navigate({ to: "/auth/login" }),
 				},
 			});
 		} catch (error: any) {
@@ -91,8 +123,7 @@ export function AppSidebar({ user }: { user?: User | null }) {
 
 	return (
 		<Sidebar collapsible="icon">
-			{/* Logo Header */}
-			<SidebarHeader className="">
+			<SidebarHeader>
 				<SidebarMenu>
 					<SidebarMenuItem>
 						<SidebarMenuButton size="lg" render={<Link to="/" />}>
@@ -100,51 +131,51 @@ export function AppSidebar({ user }: { user?: User | null }) {
 								<IconSparkles className="size-4" />
 							</div>
 							<div className="flex flex-col gap-0.5 leading-none">
-								<span className="font-semibold">Acme Inc</span>
-								<span className="text-xs text-muted-foreground">Dashboard</span>
+								<span className="font-semibold">Foxmayn AI</span>
+								<span className="text-xs text-muted-foreground">Platform</span>
 							</div>
 						</SidebarMenuButton>
 					</SidebarMenuItem>
 				</SidebarMenu>
 			</SidebarHeader>
 
-			{/* Navigation */}
 			<SidebarContent>
 				<SidebarGroup>
+					<SidebarGroupLabel>Main</SidebarGroupLabel>
 					<SidebarGroupContent>
 						<SidebarMenu>
-							{navItems.map((item) => (
-								<SidebarMenuItem key={item.title}>
-									<SidebarMenuButton
-										render={
-											item.href !== "#" ? <Link to={item.href} /> : undefined
-										}
-										isActive={
-											item.href === "/"
-												? location.pathname === item.href
-												: location.pathname.startsWith(item.href)
-										}
-									>
-										{item.href !== "#" ? (
-											<>
-												<item.icon />
-												<span>{item.title}</span>
-											</>
-										) : (
-											<>
-												<item.icon />
-												<span>{item.title}</span>
-											</>
-										)}
-									</SidebarMenuButton>
-								</SidebarMenuItem>
+							{mainNavItems.map((item) => (
+								<NavItem key={item.href} item={item} />
 							))}
 						</SidebarMenu>
 					</SidebarGroupContent>
 				</SidebarGroup>
+
+				<SidebarGroup>
+					<SidebarGroupLabel>Account</SidebarGroupLabel>
+					<SidebarGroupContent>
+						<SidebarMenu>
+							{accountNavItems.map((item) => (
+								<NavItem key={item.href} item={item} />
+							))}
+						</SidebarMenu>
+					</SidebarGroupContent>
+				</SidebarGroup>
+
+				{isAdmin && (
+					<SidebarGroup>
+						<SidebarGroupLabel>Admin</SidebarGroupLabel>
+						<SidebarGroupContent>
+							<SidebarMenu>
+								{adminNavItems.map((item) => (
+									<NavItem key={item.href} item={item} />
+								))}
+							</SidebarMenu>
+						</SidebarGroupContent>
+					</SidebarGroup>
+				)}
 			</SidebarContent>
 
-			{/* User Profile Footer */}
 			<SidebarFooter className="border-t border-sidebar-border">
 				<SidebarMenu>
 					<SidebarMenuItem>
@@ -153,10 +184,7 @@ export function AppSidebar({ user }: { user?: User | null }) {
 								render={
 									<SidebarMenuButton size="lg">
 										<Avatar className="size-8">
-											<AvatarImage
-												src={user?.image || undefined}
-												alt="User avatar"
-											/>
+											<AvatarImage src={user?.image || undefined} alt="User avatar" />
 											<AvatarFallback className="bg-primary/10 text-primary text-xs">
 												{user?.name
 													?.split(" ")
@@ -167,21 +195,13 @@ export function AppSidebar({ user }: { user?: User | null }) {
 											</AvatarFallback>
 										</Avatar>
 										<div className="flex flex-col gap-0.5 leading-none text-left">
-											<span className="font-medium">
-												{user?.name || "User"}
-											</span>
-											<span className="text-xs text-muted-foreground">
-												{user?.email || ""}
-											</span>
+											<span className="font-medium">{user?.name || "User"}</span>
+											<span className="text-xs text-muted-foreground">{user?.email || ""}</span>
 										</div>
 									</SidebarMenuButton>
 								}
 							/>
-							<DropdownMenuContent
-								className="w-56"
-								side="bottom"
-								align="center"
-							>
+							<DropdownMenuContent className="w-56" side="bottom" align="center">
 								<DropdownMenuItem render={<Link to="/settings" />}>
 									<IconSettings className="mr-2 size-4" />
 									Settings

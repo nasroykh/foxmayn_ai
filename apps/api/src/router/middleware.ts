@@ -67,13 +67,17 @@ export const orgProcedure = base
 	});
 
 /**
- * Requires an active organization AND sufficient credits (balance > 0).
+ * Requires an active organization AND sufficient credits.
  * Use this for AI-consuming endpoints (chat, embedding, indexing).
+ *
+ * This is a fast-fail guard — it prevents wasted work for clearly broke orgs.
+ * The hard enforcement happens inside logUsageAndDeduct(), which throws if
+ * the atomic deduction fails regardless of what this check returned.
  */
 export const creditsProcedure = orgProcedure.use(async ({ context, next }) => {
 	const hasCredits = await hasEnoughCredits(
 		context.organizationId,
-		0.0001, // Minimum threshold (~$0.0001)
+		0.001, // ~$0.001 minimum — enough for at least a small embedding call
 	);
 
 	if (!hasCredits) {

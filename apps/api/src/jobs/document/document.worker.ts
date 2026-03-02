@@ -149,24 +149,31 @@ async function processIndexDocument(
 
 		// Step 6: Log embedding usage and deduct credits
 		if (organizationId && userId) {
-			await logUsageAndDeduct({
-				organizationId,
-				userId,
-				operationType: "embedding",
-				model: embeddingModelId,
-				inputTokens: totalEmbeddingTokens,
-				outputTokens: 0,
-				metadata: {
-					documentId,
-					chunkCount: chunks.length,
-					context: "document_indexing",
-				},
-			}).catch((err) =>
+			try {
+				await logUsageAndDeduct({
+					organizationId,
+					userId,
+					operationType: "embedding",
+					model: embeddingModelId,
+					inputTokens: totalEmbeddingTokens,
+					outputTokens: 0,
+					metadata: {
+						documentId,
+						chunkCount: chunks.length,
+						context: "document_indexing",
+					},
+				});
+			} catch (err) {
 				console.error(
-					`[Document Worker] Failed to log embedding usage for ${documentId}:`,
+					`[Document Worker] Credit deduction failed for document ${documentId} — marking as failed:`,
 					err,
-				),
-			);
+				);
+				await db
+					.update(document)
+					.set({ status: "failed" })
+					.where(eq(document.id, documentId));
+				throw err; // Re-throw so BullMQ marks the job failed (no auto-retry for billing errors)
+			}
 		}
 
 		// Step 7: Update document status to indexed
