@@ -4,7 +4,7 @@ import {
 	text,
 	timestamp,
 	integer,
-	real,
+	numeric,
 	jsonb,
 	pgEnum,
 	index,
@@ -40,7 +40,7 @@ export const aiUsageLog = pgTable(
 		inputTokens: integer("input_tokens").notNull().default(0),
 		outputTokens: integer("output_tokens").notNull().default(0),
 		totalTokens: integer("total_tokens").notNull().default(0),
-		costCredits: real("cost_credits").notNull().default(0),
+		costCredits: numeric("cost_credits", { precision: 12, scale: 6 }).notNull().default("0"),
 		metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
 		createdAt: timestamp("created_at").defaultNow().notNull(),
 	},
@@ -49,6 +49,7 @@ export const aiUsageLog = pgTable(
 		index("ai_usage_log_userId_idx").on(table.userId),
 		index("ai_usage_log_createdAt_idx").on(table.createdAt),
 		index("ai_usage_log_operationType_idx").on(table.operationType),
+		index("ai_usage_log_org_createdAt_idx").on(table.organizationId, table.createdAt),
 	],
 );
 
@@ -61,8 +62,8 @@ export const creditTransaction = pgTable(
 			.notNull()
 			.references(() => organization.id, { onDelete: "cascade" }),
 		type: creditTransactionTypeEnum("type").notNull(),
-		amount: real("amount").notNull(), // positive for additions, negative for deductions
-		balanceAfter: real("balance_after").notNull(),
+		amount: numeric("amount", { precision: 12, scale: 6 }).notNull(), // positive for additions, negative for deductions
+		balanceAfter: numeric("balance_after", { precision: 12, scale: 6 }).notNull(),
 		description: text("description").notNull(),
 		referenceId: text("reference_id"), // links to ai_usage_log.id or Stripe payment ID
 		createdBy: text("created_by").references(() => user.id, {

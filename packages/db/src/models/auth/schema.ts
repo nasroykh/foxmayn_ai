@@ -5,7 +5,7 @@ import {
 	timestamp,
 	boolean,
 	integer,
-	real,
+	numeric,
 	index,
 	uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -130,7 +130,7 @@ export const organization = pgTable(
 		logo: text("logo"),
 		createdAt: timestamp("created_at").notNull(),
 		metadata: text("metadata"),
-		creditsBalance: real("credits_balance").default(0).notNull(),
+		creditsBalance: numeric("credits_balance", { precision: 12, scale: 6 }).default("0").notNull(),
 	},
 	(table) => [uniqueIndex("organization_slug_uidx").on(table.slug)],
 );

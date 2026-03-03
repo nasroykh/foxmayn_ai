@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { db, document } from "@repo/db";
+import { db, document, documentChunk, aiUsageLog } from "@repo/db";
 import { searchVectors } from "@repo/qdrant";
 import { eq, and, count } from "@repo/db/drizzle-orm";
 import {
@@ -18,6 +18,8 @@ import { ORPCError } from "@orpc/server";
 import { GET_MAIN_SYSTEM_PROMPT } from "../utils/system_prompts";
 import { qdrant, ensureCollection, type VectorPayload } from "./qdrant.shared";
 import { logUsageAndDeduct } from "./usage.service";
+import { deductCredits, addCredits } from "./credits.service";
+import { estimateChatCost, calculateCost } from "../utils/cost";
 
 const ALLOWED_FILE_TYPES = [
 	"text/plain",
@@ -179,6 +181,18 @@ export const searchChunks = async (
 
 	const collectionName = await ensureCollection(embeddingModelId);
 
+	// Early exit: if no chunks are indexed yet, skip the embedding API call entirely.
+	const [chunkCount] = await db
+		.select({ count: count() })
+		.from(documentChunk)
+		.innerJoin(document, eq(documentChunk.documentId, document.id))
+		.where(
+			filter?.documentId
+				? eq(document.id, filter.documentId)
+				: eq(document.status, "indexed"),
+		);
+	if ((chunkCount?.count ?? 0) === 0) return [];
+
 	// Generate query embedding — now returns usage data
 	const { embeddings, usage: embedUsage } = await OpenRouterEmbed(
 		embeddingModelId,
@@ -323,14 +337,14 @@ export async function* queryRAGStream(
 	// Yield sources first
 	yield { type: "sources", data: searchResults };
 
-	if (searchResults.length === 0) {
-		yield {
-			type: "token",
-			data: "I couldn't find any relevant information to answer your question.",
-		};
-		yield { type: "done" };
-		return;
-	}
+	// if (searchResults.length === 0) {
+	// 	yield {
+	// 		type: "token",
+	// 		data: "I couldn't find any relevant information to answer your question.",
+	// 	};
+	// 	yield { type: "done" };
+	// 	return;
+	// }
 
 	// Build context from search results
 	const context = searchResults
@@ -368,36 +382,127 @@ export async function* queryRAGStream(
 		query,
 	);
 
-	// Stream tokens
-	for await (const delta of stream) {
-		if (delta) {
-			yield { type: "token", data: delta };
+	// Pre-authorize: estimate cost and reserve credits before streaming begins.
+	// This prevents users from receiving free AI when their balance is drained by concurrent ops.
+	let reservationId: string | null = null;
+	let estimatedCost = 0;
+
+	if (options.organizationId && options.userId) {
+		estimatedCost = estimateChatCost(modelId, query.length, 500);
+		if (estimatedCost > 0) {
+			const reservation = await deductCredits({
+				orgId: options.organizationId,
+				amount: estimatedCost,
+				description: `chat reservation — ${modelId}`,
+				userId: options.userId,
+			});
+
+			if (!reservation) {
+				throw new ORPCError("FORBIDDEN", {
+					message: "Insufficient credits to start this request",
+				});
+			}
+			reservationId = reservation.transactionId;
 		}
 	}
 
-	// After stream completes, get usage and log it
+	// Stream tokens
+	let streamError: unknown = null;
+	try {
+		for await (const delta of stream) {
+			if (delta) {
+				yield { type: "token", data: delta };
+			}
+		}
+	} catch (err) {
+		streamError = err;
+	}
+
+	// After stream completes (or errors), get actual usage and settle
 	const usage = await getUsage();
 	yield { type: "usage", data: usage };
 
-	// Log chat usage after streaming completes.
-	// Tokens are already delivered — we cannot abort or retry the response at this point.
-	// If deduction fails (e.g. balance drained by concurrent operations), log it and continue.
-	if (options.organizationId && options.userId) {
-		await logUsageAndDeduct({
-			organizationId: options.organizationId,
-			userId: options.userId,
-			operationType: "chat",
-			model: modelId,
-			inputTokens: usage.inputTokens,
-			outputTokens: usage.outputTokens,
-			metadata: { context: "query_stream" },
-		}).catch((err) =>
-			console.error(
-				"[Usage] Post-stream credit deduction failed — response was already delivered to client:",
-				err,
-			),
-		);
+	if (options.organizationId && options.userId && reservationId) {
+		if (streamError) {
+			// Stream failed — refund full reservation
+			await addCredits({
+				orgId: options.organizationId,
+				amount: estimatedCost,
+				type: "refund",
+				description: `chat reservation refund — stream error`,
+				referenceId: reservationId,
+				userId: options.userId,
+			}).catch((err) =>
+				console.error(
+					"[Usage] Failed to refund reservation after stream error:",
+					err,
+				),
+			);
+		} else {
+			// Settle: calculate actual cost and adjust
+			const actualCost = calculateCost(
+				modelId,
+				usage.inputTokens,
+				usage.outputTokens,
+			);
+			const diff = estimatedCost - actualCost;
+
+			if (diff > 0.000001) {
+				// Refund the over-charged amount
+				await addCredits({
+					orgId: options.organizationId,
+					amount: diff,
+					type: "adjustment",
+					description: `chat settlement refund — ${modelId}`,
+					referenceId: reservationId,
+					userId: options.userId,
+				}).catch((err) =>
+					console.error(
+						"[Usage] Failed to refund over-charged reservation:",
+						err,
+					),
+				);
+			} else if (diff < -0.000001) {
+				// Charge the under-charged amount (small, allow failure)
+				await deductCredits({
+					orgId: options.organizationId,
+					amount: -diff,
+					description: `chat settlement charge — ${modelId}`,
+					referenceId: reservationId,
+					userId: options.userId,
+				}).catch((err) =>
+					console.error(
+						"[Usage] Failed to charge under-charged settlement:",
+						err,
+					),
+				);
+			}
+
+			// Insert usage log (credits already settled above — no additional deduction)
+			await db
+				.insert(aiUsageLog)
+				.values({
+					id: randomUUID(),
+					organizationId: options.organizationId,
+					userId: options.userId,
+					operationType: "chat",
+					model: modelId,
+					inputTokens: usage.inputTokens,
+					outputTokens: usage.outputTokens,
+					totalTokens: usage.inputTokens + usage.outputTokens,
+					costCredits: actualCost.toString(),
+					metadata: { context: "query_stream" },
+				})
+				.catch((err) =>
+					console.error(
+						"[Usage] Failed to insert usage log after settlement:",
+						err,
+					),
+				);
+		}
 	}
+
+	if (streamError) throw streamError;
 
 	yield { type: "done" };
 }

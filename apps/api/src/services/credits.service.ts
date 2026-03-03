@@ -15,7 +15,7 @@ export async function getBalance(orgId: string): Promise<number> {
 		.from(organization)
 		.where(eq(organization.id, orgId));
 
-	return org?.creditsBalance ?? 0;
+	return Number(org?.creditsBalance ?? 0);
 }
 
 /**
@@ -50,39 +50,41 @@ export async function deductCredits(input: {
 
 	if (amount <= 0) throw new Error("Deduction amount must be positive");
 
-	// Atomic: UPDATE ... SET balance = balance - amount WHERE balance >= amount
-	const [updated] = await db
-		.update(organization)
-		.set({
-			creditsBalance: sql`${organization.creditsBalance} - ${amount}`,
-		})
-		.where(
-			and(
-				eq(organization.id, orgId),
-				sql`${organization.creditsBalance} >= ${amount}`,
-			),
-		)
-		.returning({ creditsBalance: organization.creditsBalance });
+	return db.transaction(async (tx) => {
+		// Atomic: UPDATE ... SET balance = balance - amount WHERE balance >= amount
+		const [updated] = await tx
+			.update(organization)
+			.set({
+				creditsBalance: sql`${organization.creditsBalance} - ${amount}`,
+			})
+			.where(
+				and(
+					eq(organization.id, orgId),
+					sql`${organization.creditsBalance} >= ${amount}`,
+				),
+			)
+			.returning({ creditsBalance: organization.creditsBalance });
 
-	if (!updated) {
-		// Insufficient balance
-		return null;
-	}
+		if (!updated) {
+			// Insufficient balance — return null without rolling back (nothing changed)
+			return null;
+		}
 
-	// Record the transaction
-	const txId = randomUUID();
-	await db.insert(creditTransaction).values({
-		id: txId,
-		organizationId: orgId,
-		type: "usage",
-		amount: -amount, // Negative for deductions
-		balanceAfter: updated.creditsBalance,
-		description,
-		referenceId: referenceId ?? null,
-		createdBy: userId ?? null,
+		// Record the transaction in the same atomic unit
+		const txId = randomUUID();
+		await tx.insert(creditTransaction).values({
+			id: txId,
+			organizationId: orgId,
+			type: "usage",
+			amount: (-amount).toString(), // Negative for deductions
+			balanceAfter: updated.creditsBalance ?? "0",
+			description,
+			referenceId: referenceId ?? null,
+			createdBy: userId ?? null,
+		});
+
+		return { newBalance: Number(updated.creditsBalance), transactionId: txId };
 	});
-
-	return { newBalance: updated.creditsBalance, transactionId: txId };
 }
 
 /**
@@ -100,29 +102,31 @@ export async function addCredits(input: {
 
 	if (amount <= 0) throw new Error("Credit amount must be positive");
 
-	const [updated] = await db
-		.update(organization)
-		.set({
-			creditsBalance: sql`${organization.creditsBalance} + ${amount}`,
-		})
-		.where(eq(organization.id, orgId))
-		.returning({ creditsBalance: organization.creditsBalance });
+	return db.transaction(async (tx) => {
+		const [updated] = await tx
+			.update(organization)
+			.set({
+				creditsBalance: sql`${organization.creditsBalance} + ${amount}`,
+			})
+			.where(eq(organization.id, orgId))
+			.returning({ creditsBalance: organization.creditsBalance });
 
-	if (!updated) throw new Error(`Organization not found: ${orgId}`);
+		if (!updated) throw new Error(`Organization not found: ${orgId}`);
 
-	const txId = randomUUID();
-	await db.insert(creditTransaction).values({
-		id: txId,
-		organizationId: orgId,
-		type,
-		amount, // Positive for additions
-		balanceAfter: updated.creditsBalance,
-		description,
-		referenceId: referenceId ?? null,
-		createdBy: userId ?? null,
+		const txId = randomUUID();
+		await tx.insert(creditTransaction).values({
+			id: txId,
+			organizationId: orgId,
+			type,
+			amount: amount.toString(), // Positive for additions
+			balanceAfter: updated.creditsBalance ?? "0",
+			description,
+			referenceId: referenceId ?? null,
+			createdBy: userId ?? null,
+		});
+
+		return { newBalance: Number(updated.creditsBalance), transactionId: txId };
 	});
-
-	return { newBalance: updated.creditsBalance, transactionId: txId };
 }
 
 // ============================================================================

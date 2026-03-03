@@ -79,17 +79,17 @@ function Dashboard() {
 	);
 
 	// Build chart data from usage history (last 7 days)
-	const historyList = (usageHistory as any)?.history ?? [];
+	const historyList = usageHistory?.history ?? [];
 	const last7Days = Array.from({ length: 7 }, (_, i) => {
 		const date = subDays(new Date(), 6 - i);
 		const dateStr = format(date, "MMM d");
 		const cost = historyList
-			.filter((h: any) => format(new Date(h.createdAt), "MMM d") === dateStr)
-			.reduce((sum: number, h: any) => sum + Number(h.cost ?? 0), 0);
+			.filter((h) => format(new Date(h.createdAt), "MMM d") === dateStr)
+			.reduce((sum: number, h) => sum + Number(h.costCredits ?? 0), 0);
 		return { date: dateStr, cost: parseFloat(cost.toFixed(6)) };
 	});
 
-	const txList = (transactions as any)?.transactions ?? [];
+	const txList = transactions?.transactions ?? [];
 
 	return (
 		<Layout>
@@ -108,7 +108,7 @@ function Dashboard() {
 								<Skeleton className="h-8 w-24" />
 							) : (
 								<div className="text-2xl font-bold">
-									${Number((balance as any)?.balance ?? 0).toFixed(4)}
+									${Number(balance?.balance ?? 0).toFixed(4)}
 								</div>
 							)}
 						</CardContent>
@@ -126,7 +126,7 @@ function Dashboard() {
 								<Skeleton className="h-8 w-16" />
 							) : (
 								<div className="text-2xl font-bold">
-									{(docs as any)?.total ?? 0}
+									{docs?.total ?? 0}
 								</div>
 							)}
 						</CardContent>
@@ -144,7 +144,7 @@ function Dashboard() {
 								<Skeleton className="h-8 w-16" />
 							) : (
 								<div className="text-2xl font-bold">
-									{(convs as any)?.total ?? 0}
+									{convs?.total ?? 0}
 								</div>
 							)}
 						</CardContent>
@@ -162,7 +162,7 @@ function Dashboard() {
 								<Skeleton className="h-8 w-16" />
 							) : (
 								<div className="text-2xl font-bold">
-									{(usageStats as any)?.totalOperations ?? 0}
+									{usageStats?.totalCalls ?? 0}
 								</div>
 							)}
 						</CardContent>
@@ -226,7 +226,7 @@ function Dashboard() {
 								</p>
 							) : (
 								<div className="space-y-3">
-									{txList.map((tx: any) => (
+									{txList.map((tx) => (
 										<div
 											key={tx.id}
 											className="flex items-center justify-between"
@@ -243,10 +243,10 @@ function Dashboard() {
 												</span>
 											</div>
 											<span
-												className={`text-sm font-medium ${tx.amount > 0 ? "text-emerald-600" : "text-destructive"}`}
+												className={`text-sm font-medium ${Number(tx.amount) > 0 ? "text-emerald-600" : "text-destructive"}`}
 											>
-												{tx.amount > 0 ? "+" : ""}$
-												{Math.abs(tx.amount).toFixed(4)}
+												{Number(tx.amount) > 0 ? "+" : ""}$
+												{Math.abs(Number(tx.amount)).toFixed(4)}
 											</span>
 										</div>
 									))}

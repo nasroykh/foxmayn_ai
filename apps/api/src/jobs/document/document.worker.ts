@@ -1,6 +1,6 @@
 import { Worker, Job } from "bullmq";
 import { randomUUID } from "crypto";
-import { db, document, documentChunk } from "@repo/db";
+import { db, document, documentChunk, aiUsageLog } from "@repo/db";
 import { upsertVectors, deleteVectorsByFilter, type Point } from "@repo/qdrant";
 import { eq } from "@repo/db/drizzle-orm";
 import { OpenRouterEmbed } from "@repo/llm/openrouter";
@@ -21,7 +21,8 @@ import {
 	ensureCollection,
 	type VectorPayload,
 } from "../../services/qdrant.shared";
-import { logUsageAndDeduct } from "../../services/usage.service";
+import { deductCredits, addCredits } from "../../services/credits.service";
+import { calculateCost } from "../../utils/cost";
 
 // Constants
 const QUEUE_NAME = "document";
@@ -62,6 +63,10 @@ async function processIndexDocument(
 	// Update progress: Starting
 	await job.updateProgress(5);
 
+	// Track reservation for pre-authorization settlement
+	let reservationId: string | null = null;
+	let estimatedCost = 0;
+
 	try {
 		// Step 1: Chunk the content
 		const chunks = await chunkText(content, {
@@ -74,6 +79,36 @@ async function processIndexDocument(
 		);
 
 		await job.updateProgress(20);
+
+		// Pre-authorize: estimate embedding cost before generating any embeddings.
+		// This prevents fully indexing a document and then failing at billing time.
+		if (organizationId && userId) {
+			const avgTokensPerChunk = 120; // conservative estimate
+			estimatedCost = calculateCost(
+				embeddingModelId,
+				chunks.length * avgTokensPerChunk,
+				0,
+			);
+			if (estimatedCost > 0) {
+				const reservation = await deductCredits({
+					orgId: organizationId,
+					amount: estimatedCost,
+					description: `embedding reservation — ${documentId} (${chunks.length} chunks)`,
+					userId,
+				});
+
+				if (!reservation) {
+					await db
+						.update(document)
+						.set({ status: "failed" })
+						.where(eq(document.id, documentId));
+					throw new Error(
+						`Insufficient credits to index document ${documentId}: estimated cost $${estimatedCost.toFixed(6)}`,
+					);
+				}
+				reservationId = reservation.transactionId;
+			}
+		}
 
 		// Step 2: Generate embeddings in batches
 		const embeddings: number[][] = [];
@@ -147,33 +182,59 @@ async function processIndexDocument(
 
 		await job.updateProgress(95);
 
-		// Step 6: Log embedding usage and deduct credits
-		if (organizationId && userId) {
-			try {
-				await logUsageAndDeduct({
-					organizationId,
+		// Step 6: Settle actual embedding usage and insert usage log.
+		// Clear reservationId so the catch block doesn't attempt a double-refund.
+		if (organizationId && userId && reservationId) {
+			const settledReservationId = reservationId;
+			reservationId = null; // Prevents double-refund if steps after this fail
+
+			const actualCost = calculateCost(embeddingModelId, totalEmbeddingTokens, 0);
+			const diff = estimatedCost - actualCost;
+
+			if (diff > 0.000001) {
+				// Refund over-charged amount
+				await addCredits({
+					orgId: organizationId,
+					amount: diff,
+					type: "adjustment",
+					description: `embedding settlement refund — ${documentId}`,
+					referenceId: settledReservationId,
 					userId,
-					operationType: "embedding",
-					model: embeddingModelId,
-					inputTokens: totalEmbeddingTokens,
-					outputTokens: 0,
-					metadata: {
-						documentId,
-						chunkCount: chunks.length,
-						context: "document_indexing",
-					},
-				});
-			} catch (err) {
-				console.error(
-					`[Document Worker] Credit deduction failed for document ${documentId} — marking as failed:`,
-					err,
+				}).catch((err) =>
+					console.error(`[Document Worker] Failed to refund reservation for ${documentId}:`, err),
 				);
-				await db
-					.update(document)
-					.set({ status: "failed" })
-					.where(eq(document.id, documentId));
-				throw err; // Re-throw so BullMQ marks the job failed (no auto-retry for billing errors)
+			} else if (diff < -0.000001) {
+				// Charge under-charged amount
+				await deductCredits({
+					orgId: organizationId,
+					amount: -diff,
+					description: `embedding settlement charge — ${documentId}`,
+					referenceId: settledReservationId,
+					userId,
+				}).catch((err) =>
+					console.error(`[Document Worker] Failed to charge settlement for ${documentId}:`, err),
+				);
 			}
+
+			// Insert usage log (credits already settled — no additional deduction)
+			await db.insert(aiUsageLog).values({
+				id: randomUUID(),
+				organizationId,
+				userId,
+				operationType: "embedding",
+				model: embeddingModelId,
+				inputTokens: totalEmbeddingTokens,
+				outputTokens: 0,
+				totalTokens: totalEmbeddingTokens,
+				costCredits: actualCost.toString(),
+				metadata: {
+					documentId,
+					chunkCount: chunks.length,
+					context: "document_indexing",
+				},
+			}).catch((err) =>
+				console.error(`[Document Worker] Failed to insert usage log for ${documentId}:`, err),
+			);
 		}
 
 		// Step 7: Update document status to indexed
@@ -198,6 +259,27 @@ async function processIndexDocument(
 			processingTimeMs,
 		};
 	} catch (error) {
+		// Refund the reservation if we pre-authorized but didn't settle yet
+		if (organizationId && userId && reservationId) {
+			await addCredits({
+				orgId: organizationId,
+				amount: estimatedCost,
+				type: "refund",
+				description: `embedding reservation refund — indexing failed for ${documentId}`,
+				referenceId: reservationId,
+				userId,
+			}).catch((refundErr) =>
+				console.error(`[Document Worker] Failed to refund reservation for ${documentId}:`, refundErr),
+			);
+		}
+
+		// Clean up Qdrant vectors that were upserted before failure
+		await deleteVectorsByFilter(qdrant, collectionName, {
+			must: [{ key: "documentId", match: { value: documentId } }],
+		}).catch((cleanupErr) =>
+			console.error(`[Document Worker] Failed to clean up Qdrant vectors for ${documentId}:`, cleanupErr),
+		);
+
 		// Clean up any chunk records that were inserted before failure
 		await db
 			.delete(documentChunk)

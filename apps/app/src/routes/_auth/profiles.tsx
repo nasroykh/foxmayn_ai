@@ -347,7 +347,7 @@ function ProfileFormDialog({
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+			<DialogContent className="max-w-2xl! max-h-[80dvh] overflow-y-auto pb-0">
 				<DialogHeader>
 					<DialogTitle>{title}</DialogTitle>
 					<DialogDescription>

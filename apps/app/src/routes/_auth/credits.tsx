@@ -81,7 +81,7 @@ function CreditsPage() {
 		orpc.credits.getTransactions.queryOptions({
 			input: {
 				limit: 50,
-				type: txTypeFilter !== "all" ? (txTypeFilter as any) : undefined,
+				type: txTypeFilter !== "all" ? (txTypeFilter as "topup" | "usage" | "refund" | "adjustment") : undefined,
 			},
 		}),
 	);
@@ -99,7 +99,7 @@ function CreditsPage() {
 
 	const topUpMutation = useMutation(
 		orpc.credits.topUp.mutationOptions({
-			onSuccess: (data: any) => {
+			onSuccess: (data) => {
 				toast.success(
 					`Topped up successfully. New balance: $${data.newBalance?.toFixed(4)}`,
 				);
@@ -114,12 +114,12 @@ function CreditsPage() {
 					queryKey: orpc.credits.getTransactions.key(),
 				});
 			},
-			onError: (err: any) => toast.error(err.message || "Top-up failed"),
+			onError: (err) => toast.error(err.message || "Top-up failed"),
 		}),
 	);
 
-	const txList = (transactions as any)?.transactions ?? [];
-	const historyList = (usageHistory as any)?.history ?? [];
+	const txList = transactions?.transactions ?? [];
+	const historyList = usageHistory?.history ?? [];
 
 	return (
 		<Layout>
@@ -153,7 +153,7 @@ function CreditsPage() {
 								<Skeleton className="h-8 w-24" />
 							) : (
 								<div className="text-3xl font-bold">
-									${Number((balance as any)?.balance ?? 0).toFixed(4)}
+									${Number(balance?.balance ?? 0).toFixed(4)}
 								</div>
 							)}
 						</CardContent>
@@ -167,7 +167,7 @@ function CreditsPage() {
 						</CardHeader>
 						<CardContent>
 							<div className="text-2xl font-bold">
-								{(usageStats as any)?.totalOperations ?? "—"}
+								{usageStats?.totalCalls ?? "—"}
 							</div>
 						</CardContent>
 					</Card>
@@ -180,7 +180,7 @@ function CreditsPage() {
 						</CardHeader>
 						<CardContent>
 							<div className="text-2xl font-bold">
-								{(usageStats as any)?.byOperationType?.chat ?? "—"}
+								{usageStats?.byOperation?.find((o) => o.operationType === "chat")?.totalCalls ?? "—"}
 							</div>
 						</CardContent>
 					</Card>
@@ -193,7 +193,7 @@ function CreditsPage() {
 						</CardHeader>
 						<CardContent>
 							<div className="text-2xl font-bold">
-								{(usageStats as any)?.byOperationType?.embedding ?? "—"}
+								{usageStats?.byOperation?.find((o) => o.operationType === "embedding")?.totalCalls ?? "—"}
 							</div>
 						</CardContent>
 					</Card>
@@ -256,7 +256,7 @@ function CreditsPage() {
 											</TableCell>
 										</TableRow>
 									) : (
-										txList.map((tx: any) => (
+										txList.map((tx) => (
 											<TableRow key={tx.id}>
 												<TableCell>
 													<Badge
@@ -268,13 +268,13 @@ function CreditsPage() {
 												</TableCell>
 												<TableCell
 													className={
-														tx.amount > 0
+														Number(tx.amount) > 0
 															? "text-emerald-600 font-medium"
 															: "text-destructive font-medium"
 													}
 												>
-													{tx.amount > 0 ? "+" : ""}$
-													{Math.abs(tx.amount).toFixed(4)}
+													{Number(tx.amount) > 0 ? "+" : ""}$
+													{Math.abs(Number(tx.amount)).toFixed(4)}
 												</TableCell>
 												<TableCell className="text-muted-foreground">
 													{tx.description || "—"}
@@ -335,7 +335,7 @@ function CreditsPage() {
 											</TableCell>
 										</TableRow>
 									) : (
-										historyList.map((h: any, i: number) => (
+										historyList.map((h, i) => (
 											<TableRow key={h.id ?? i}>
 												<TableCell>
 													<Badge variant="outline">{h.operationType}</Badge>
@@ -347,7 +347,7 @@ function CreditsPage() {
 													{h.totalTokens ?? h.inputTokens + h.outputTokens}
 												</TableCell>
 												<TableCell className="text-muted-foreground">
-													${Number(h.cost ?? 0).toFixed(6)}
+													${Number(h.costCredits ?? 0).toFixed(6)}
 												</TableCell>
 												<TableCell className="text-sm text-muted-foreground">
 													{h.createdAt
