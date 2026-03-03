@@ -23,6 +23,7 @@ import {
 } from "@tabler/icons-react";
 import { orpc } from "@/lib/orpc";
 import { useQuery } from "@tanstack/react-query";
+import { useMemo } from "react";
 import { format, subDays } from "date-fns";
 
 export const Route = createFileRoute("/_auth/")({
@@ -56,12 +57,14 @@ function Dashboard() {
 		orpc.conversations.listConversations.queryOptions({ input: { limit: 1 } }),
 	);
 
+	const statsDateRange = useMemo(
+		() => ({ from: subDays(new Date(), 1), to: new Date() }),
+		[], // intentionally empty: snapshot dates at mount time
+	);
+
 	const { data: usageStats, isLoading: statsLoading } = useQuery(
 		orpc.usage.getStats.queryOptions({
-			input: {
-				from: subDays(new Date(), 1),
-				to: new Date(),
-			},
+			input: statsDateRange,
 		}),
 	);
 
@@ -178,11 +181,24 @@ function Dashboard() {
 								<AreaChart data={last7Days}>
 									<defs>
 										<linearGradient id="fillCost" x1="0" y1="0" x2="0" y2="1">
-											<stop offset="5%" stopColor="var(--chart-1)" stopOpacity={0.8} />
-											<stop offset="95%" stopColor="var(--chart-1)" stopOpacity={0.1} />
+											<stop
+												offset="5%"
+												stopColor="var(--chart-1)"
+												stopOpacity={0.8}
+											/>
+											<stop
+												offset="95%"
+												stopColor="var(--chart-1)"
+												stopOpacity={0.1}
+											/>
 										</linearGradient>
 									</defs>
-									<XAxis dataKey="date" tickLine={false} axisLine={false} tickMargin={8} />
+									<XAxis
+										dataKey="date"
+										tickLine={false}
+										axisLine={false}
+										tickMargin={8}
+									/>
 									<YAxis tickLine={false} axisLine={false} tickMargin={8} />
 									<ChartTooltip content={<ChartTooltipContent />} />
 									<Area
@@ -211,7 +227,10 @@ function Dashboard() {
 							) : (
 								<div className="space-y-3">
 									{txList.map((tx: any) => (
-										<div key={tx.id} className="flex items-center justify-between">
+										<div
+											key={tx.id}
+											className="flex items-center justify-between"
+										>
 											<div className="flex items-center gap-2">
 												<Badge
 													variant="outline"
@@ -226,7 +245,8 @@ function Dashboard() {
 											<span
 												className={`text-sm font-medium ${tx.amount > 0 ? "text-emerald-600" : "text-destructive"}`}
 											>
-												{tx.amount > 0 ? "+" : ""}${Math.abs(tx.amount).toFixed(4)}
+												{tx.amount > 0 ? "+" : ""}$
+												{Math.abs(tx.amount).toFixed(4)}
 											</span>
 										</div>
 									))}

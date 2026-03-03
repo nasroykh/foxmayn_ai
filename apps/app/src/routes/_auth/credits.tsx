@@ -42,6 +42,14 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { IconPlus, IconLoader2, IconCoins } from "@tabler/icons-react";
+import {
+	Combobox,
+	ComboboxInput,
+	ComboboxContent,
+	ComboboxList,
+	ComboboxItem,
+	ComboboxEmpty,
+} from "@/components/ui/combobox";
 
 export const Route = createFileRoute("/_auth/credits")({
 	component: CreditsPage,
@@ -61,7 +69,7 @@ function CreditsPage() {
 
 	const [txTypeFilter, setTxTypeFilter] = useState<string>("all");
 	const [isTopUpOpen, setIsTopUpOpen] = useState(false);
-	const [topUpOrgId, setTopUpOrgId] = useState("");
+	const [topUpOrgId, setTopUpOrgId] = useState<string | null>(null);
 	const [topUpAmount, setTopUpAmount] = useState("");
 	const [topUpDesc, setTopUpDesc] = useState("");
 
@@ -86,6 +94,9 @@ function CreditsPage() {
 		orpc.usage.getHistory.queryOptions({ input: { limit: 20 } }),
 	);
 
+	const { data: orgsData } = useQuery(orpc.organization.list.queryOptions({}));
+	const organizations = orgsData ?? [];
+
 	const topUpMutation = useMutation(
 		orpc.credits.topUp.mutationOptions({
 			onSuccess: (data: any) => {
@@ -93,7 +104,7 @@ function CreditsPage() {
 					`Topped up successfully. New balance: $${data.newBalance?.toFixed(4)}`,
 				);
 				setIsTopUpOpen(false);
-				setTopUpOrgId("");
+				setTopUpOrgId(null);
 				setTopUpAmount("");
 				setTopUpDesc("");
 				queryClient.invalidateQueries({
@@ -365,12 +376,31 @@ function CreditsPage() {
 						</DialogHeader>
 						<div className="space-y-4 py-4">
 							<div className="space-y-2">
-								<Label>Organization ID</Label>
-								<Input
-									placeholder="org_..."
+								<Label>Organization</Label>
+								<Combobox
 									value={topUpOrgId}
-									onChange={(e) => setTopUpOrgId(e.target.value)}
-								/>
+									onValueChange={(value) => setTopUpOrgId(value)}
+									items={organizations.map((org) => ({
+										label: org.name,
+										value: org.id,
+									}))}
+								>
+									<ComboboxInput
+										className="w-full"
+										placeholder="Search organization..."
+										showClear
+									/>
+									<ComboboxContent>
+										<ComboboxEmpty>No organizations found</ComboboxEmpty>
+										<ComboboxList>
+											{(org: { label: string; value: string }) => (
+												<ComboboxItem key={org.value} value={org.value}>
+													{org.label}
+												</ComboboxItem>
+											)}
+										</ComboboxList>
+									</ComboboxContent>
+								</Combobox>
 							</div>
 							<div className="space-y-2">
 								<Label>Amount ($)</Label>
@@ -403,7 +433,7 @@ function CreditsPage() {
 								}
 								onClick={() =>
 									topUpMutation.mutate({
-										organizationId: topUpOrgId,
+										organizationId: topUpOrgId!,
 										amount: parseFloat(topUpAmount),
 										description: topUpDesc || undefined,
 									})

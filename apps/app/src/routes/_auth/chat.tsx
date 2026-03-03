@@ -134,7 +134,7 @@ function ChatPage() {
 		let newConvId: string | null = activeConvId;
 
 		try {
-			const stream = await (orpcClient.chat.queryStream as any)({
+			const stream = await orpcClient.chat.queryStream({
 				query,
 				conversationId: activeConvId ?? undefined,
 				options: {
@@ -183,9 +183,9 @@ function ChatPage() {
 
 	return (
 		<Layout>
-			<div className="flex h-[calc(100vh-7rem)] gap-0 -m-4 overflow-hidden">
+			<div className="flex h-full gap-0 overflow-hidden">
 				{/* Conversation Sidebar */}
-				<div className="w-64 border-r border-border flex flex-col bg-muted/20 shrink-0">
+				<div className="w-64 border-r border-border flex flex-col shrink-0">
 					<div className="p-3 border-b border-border">
 						<Button
 							variant="outline"
