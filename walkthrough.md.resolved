@@ -1,0 +1,610 @@
+# AI Usage Tracking & Credits System — Walkthrough
+
+## Overview
+
+Implemented a full credits and usage tracking system for the foxmayn_ai platform. Organizations now have a credits balance (1 credit = 1 USD) that is consumed by AI operations (chat, embedding/indexing). Every AI API call is logged with token counts and cost for analytics.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A[Client Request] --> B{creditsProcedure}
+    B -->|No credits| C[402 Insufficient Credits]
+    B -->|Has credits| D[Route Handler]
+    D --> E[RAG Service]
+    E --> F["OpenRouterQuery / OpenRouterEmbed"]
+    F --> G["Returns {text/embeddings, usage}"]
+    G --> H["logUsageAndDeduct()"]
+    H --> I[ai_usage_log INSERT]
+    H --> J["Atomic: org.credits_balance -= cost"]
+    H --> K[credit_transaction INSERT]
+```
+
+---
+
+## Changes Made
+
+### Layer 1: Database Schema
+
+#### [NEW] [usage/schema.ts](file:///home/nas/personal_projects/foxmayn_ai/packages/db/src/models/usage/schema.ts)
+Two new tables with indexes and relations:
+- **`ai_usage_log`** — every AI API call (org, user, model, tokens, cost, operation type)
+- **`credit_transaction`** — audit trail for balance changes (topup/usage/refund/adjustment)
+
+#### [NEW] [usage/types.ts](file:///home/nas/personal_projects/foxmayn_ai/packages/db/src/models/usage/types.ts)
+Drizzle-zod inferred types.
+
+#### [MODIFY] [auth/schema.ts](file:///home/nas/personal_projects/foxmayn_ai/packages/db/src/models/auth/schema.ts)
+Added `creditsBalance` (real, default 0) to `organization` table.
+
+```diff:schema.ts
+import { relations } from "drizzle-orm";
+import {
+  pgTable,
+  text,
+  timestamp,
+  boolean,
+  integer,
+  index,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+
+export const user = pgTable("user", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  emailVerified: boolean("email_verified").default(false).notNull(),
+  image: text("image"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at")
+    .defaultNow()
+    .$onUpdate(() => /* @__PURE__ */ new Date())
+    .notNull(),
+  role: text("role"),
+  banned: boolean("banned").default(false),
+  banReason: text("ban_reason"),
+  banExpires: timestamp("ban_expires"),
+});
+
+export const session = pgTable(
+  "session",
+  {
+    id: text("id").primaryKey(),
+    expiresAt: timestamp("expires_at").notNull(),
+    token: text("token").notNull().unique(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at")
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    impersonatedBy: text("impersonated_by"),
+    activeOrganizationId: text("active_organization_id"),
+  },
+  (table) => [index("session_userId_idx").on(table.userId)],
+);
+
+export const account = pgTable(
+  "account",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    accessToken: text("access_token"),
+    refreshToken: text("refresh_token"),
+    idToken: text("id_token"),
+    accessTokenExpiresAt: timestamp("access_token_expires_at"),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at")
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [index("account_userId_idx").on(table.userId)],
+);
+
+export const verification = pgTable(
+  "verification",
+  {
+    id: text("id").primaryKey(),
+    identifier: text("identifier").notNull(),
+    value: text("value").notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at")
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [index("verification_identifier_idx").on(table.identifier)],
+);
+
+export const apikey = pgTable(
+  "apikey",
+  {
+    id: text("id").primaryKey(),
+    name: text("name"),
+    start: text("start"),
+    prefix: text("prefix"),
+    key: text("key").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    refillInterval: integer("refill_interval"),
+    refillAmount: integer("refill_amount"),
+    lastRefillAt: timestamp("last_refill_at"),
+    enabled: boolean("enabled").default(true),
+    rateLimitEnabled: boolean("rate_limit_enabled").default(true),
+    rateLimitTimeWindow: integer("rate_limit_time_window").default(300000),
+    rateLimitMax: integer("rate_limit_max").default(100),
+    requestCount: integer("request_count").default(0),
+    remaining: integer("remaining"),
+    lastRequest: timestamp("last_request"),
+    expiresAt: timestamp("expires_at"),
+    createdAt: timestamp("created_at").notNull(),
+    updatedAt: timestamp("updated_at").notNull(),
+    permissions: text("permissions"),
+    metadata: text("metadata"),
+  },
+  (table) => [
+    index("apikey_key_idx").on(table.key),
+    index("apikey_userId_idx").on(table.userId),
+  ],
+);
+
+export const organization = pgTable(
+  "organization",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull().unique(),
+    logo: text("logo"),
+    createdAt: timestamp("created_at").notNull(),
+    metadata: text("metadata"),
+  },
+  (table) => [uniqueIndex("organization_slug_uidx").on(table.slug)],
+);
+
+export const member = pgTable(
+  "member",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    role: text("role").default("member").notNull(),
+    createdAt: timestamp("created_at").notNull(),
+  },
+  (table) => [
+    index("member_organizationId_idx").on(table.organizationId),
+    index("member_userId_idx").on(table.userId),
+  ],
+);
+
+export const invitation = pgTable(
+  "invitation",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    role: text("role"),
+    status: text("status").default("pending").notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    inviterId: text("inviter_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    index("invitation_organizationId_idx").on(table.organizationId),
+    index("invitation_email_idx").on(table.email),
+  ],
+);
+
+export const userRelations = relations(user, ({ many }) => ({
+  sessions: many(session),
+  accounts: many(account),
+  apikeys: many(apikey),
+  members: many(member),
+  invitations: many(invitation),
+}));
+
+export const sessionRelations = relations(session, ({ one }) => ({
+  user: one(user, {
+    fields: [session.userId],
+    references: [user.id],
+  }),
+}));
+
+export const accountRelations = relations(account, ({ one }) => ({
+  user: one(user, {
+    fields: [account.userId],
+    references: [user.id],
+  }),
+}));
+
+export const apikeyRelations = relations(apikey, ({ one }) => ({
+  user: one(user, {
+    fields: [apikey.userId],
+    references: [user.id],
+  }),
+}));
+
+export const organizationRelations = relations(organization, ({ many }) => ({
+  members: many(member),
+  invitations: many(invitation),
+}));
+
+export const memberRelations = relations(member, ({ one }) => ({
+  organization: one(organization, {
+    fields: [member.organizationId],
+    references: [organization.id],
+  }),
+  user: one(user, {
+    fields: [member.userId],
+    references: [user.id],
+  }),
+}));
+
+export const invitationRelations = relations(invitation, ({ one }) => ({
+  organization: one(organization, {
+    fields: [invitation.organizationId],
+    references: [organization.id],
+  }),
+  user: one(user, {
+    fields: [invitation.inviterId],
+    references: [user.id],
+  }),
+}));
+===
+import { relations } from "drizzle-orm";
+import {
+	pgTable,
+	text,
+	timestamp,
+	boolean,
+	integer,
+	real,
+	index,
+	uniqueIndex,
+} from "drizzle-orm/pg-core";
+
+export const user = pgTable("user", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	email: text("email").notNull().unique(),
+	emailVerified: boolean("email_verified").default(false).notNull(),
+	image: text("image"),
+	createdAt: timestamp("created_at").defaultNow().notNull(),
+	updatedAt: timestamp("updated_at")
+		.defaultNow()
+		.$onUpdate(() => /* @__PURE__ */ new Date())
+		.notNull(),
+	role: text("role"),
+	banned: boolean("banned").default(false),
+	banReason: text("ban_reason"),
+	banExpires: timestamp("ban_expires"),
+});
+
+export const session = pgTable(
+	"session",
+	{
+		id: text("id").primaryKey(),
+		expiresAt: timestamp("expires_at").notNull(),
+		token: text("token").notNull().unique(),
+		createdAt: timestamp("created_at").defaultNow().notNull(),
+		updatedAt: timestamp("updated_at")
+			.$onUpdate(() => /* @__PURE__ */ new Date())
+			.notNull(),
+		ipAddress: text("ip_address"),
+		userAgent: text("user_agent"),
+		userId: text("user_id")
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+		impersonatedBy: text("impersonated_by"),
+		activeOrganizationId: text("active_organization_id"),
+	},
+	(table) => [index("session_userId_idx").on(table.userId)],
+);
+
+export const account = pgTable(
+	"account",
+	{
+		id: text("id").primaryKey(),
+		accountId: text("account_id").notNull(),
+		providerId: text("provider_id").notNull(),
+		userId: text("user_id")
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+		accessToken: text("access_token"),
+		refreshToken: text("refresh_token"),
+		idToken: text("id_token"),
+		accessTokenExpiresAt: timestamp("access_token_expires_at"),
+		refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
+		scope: text("scope"),
+		password: text("password"),
+		createdAt: timestamp("created_at").defaultNow().notNull(),
+		updatedAt: timestamp("updated_at")
+			.$onUpdate(() => /* @__PURE__ */ new Date())
+			.notNull(),
+	},
+	(table) => [index("account_userId_idx").on(table.userId)],
+);
+
+export const verification = pgTable(
+	"verification",
+	{
+		id: text("id").primaryKey(),
+		identifier: text("identifier").notNull(),
+		value: text("value").notNull(),
+		expiresAt: timestamp("expires_at").notNull(),
+		createdAt: timestamp("created_at").defaultNow().notNull(),
+		updatedAt: timestamp("updated_at")
+			.defaultNow()
+			.$onUpdate(() => /* @__PURE__ */ new Date())
+			.notNull(),
+	},
+	(table) => [index("verification_identifier_idx").on(table.identifier)],
+);
+
+export const apikey = pgTable(
+	"apikey",
+	{
+		id: text("id").primaryKey(),
+		name: text("name"),
+		start: text("start"),
+		prefix: text("prefix"),
+		key: text("key").notNull(),
+		userId: text("user_id")
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+		refillInterval: integer("refill_interval"),
+		refillAmount: integer("refill_amount"),
+		lastRefillAt: timestamp("last_refill_at"),
+		enabled: boolean("enabled").default(true),
+		rateLimitEnabled: boolean("rate_limit_enabled").default(true),
+		rateLimitTimeWindow: integer("rate_limit_time_window").default(300000),
+		rateLimitMax: integer("rate_limit_max").default(100),
+		requestCount: integer("request_count").default(0),
+		remaining: integer("remaining"),
+		lastRequest: timestamp("last_request"),
+		expiresAt: timestamp("expires_at"),
+		createdAt: timestamp("created_at").notNull(),
+		updatedAt: timestamp("updated_at").notNull(),
+		permissions: text("permissions"),
+		metadata: text("metadata"),
+	},
+	(table) => [
+		index("apikey_key_idx").on(table.key),
+		index("apikey_userId_idx").on(table.userId),
+	],
+);
+
+export const organization = pgTable(
+	"organization",
+	{
+		id: text("id").primaryKey(),
+		name: text("name").notNull(),
+		slug: text("slug").notNull().unique(),
+		logo: text("logo"),
+		createdAt: timestamp("created_at").notNull(),
+		metadata: text("metadata"),
+		creditsBalance: real("credits_balance").default(0).notNull(),
+	},
+	(table) => [uniqueIndex("organization_slug_uidx").on(table.slug)],
+);
+
+export const member = pgTable(
+	"member",
+	{
+		id: text("id").primaryKey(),
+		organizationId: text("organization_id")
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		userId: text("user_id")
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+		role: text("role").default("member").notNull(),
+		createdAt: timestamp("created_at").notNull(),
+	},
+	(table) => [
+		index("member_organizationId_idx").on(table.organizationId),
+		index("member_userId_idx").on(table.userId),
+	],
+);
+
+export const invitation = pgTable(
+	"invitation",
+	{
+		id: text("id").primaryKey(),
+		organizationId: text("organization_id")
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		email: text("email").notNull(),
+		role: text("role"),
+		status: text("status").default("pending").notNull(),
+		expiresAt: timestamp("expires_at").notNull(),
+		createdAt: timestamp("created_at").defaultNow().notNull(),
+		inviterId: text("inviter_id")
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+	},
+	(table) => [
+		index("invitation_organizationId_idx").on(table.organizationId),
+		index("invitation_email_idx").on(table.email),
+	],
+);
+
+export const userRelations = relations(user, ({ many }) => ({
+	sessions: many(session),
+	accounts: many(account),
+	apikeys: many(apikey),
+	members: many(member),
+	invitations: many(invitation),
+}));
+
+export const sessionRelations = relations(session, ({ one }) => ({
+	user: one(user, {
+		fields: [session.userId],
+		references: [user.id],
+	}),
+}));
+
+export const accountRelations = relations(account, ({ one }) => ({
+	user: one(user, {
+		fields: [account.userId],
+		references: [user.id],
+	}),
+}));
+
+export const apikeyRelations = relations(apikey, ({ one }) => ({
+	user: one(user, {
+		fields: [apikey.userId],
+		references: [user.id],
+	}),
+}));
+
+export const organizationRelations = relations(organization, ({ many }) => ({
+	members: many(member),
+	invitations: many(invitation),
+}));
+
+export const memberRelations = relations(member, ({ one }) => ({
+	organization: one(organization, {
+		fields: [member.organizationId],
+		references: [organization.id],
+	}),
+	user: one(user, {
+		fields: [member.userId],
+		references: [user.id],
+	}),
+}));
+
+export const invitationRelations = relations(invitation, ({ one }) => ({
+	organization: one(organization, {
+		fields: [invitation.organizationId],
+		references: [organization.id],
+	}),
+	user: one(user, {
+		fields: [invitation.inviterId],
+		references: [user.id],
+	}),
+}));
+```
+
+#### [MODIFY] [schema.ts](file:///home/nas/personal_projects/foxmayn_ai/packages/db/src/models/schema.ts) + [types.ts](file:///home/nas/personal_projects/foxmayn_ai/packages/db/src/models/types.ts)
+Re-exports for the new usage module.
+
+---
+
+### Layer 2: LLM Wrapper
+
+#### [MODIFY] [openrouter.ts](file:///home/nas/personal_projects/foxmayn_ai/packages/llm/src/openrouter.ts)
+Complete rewrite with new return types:
+
+| Function | Old Return | New Return |
+|----------|-----------|------------|
+| [OpenRouterQuery](file:///home/nas/personal_projects/foxmayn_ai/packages/llm/src/openrouter.ts#91-180) (non-stream) | `string` | `{ text, usage: { inputTokens, outputTokens, totalTokens } }` |
+| [OpenRouterQuery](file:///home/nas/personal_projects/foxmayn_ai/packages/llm/src/openrouter.ts#91-180) (stream) | `AsyncIterable<string>` | `{ stream, getUsage: () => Promise<AIUsage> }` |
+| [OpenRouterEmbed](file:///home/nas/personal_projects/foxmayn_ai/packages/llm/src/openai.ts#158-188) | `number[][]` | `{ embeddings, usage: { totalTokens } }` |
+
+Uses function overloads for type-safe streaming vs non-streaming dispatch. Non-streaming uses `getResponse()` to extract `response.usage`. Streaming defers usage via [getUsage()](file:///home/nas/personal_projects/foxmayn_ai/packages/llm/src/openrouter.ts#140-154) callback (called after stream completes).
+
+#### [MODIFY] [package.json](file:///home/nas/personal_projects/foxmayn_ai/packages/llm/package.json)
+Added `types` paths to exports for dev-time type resolution.
+
+---
+
+### Layer 3: Cost Calculation
+
+#### [NEW] [cost.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/utils/cost.ts)
+[calculateCost(modelId, inputTokens, outputTokens)](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/utils/cost.ts#6-41) — uses prices from [openrouter_models.ts](file:///home/nas/personal_projects/foxmayn_ai/packages/llm/src/data/openrouter_models.ts) (per-million-tokens). Falls back to $1/$2 per million for unknown models.
+
+---
+
+### Layer 4: Services
+
+#### [NEW] [credits.service.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/credits.service.ts)
+- [getBalance(orgId)](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/credits.service.ts#9-20) / [hasEnoughCredits(orgId, cost)](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/credits.service.ts#21-31)
+- [deductCredits({orgId, amount, ...})](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/credits.service.ts#36-87) — **atomic**: single SQL `UPDATE ... WHERE balance >= amount`
+- [addCredits({orgId, amount, type, ...})](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/credits.service.ts#88-127) — for topup/refund/adjustment
+- [getTransactionHistory(orgId, options)](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/credits.service.ts#132-158)
+
+#### [NEW] [usage.service.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/usage.service.ts)
+- [logUsageAndDeduct(input)](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/usage.service.ts#42-97) — single entry point: calculates cost → inserts log → deducts credits
+- [getUsageStats(orgId, {from, to})](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/usage.service.ts#102-165) — aggregated (total cost, by model, by operation)
+- [getUsageHistory(orgId, options)](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/usage.service.ts#166-196) — paginated log
+
+#### [MODIFY] [rag.service.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/rag.service.ts)
+- [queryRAG](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/rag.service.ts#236-303) / [queryRAGStream](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/rag.service.ts#304-401) / [searchChunks](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/rag.service.ts#159-235) now accept `organizationId` + `userId`
+- After each AI call, logs usage via [logUsageAndDeduct()](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/usage.service.ts#42-97) (fire-and-forget with `.catch()`)
+- [queryRAGStream](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/rag.service.ts#304-401) yields a new `{ type: "usage", data: AIUsage }` event before `done`
+- [indexDocument](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/rag.service.ts#75-151) passes org context to job data
+
+---
+
+### Layer 5: Middleware
+
+#### [MODIFY] [middleware.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/router/middleware.ts)
+Two new procedures:
+- **`orgProcedure`** — requires `session.activeOrganizationId`, injects `organizationId` into context
+- **`creditsProcedure`** — extends orgProcedure, checks `balance >= 0.0001` before proceeding
+
+---
+
+### Layer 6: Routes
+
+#### [NEW] [credits.routes.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/router/routes/credits.routes.ts)
+- `GET /credits/balance` — org balance
+- `GET /credits/transactions` — paginated transaction history (type filter)
+- `POST /credits/topup` — admin-only, manual balance addition
+
+#### [NEW] [usage.routes.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/router/routes/usage.routes.ts)
+- `GET /usage/stats` — aggregated stats with date range filter
+- `GET /usage/history` — paginated usage log (operation type + user filters)
+
+#### [MODIFY] [chat.routes.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/router/routes/chat.routes.ts)
+[query](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/rag.service.ts#236-303), `queryStream`, [search](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/rag.service.ts#159-235) → switched from `authProcedure` to `creditsProcedure`, pass `organizationId`/`userId` to service.
+
+#### [MODIFY] [document.routes.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/router/routes/document.routes.ts)
+[createDocument](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/jobs/document/document.worker.ts#363-399) → `creditsProcedure`, passes `organizationId` to indexing job.
+
+#### [MODIFY] [index.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/router/index.ts)
+Registered `credits` and `usage` route groups.
+
+---
+
+### Layer 7: Background Worker
+
+#### [MODIFY] [document.worker.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/jobs/document/document.worker.ts)
+- Accumulates `totalEmbeddingTokens` across batches
+- After all embeddings, calls [logUsageAndDeduct()](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/services/usage.service.ts#42-97) with embedding usage
+- Passes org context through reindex
+
+#### [MODIFY] [types.ts](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/jobs/document/types.ts)
+Added `organizationId` and `userId` to [IndexDocumentJobData](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/jobs/document/types.ts#9-23) and [ReindexDocumentJobData](file:///home/nas/personal_projects/foxmayn_ai/apps/api/src/jobs/document/types.ts#28-39).
+
+---
+
+## Verification Plan
+
+1. **Run migration**: `pnpm --filter=@repo/db db:migrate`
+2. **Start dev**: `pnpm dev`
+3. **Top up credits**: `POST /api/v1/credits/topup { organizationId, amount: 10 }` (as admin)
+4. **Check balance**: `GET /api/v1/credits/balance` → should show 10.0
+5. **Chat query**: `POST /api/v1/chat/query` → balance should decrease, usage log should appear
+6. **Zero-credits rejection**: Set balance to 0, try chat → 403
+7. **Upload document**: Post a file, verify embedding tokens logged in usage history

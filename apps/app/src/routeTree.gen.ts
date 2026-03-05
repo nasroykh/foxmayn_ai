@@ -13,10 +13,16 @@ import { Route as NotauthRouteImport } from './routes/_notauth'
 import { Route as AuthRouteImport } from './routes/_auth'
 import { Route as AuthIndexRouteImport } from './routes/_auth/index'
 import { Route as AuthSettingsRouteImport } from './routes/_auth/settings'
+import { Route as AuthProfilesRouteImport } from './routes/_auth/profiles'
+import { Route as AuthDocumentsRouteImport } from './routes/_auth/documents'
+import { Route as AuthCreditsRouteImport } from './routes/_auth/credits'
+import { Route as AuthChatRouteImport } from './routes/_auth/chat'
+import { Route as AuthApiKeysRouteImport } from './routes/_auth/api-keys'
 import { Route as NotauthAuthRegisterRouteImport } from './routes/_notauth/auth/register'
 import { Route as NotauthAuthLoginRouteImport } from './routes/_notauth/auth/login'
 import { Route as NotauthAuthForgotPasswordRouteImport } from './routes/_notauth/auth/forgot-password'
 import { Route as AuthInviteInviteIdRouteImport } from './routes/_auth/invite/$inviteId'
+import { Route as AuthAdminUsersRouteImport } from './routes/_auth/admin/users'
 
 const NotauthRoute = NotauthRouteImport.update({
   id: '/_notauth',
@@ -34,6 +40,31 @@ const AuthIndexRoute = AuthIndexRouteImport.update({
 const AuthSettingsRoute = AuthSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthProfilesRoute = AuthProfilesRouteImport.update({
+  id: '/profiles',
+  path: '/profiles',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthDocumentsRoute = AuthDocumentsRouteImport.update({
+  id: '/documents',
+  path: '/documents',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthCreditsRoute = AuthCreditsRouteImport.update({
+  id: '/credits',
+  path: '/credits',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthChatRoute = AuthChatRouteImport.update({
+  id: '/chat',
+  path: '/chat',
+  getParentRoute: () => AuthRoute,
+} as any)
+const AuthApiKeysRoute = AuthApiKeysRouteImport.update({
+  id: '/api-keys',
+  path: '/api-keys',
   getParentRoute: () => AuthRoute,
 } as any)
 const NotauthAuthRegisterRoute = NotauthAuthRegisterRouteImport.update({
@@ -57,18 +88,35 @@ const AuthInviteInviteIdRoute = AuthInviteInviteIdRouteImport.update({
   path: '/invite/$inviteId',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthAdminUsersRoute = AuthAdminUsersRouteImport.update({
+  id: '/admin/users',
+  path: '/admin/users',
+  getParentRoute: () => AuthRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
+  '/api-keys': typeof AuthApiKeysRoute
+  '/chat': typeof AuthChatRoute
+  '/credits': typeof AuthCreditsRoute
+  '/documents': typeof AuthDocumentsRoute
+  '/profiles': typeof AuthProfilesRoute
   '/settings': typeof AuthSettingsRoute
   '/': typeof AuthIndexRoute
+  '/admin/users': typeof AuthAdminUsersRoute
   '/invite/$inviteId': typeof AuthInviteInviteIdRoute
   '/auth/forgot-password': typeof NotauthAuthForgotPasswordRoute
   '/auth/login': typeof NotauthAuthLoginRoute
   '/auth/register': typeof NotauthAuthRegisterRoute
 }
 export interface FileRoutesByTo {
+  '/api-keys': typeof AuthApiKeysRoute
+  '/chat': typeof AuthChatRoute
+  '/credits': typeof AuthCreditsRoute
+  '/documents': typeof AuthDocumentsRoute
+  '/profiles': typeof AuthProfilesRoute
   '/settings': typeof AuthSettingsRoute
   '/': typeof AuthIndexRoute
+  '/admin/users': typeof AuthAdminUsersRoute
   '/invite/$inviteId': typeof AuthInviteInviteIdRoute
   '/auth/forgot-password': typeof NotauthAuthForgotPasswordRoute
   '/auth/login': typeof NotauthAuthLoginRoute
@@ -78,8 +126,14 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_auth': typeof AuthRouteWithChildren
   '/_notauth': typeof NotauthRouteWithChildren
+  '/_auth/api-keys': typeof AuthApiKeysRoute
+  '/_auth/chat': typeof AuthChatRoute
+  '/_auth/credits': typeof AuthCreditsRoute
+  '/_auth/documents': typeof AuthDocumentsRoute
+  '/_auth/profiles': typeof AuthProfilesRoute
   '/_auth/settings': typeof AuthSettingsRoute
   '/_auth/': typeof AuthIndexRoute
+  '/_auth/admin/users': typeof AuthAdminUsersRoute
   '/_auth/invite/$inviteId': typeof AuthInviteInviteIdRoute
   '/_notauth/auth/forgot-password': typeof NotauthAuthForgotPasswordRoute
   '/_notauth/auth/login': typeof NotauthAuthLoginRoute
@@ -88,16 +142,28 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
+    | '/api-keys'
+    | '/chat'
+    | '/credits'
+    | '/documents'
+    | '/profiles'
     | '/settings'
     | '/'
+    | '/admin/users'
     | '/invite/$inviteId'
     | '/auth/forgot-password'
     | '/auth/login'
     | '/auth/register'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/api-keys'
+    | '/chat'
+    | '/credits'
+    | '/documents'
+    | '/profiles'
     | '/settings'
     | '/'
+    | '/admin/users'
     | '/invite/$inviteId'
     | '/auth/forgot-password'
     | '/auth/login'
@@ -106,8 +172,14 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_auth'
     | '/_notauth'
+    | '/_auth/api-keys'
+    | '/_auth/chat'
+    | '/_auth/credits'
+    | '/_auth/documents'
+    | '/_auth/profiles'
     | '/_auth/settings'
     | '/_auth/'
+    | '/_auth/admin/users'
     | '/_auth/invite/$inviteId'
     | '/_notauth/auth/forgot-password'
     | '/_notauth/auth/login'
@@ -149,6 +221,41 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthSettingsRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/profiles': {
+      id: '/_auth/profiles'
+      path: '/profiles'
+      fullPath: '/profiles'
+      preLoaderRoute: typeof AuthProfilesRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/documents': {
+      id: '/_auth/documents'
+      path: '/documents'
+      fullPath: '/documents'
+      preLoaderRoute: typeof AuthDocumentsRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/credits': {
+      id: '/_auth/credits'
+      path: '/credits'
+      fullPath: '/credits'
+      preLoaderRoute: typeof AuthCreditsRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/chat': {
+      id: '/_auth/chat'
+      path: '/chat'
+      fullPath: '/chat'
+      preLoaderRoute: typeof AuthChatRouteImport
+      parentRoute: typeof AuthRoute
+    }
+    '/_auth/api-keys': {
+      id: '/_auth/api-keys'
+      path: '/api-keys'
+      fullPath: '/api-keys'
+      preLoaderRoute: typeof AuthApiKeysRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_notauth/auth/register': {
       id: '/_notauth/auth/register'
       path: '/auth/register'
@@ -177,18 +284,37 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthInviteInviteIdRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/admin/users': {
+      id: '/_auth/admin/users'
+      path: '/admin/users'
+      fullPath: '/admin/users'
+      preLoaderRoute: typeof AuthAdminUsersRouteImport
+      parentRoute: typeof AuthRoute
+    }
   }
 }
 
 interface AuthRouteChildren {
+  AuthApiKeysRoute: typeof AuthApiKeysRoute
+  AuthChatRoute: typeof AuthChatRoute
+  AuthCreditsRoute: typeof AuthCreditsRoute
+  AuthDocumentsRoute: typeof AuthDocumentsRoute
+  AuthProfilesRoute: typeof AuthProfilesRoute
   AuthSettingsRoute: typeof AuthSettingsRoute
   AuthIndexRoute: typeof AuthIndexRoute
+  AuthAdminUsersRoute: typeof AuthAdminUsersRoute
   AuthInviteInviteIdRoute: typeof AuthInviteInviteIdRoute
 }
 
 const AuthRouteChildren: AuthRouteChildren = {
+  AuthApiKeysRoute: AuthApiKeysRoute,
+  AuthChatRoute: AuthChatRoute,
+  AuthCreditsRoute: AuthCreditsRoute,
+  AuthDocumentsRoute: AuthDocumentsRoute,
+  AuthProfilesRoute: AuthProfilesRoute,
   AuthSettingsRoute: AuthSettingsRoute,
   AuthIndexRoute: AuthIndexRoute,
+  AuthAdminUsersRoute: AuthAdminUsersRoute,
   AuthInviteInviteIdRoute: AuthInviteInviteIdRoute,
 }
 

@@ -12,9 +12,12 @@ import {
 	listMessages,
 	createMessage,
 } from "../../services/conversation.service";
-import { authProcedure, publicProcedure } from "../middleware";
+import { creditsProcedure, publicProcedure } from "../middleware";
 import { env } from "../../config/env";
-import { OPENROUTER_AI_MODELS } from "@repo/llm/openrouter/models";
+import {
+	OPENROUTER_AI_MODELS,
+	OPENROUTER_EMBEDDING_MODELS,
+} from "@repo/llm/openrouter/models";
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
@@ -139,7 +142,7 @@ async function storeMessages(
 }
 
 export const chatRoutes = {
-	query: authProcedure
+	query: creditsProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/query`,
@@ -167,6 +170,8 @@ export const chatRoutes = {
 					documentId: options?.documentId,
 					source: options?.source,
 				},
+				organizationId: context.organizationId,
+				userId: context.user.id,
 			});
 
 			// Store messages if server-managed
@@ -181,7 +186,7 @@ export const chatRoutes = {
 			};
 		}),
 
-	search: authProcedure
+	search: creditsProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/search`,
@@ -193,7 +198,7 @@ export const chatRoutes = {
 				options: queryOptionsSchema,
 			}),
 		)
-		.handler(async ({ input }) => {
+		.handler(async ({ input, context }) => {
 			const { query, options } = input;
 
 			const results = await searchChunks(query, {
@@ -203,12 +208,14 @@ export const chatRoutes = {
 					documentId: options?.documentId,
 					source: options?.source,
 				},
+				organizationId: context.organizationId,
+				userId: context.user.id,
 			});
 
 			return { results };
 		}),
 
-	queryStream: authProcedure
+	queryStream: creditsProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/query/stream`,
@@ -241,6 +248,8 @@ export const chatRoutes = {
 					documentId: options?.documentId,
 					source: options?.source,
 				},
+				organizationId: context.organizationId,
+				userId: context.user.id,
 			});
 
 			// Collect full response for storage
@@ -265,10 +274,12 @@ export const chatRoutes = {
 		.route({
 			method: "GET",
 			path: `${PREFIX}/chat/models`,
-			description: "Get available models",
+			description:
+				"Get available models. Use `type=embedding` to fetch embedding models, defaults to `chat`.",
 		})
 		.input(
 			z.object({
+				type: z.enum(["chat", "embedding"]).optional().default("chat"),
 				sortType: z.enum(["price", "contextLength"]).optional(),
 				sortOrder: z.enum(["asc", "desc"]).optional(),
 			}),
@@ -281,19 +292,30 @@ export const chatRoutes = {
 						inputPrice: z.number(),
 						outputPrice: z.number(),
 						contextLength: z.number(),
+						dimensions: z.number().optional(),
 					}),
 				),
 			}),
 		)
 		.handler(async ({ input }) => {
-			const { sortType, sortOrder } = input;
+			const { type, sortType, sortOrder } = input;
 
-			const models = OPENROUTER_AI_MODELS.map((model) => ({
-				id: model.id,
-				inputPrice: model.inputPrice,
-				outputPrice: model.outputPrice,
-				contextLength: model.contextLength,
-			}));
+			const models =
+				type === "embedding"
+					? OPENROUTER_EMBEDDING_MODELS.map((model) => ({
+							id: model.id,
+							inputPrice: model.inputPrice,
+							outputPrice: model.outputPrice,
+							contextLength: model.contextLength,
+							dimensions: model.dimensions,
+						}))
+					: OPENROUTER_AI_MODELS.map((model) => ({
+							id: model.id,
+							inputPrice: model.inputPrice,
+							outputPrice: model.outputPrice,
+							contextLength: model.contextLength,
+							dimensions: undefined,
+						}));
 
 			if (sortType && sortOrder) {
 				models.sort((a, b) => {
@@ -309,6 +331,6 @@ export const chatRoutes = {
 				});
 			}
 
-			return { models, sortType, sortOrder };
+			return { models };
 		}),
 };

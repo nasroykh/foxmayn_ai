@@ -1,8 +1,10 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
+import Redis from "ioredis";
 import { initDB } from "@repo/db";
 import { env } from "./config/env";
 import { registerPlugins } from "./plugins/index";
+import { initModelPricing } from "./services/model-pricing.service";
 
 const app = new Hono().basePath(env.API_V1_PREFIX);
 
@@ -21,6 +23,11 @@ const start = async () => {
 	try {
 		console.log("🚀 Starting server initialization...");
 		await initDB();
+
+		// Initialize model pricing cache (seeds from static data, hydrates from Redis,
+		// then fires a non-blocking refresh from OpenRouter API)
+		const redis = new Redis(env.REDIS_URL, { maxRetriesPerRequest: null });
+		await initModelPricing(redis);
 
 		registerPlugins(app);
 

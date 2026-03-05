@@ -10,7 +10,11 @@ import {
 	extractTextFromDocument,
 } from "../../services/rag.service";
 import { getDocumentJobStatus, getPendingDocumentJobs } from "../../jobs";
-import { authProcedure, publicProcedure } from "../middleware";
+import {
+	authProcedure,
+	creditsProcedure,
+	publicProcedure,
+} from "../middleware";
 import { env } from "../../config/env";
 import {
 	calculateTokens,
@@ -20,7 +24,7 @@ import {
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
 export const documentRoutes = {
-	createDocument: authProcedure
+	createDocument: creditsProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/documents`,
@@ -33,7 +37,7 @@ export const documentRoutes = {
 				source: z.string().optional(),
 				profileId: z.string().optional(),
 				metadata: z.string().optional(),
-			})
+			}),
 		)
 		.output(
 			z.object({
@@ -41,7 +45,7 @@ export const documentRoutes = {
 				jobId: z.string().optional(),
 				message: z.string(),
 				status: z.string(),
-			})
+			}),
 		)
 		.handler(async ({ input, context }) => {
 			const { file, title, source, metadata, profileId } = input;
@@ -64,6 +68,7 @@ export const documentRoutes = {
 				profileId,
 				metadata: parsedMetadata,
 				userId: context.user.id,
+				organizationId: context.organizationId,
 			});
 
 			return {
@@ -91,7 +96,7 @@ export const documentRoutes = {
 				attemptsMade: z.number(),
 				processedOn: z.number().optional(),
 				finishedOn: z.number().optional(),
-			})
+			}),
 		)
 		.handler(async ({ input }) => {
 			const { jobId } = input;
@@ -142,7 +147,7 @@ export const documentRoutes = {
 				metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 				createdAt: z.string(),
 				updatedAt: z.string(),
-			})
+			}),
 		)
 		.handler(async ({ input, context }) => {
 			const { id } = input;
@@ -176,7 +181,7 @@ export const documentRoutes = {
 			z.object({
 				offset: z.coerce.number().min(0).optional(),
 				limit: z.coerce.number().min(1).max(100).optional(),
-			})
+			}),
 		)
 		.output(
 			z.object({
@@ -189,10 +194,10 @@ export const documentRoutes = {
 						chunkCount: z.number(),
 						createdAt: z.string(),
 						updatedAt: z.string(),
-					})
+					}),
 				),
 				total: z.number(),
-			})
+			}),
 		)
 		.handler(async ({ input, context }) => {
 			const { limit = 20, offset = 0 } = input;
@@ -227,7 +232,7 @@ export const documentRoutes = {
 			z.object({
 				message: z.string(),
 				jobId: z.string().optional(),
-			})
+			}),
 		)
 		.handler(async ({ input, context }) => {
 			const { id } = input;
@@ -257,7 +262,7 @@ export const documentRoutes = {
 			z.object({
 				file: z.file(),
 				model: z.enum(TIKTOKEN_MODELS),
-			})
+			}),
 		)
 		.output(z.number())
 		.handler(async ({ input }) => {
