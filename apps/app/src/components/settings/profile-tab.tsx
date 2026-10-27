@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { IconLoader2 } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { useSession, authClient } from "@/lib/auth";
+import { errorMessage } from "@/lib/validation";
 
 const profileSchema = z.object({
 	name: z.string().min(2, "Name must be at least 2 characters"),
@@ -36,22 +37,15 @@ export function ProfileTab() {
 	const user = sessionData?.user;
 	const [isUpdating, setIsUpdating] = useState(false);
 
+	// `values` resets the form only when the server values actually change, and
+	// react-hook-form keeps in-progress edits when the object is unchanged, so a
+	// focus refetch of the session never wipes what the user is typing.
 	const form = useForm<ProfileFormValues>({
 		resolver: zodResolver(profileSchema),
-		defaultValues: {
-			name: user?.name || "",
-			email: user?.email || "",
-		},
+		defaultValues: { name: "", email: "" },
+		values: user ? { name: user.name, email: user.email } : undefined,
+		resetOptions: { keepDirtyValues: true },
 	});
-
-	useEffect(() => {
-		if (user) {
-			form.reset({
-				name: user.name,
-				email: user.email,
-			});
-		}
-	}, [user, form]);
 
 	const onSubmit = async (values: ProfileFormValues) => {
 		setIsUpdating(true);
@@ -64,8 +58,8 @@ export function ProfileTab() {
 			} else {
 				toast.success("Profile updated successfully");
 			}
-		} catch (err: any) {
-			toast.error(err.message || "Failed to update profile");
+		} catch (err) {
+			toast.error(errorMessage(err, "Failed to update profile"));
 		} finally {
 			setIsUpdating(false);
 		}

@@ -1,8 +1,13 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState, useEffect } from "react";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import * as z from "zod";
+import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { useEffect, useRef } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
+import {
+	IconCircleCheck,
+	IconCircleX,
+	IconBuilding,
+	IconLoader2,
+} from "@tabler/icons-react";
 import {
 	Card,
 	CardContent,
@@ -10,537 +15,214 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
-import {
-	Form,
-	FormControl,
-	FormField,
-	FormItem,
-	FormLabel,
-	FormMessage,
-} from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-	IconBuilding,
-	IconCircleCheck,
-	IconCircleX,
-	IconLoader2,
-} from "@tabler/icons-react";
 import { authClient } from "@/lib/auth";
 import { orpc } from "@/lib/orpc";
-import { toast } from "sonner";
-import { useMutation } from "@tanstack/react-query";
+import { useAuthActions } from "@/hooks/use-auth-actions";
+import { errorMessage } from "@/lib/validation";
 
+/**
+ * Invitation links are `/invite/<id>`. This route sits under `_auth`, so a
+ * logged-out visitor is sent to /auth/login?redirect=/invite/<id>; login and
+ * register (incl. the email OTP step) honour that redirect and bring the user
+ * back here, signed in.
+ */
 export const Route = createFileRoute("/_auth/invite/$inviteId")({
+	staticData: { title: "Invitation" },
 	component: InvitePage,
 });
 
-// Schemas
-const signupSchema = z
-	.object({
-		name: z.string().min(2, "Name must be at least 2 characters"),
-		password: z.string().min(6, "Password must be at least 6 characters"),
-		confirmPassword: z.string(),
-	})
-	.refine((data) => data.password === data.confirmPassword, {
-		message: "Passwords don't match",
-		path: ["confirmPassword"],
-	});
-
-const loginSchema = z.object({
-	password: z.string().min(1, "Password is required"),
-});
-
-type SignupFormValues = z.infer<typeof signupSchema>;
-type LoginFormValues = z.infer<typeof loginSchema>;
-
-type InvitationData = {
-	id: string;
-	email: string;
-	organizationName: string;
-	inviterEmail: string;
-	role: string;
-	status: string;
-};
+function InviteShell({ children }: { children: React.ReactNode }) {
+	return (
+		<div className="flex min-h-[70vh] items-center justify-center p-4">
+			<Card className="w-full max-w-md">{children}</Card>
+		</div>
+	);
+}
 
 function InvitePage() {
 	const { inviteId } = Route.useParams();
-	const navigate = useNavigate();
+	const router = useRouter();
+	const { logout, switchOrganization } = useAuthActions();
+	const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-	const [invitation, setInvitation] = useState<InvitationData | null>(null);
-	const [isLoading, setIsLoading] = useState(true);
-	const [isLoggedIn, setIsLoggedIn] = useState(false);
-	const [userExists, setUserExists] = useState(false);
-	const [status, setStatus] = useState<"pending" | "accepted" | "rejected">(
-		"pending",
-	);
-
-	const signupForm = useForm<SignupFormValues>({
-		resolver: zodResolver(signupSchema),
-		defaultValues: { name: "", password: "", confirmPassword: "" },
+	const invitationQuery = useQuery({
+		...orpc.organization.getInvitation.queryOptions({
+			input: { invitationId: inviteId },
+		}),
+		retry: false,
 	});
+	const invitation = invitationQuery.data;
 
-	const loginForm = useForm<LoginFormValues>({
-		resolver: zodResolver(loginSchema),
-		defaultValues: { password: "" },
-	});
-
-	// Auth state
-	const [isAuthLoading, setIsAuthLoading] = useState(false);
-	const acceptMutation = useMutation(
-		orpc.organization.acceptInvitation.mutationOptions({}),
-	);
-	const rejectMutation = useMutation(
-		orpc.organization.rejectInvitation.mutationOptions({}),
+	useEffect(
+		() => () => {
+			if (redirectTimer.current) clearTimeout(redirectTimer.current);
+		},
+		[],
 	);
 
-	useEffect(() => {
-		loadInvitation();
-	}, [inviteId]);
-
-	const loadInvitation = async () => {
-		setIsLoading(true);
-		try {
-			// Check if user is already logged in (keep authClient for session)
-			const session = await authClient.getSession();
-			if (session.data?.user) {
-				setIsLoggedIn(true);
-			}
-
-			// Get invitation details via oRPC
-			const invData = await orpc.organization.getInvitation.call({
+	const acceptMutation = useMutation({
+		mutationFn: async () => {
+			const { data, error } = await authClient.organization.acceptInvitation({
 				invitationId: inviteId,
 			});
-
-			if (!invData) {
-				toast.error("Invalid or expired invitation");
-				setInvitation(null);
-				return;
+			if (error || !data) {
+				throw new Error(error?.message || "Failed to accept invitation");
 			}
+			// Use the id from the invitation, never a name match
+			await switchOrganization(data.invitation.organizationId);
+		},
+		onSuccess: () => {
+			toast.success("You've joined the organization!");
+			redirectTimer.current = setTimeout(() => {
+				void router.navigate({ to: "/" });
+			}, 1500);
+		},
+		onError: (error) => {
+			toast.error(errorMessage(error, "Failed to accept invitation"));
+		},
+	});
 
-			setInvitation(invData as InvitationData);
-			setUserExists(false);
-		} catch (error) {
-			console.error("Failed to load invitation:", error);
-			toast.error("Failed to load invitation");
-		} finally {
-			setIsLoading(false);
-		}
-	};
+	const rejectMutation = useMutation(
+		orpc.organization.rejectInvitation.mutationOptions({
+			onSuccess: () => toast.success("Invitation declined"),
+			onError: (error) =>
+				toast.error(errorMessage(error, "Failed to reject invitation")),
+		}),
+	);
 
-	const acceptInvitation = async () => {
-		await acceptMutation.mutateAsync({ invitationId: inviteId });
-
-		// Set this organization as active
-		const orgsData = await orpc.organization.list.call({});
-		const targetOrg = orgsData?.find(
-			(org: any) => org.name === invitation?.organizationName,
-		);
-		if (targetOrg) {
-			await orpc.organization.setActive.call({
-				organizationId: targetOrg.id,
-			});
-		}
-
-		setStatus("accepted");
-		toast.success("You've joined the organization!");
-
-		setTimeout(() => {
-			navigate({ to: "/" });
-		}, 2000);
-	};
-
-	const onSignupSubmit = async (data: SignupFormValues) => {
-		if (!invitation) return;
-		setIsAuthLoading(true);
-
-		try {
-			// 1. Create account with the invited email
-			const { error } = await authClient.signUp.email({
-				email: invitation.email,
-				name: data.name,
-				password: data.password,
-			});
-
-			if (error) {
-				toast.error(error.message || "Signup failed");
-				return;
-			}
-
-			// 2. Accept the invitation
-			await acceptInvitation();
-		} catch (error) {
-			console.error("Signup failed:", error);
-			toast.error(
-				error instanceof Error ? error.message : "Failed to join organization",
-			);
-		} finally {
-			setIsAuthLoading(false);
-		}
-	};
-
-	const onLoginSubmit = async (data: LoginFormValues) => {
-		if (!invitation) return;
-		setIsAuthLoading(true);
-
-		try {
-			// 1. Login with the invited email
-			const { error } = await authClient.signIn.email({
-				email: invitation.email,
-				password: data.password,
-			});
-
-			if (error) {
-				toast.error(error.message || "Login failed");
-				return;
-			}
-
-			// 2. Accept the invitation
-			await acceptInvitation();
-		} catch (error) {
-			console.error("Login failed:", error);
-			toast.error(
-				error instanceof Error ? error.message : "Failed to join organization",
-			);
-		} finally {
-			setIsAuthLoading(false);
-		}
-	};
-
-	const handleAcceptLoggedIn = async () => {
-		try {
-			await acceptInvitation();
-		} catch (error) {
-			console.error("Accept failed:", error);
-			toast.error(
-				error instanceof Error ? error.message : "Failed to accept invitation",
-			);
-		}
-	};
-
-	const handleReject = async () => {
-		try {
-			await rejectMutation.mutateAsync({ invitationId: inviteId });
-			setStatus("rejected");
-			toast.success("Invitation declined");
-		} catch (error) {
-			console.error("Failed to reject invitation:", error);
-			toast.error("Failed to reject invitation");
-		}
-	};
-
-	const isSubmitting =
-		isAuthLoading ||
-		acceptMutation.isPending ||
-		rejectMutation.isPending;
-
-	// Loading state
-	if (isLoading) {
+	if (invitationQuery.isLoading) {
 		return (
-			<div className="min-h-screen flex items-center justify-center p-4">
-				<Card className="w-full max-w-md">
-					<CardHeader className="text-center">
-						<Skeleton className="size-12 rounded-full mx-auto mb-4" />
-						<Skeleton className="h-6 w-48 mx-auto mb-2" />
-						<Skeleton className="h-4 w-64 mx-auto" />
-					</CardHeader>
-					<CardContent className="space-y-4">
-						<Skeleton className="h-10 w-full" />
-						<Skeleton className="h-10 w-full" />
-						<Skeleton className="h-10 w-full" />
-					</CardContent>
-				</Card>
-			</div>
+			<InviteShell>
+				<CardHeader className="text-center">
+					<Skeleton className="size-12 rounded-full mx-auto mb-4" />
+					<Skeleton className="h-6 w-48 mx-auto mb-2" />
+					<Skeleton className="h-4 w-64 mx-auto" />
+				</CardHeader>
+				<CardContent className="space-y-4">
+					<Skeleton className="h-10 w-full" />
+					<Skeleton className="h-10 w-full" />
+				</CardContent>
+			</InviteShell>
 		);
 	}
 
-	// Invalid invitation
-	if (!invitation) {
+	// Not found, expired, or addressed to a different account
+	if (!invitation || invitationQuery.isError) {
 		return (
-			<div className="min-h-screen flex items-center justify-center p-4">
-				<Card className="w-full max-w-md">
-					<CardHeader className="text-center">
-						<div className="flex justify-center mb-4">
-							<div className="rounded-full bg-destructive/10 p-3">
-								<IconCircleX className="size-8 text-destructive" />
-							</div>
+			<InviteShell>
+				<CardHeader className="text-center">
+					<div className="flex justify-center mb-4">
+						<div className="rounded-full bg-destructive/10 p-3">
+							<IconCircleX className="size-8 text-destructive" />
 						</div>
-						<CardTitle>Invalid Invitation</CardTitle>
-						<CardDescription>
-							This invitation link is invalid or has expired.
-						</CardDescription>
-					</CardHeader>
-					<CardContent className="flex justify-center">
-						<Button onClick={() => navigate({ to: "/auth/login" })}>
-							Go to Login
-						</Button>
-					</CardContent>
-				</Card>
-			</div>
+					</div>
+					<CardTitle>Invalid Invitation</CardTitle>
+					<CardDescription>
+						This invitation is invalid, has expired, or was sent to a different
+						email address than the account you are signed in with.
+					</CardDescription>
+				</CardHeader>
+				<CardContent className="flex justify-center gap-2">
+					<Button variant="outline" onClick={() => router.navigate({ to: "/" })}>
+						Go to dashboard
+					</Button>
+					<Button
+						onClick={async () => {
+							try {
+								await logout();
+							} catch (error) {
+								toast.error(errorMessage(error, "Logout failed"));
+							}
+						}}
+					>
+						Switch account
+					</Button>
+				</CardContent>
+			</InviteShell>
 		);
 	}
 
-	// Accepted state
-	if (status === "accepted") {
+	if (acceptMutation.isSuccess) {
 		return (
-			<div className="min-h-screen flex items-center justify-center p-4">
-				<Card className="w-full max-w-md">
-					<CardHeader className="text-center">
-						<div className="flex justify-center mb-4">
-							<div className="rounded-full bg-primary/10 p-3">
-								<IconCircleCheck className="size-8 text-primary" />
-							</div>
-						</div>
-						<CardTitle>Welcome!</CardTitle>
-						<CardDescription>
-							You've successfully joined {invitation.organizationName}.
-							Redirecting to dashboard...
-						</CardDescription>
-					</CardHeader>
-				</Card>
-			</div>
-		);
-	}
-
-	// Rejected state
-	if (status === "rejected") {
-		return (
-			<div className="min-h-screen flex items-center justify-center p-4">
-				<Card className="w-full max-w-md">
-					<CardHeader className="text-center">
-						<div className="flex justify-center mb-4">
-							<div className="rounded-full bg-muted p-3">
-								<IconCircleX className="size-8 text-muted-foreground" />
-							</div>
-						</div>
-						<CardTitle>Invitation Declined</CardTitle>
-						<CardDescription>
-							You've declined the invitation to join{" "}
-							{invitation.organizationName}.
-						</CardDescription>
-					</CardHeader>
-					<CardContent className="flex justify-center">
-						<Button
-							variant="outline"
-							onClick={() => navigate({ to: "/auth/login" })}
-						>
-							Go to Login
-						</Button>
-					</CardContent>
-				</Card>
-			</div>
-		);
-	}
-
-	// Already logged in - just show accept/reject
-	if (isLoggedIn) {
-		return (
-			<div className="min-h-screen flex items-center justify-center p-4">
-				<Card className="w-full max-w-md">
-					<CardHeader className="text-center">
-						<div className="flex justify-center mb-4">
-							<div className="rounded-full bg-primary/10 p-3">
-								<IconBuilding className="size-8 text-primary" />
-							</div>
-						</div>
-						<CardTitle>You're Invited!</CardTitle>
-						<CardDescription className="mt-2 space-y-1">
-							<p>
-								<strong>{invitation.inviterEmail}</strong> has invited you to
-								join
-							</p>
-							<p className="text-lg font-semibold text-foreground">
-								{invitation.organizationName}
-							</p>
-							<p className="text-sm">
-								as a <strong>{invitation.role}</strong>
-							</p>
-						</CardDescription>
-					</CardHeader>
-					<CardContent className="flex gap-3 justify-center">
-						<Button
-							variant="outline"
-							onClick={handleReject}
-							disabled={isSubmitting}
-						>
-							Decline
-						</Button>
-						<Button onClick={handleAcceptLoggedIn} disabled={isSubmitting}>
-							{acceptMutation.isPending ? (
-								<>
-									<IconLoader2 className="mr-2 size-4 animate-spin" />
-									Accepting...
-								</>
-							) : (
-								"Accept Invitation"
-							)}
-						</Button>
-					</CardContent>
-				</Card>
-			</div>
-		);
-	}
-
-	// Not logged in - show signup/login form
-	return (
-		<div className="min-h-screen flex items-center justify-center p-4">
-			<Card className="w-full max-w-md">
+			<InviteShell>
 				<CardHeader className="text-center">
 					<div className="flex justify-center mb-4">
 						<div className="rounded-full bg-primary/10 p-3">
-							<IconBuilding className="size-8 text-primary" />
+							<IconCircleCheck className="size-8 text-primary" />
 						</div>
 					</div>
-					<CardTitle>You're Invited!</CardTitle>
-					<CardDescription className="mt-2">
-						<span className="font-medium text-foreground">
-							{invitation.inviterEmail}
-						</span>{" "}
-						invited you to join{" "}
-						<span className="font-semibold text-foreground">
-							{invitation.organizationName}
-						</span>{" "}
-						as a <span className="font-medium">{invitation.role}</span>
+					<CardTitle>Welcome!</CardTitle>
+					<CardDescription>
+						You've successfully joined {invitation.organizationName}.
+						Redirecting to dashboard...
 					</CardDescription>
 				</CardHeader>
-				<CardContent>
-					<div className="mb-4 p-3 bg-muted rounded-lg text-center">
-						<p className="text-sm text-muted-foreground">Invitation for</p>
-						<p className="font-medium">{invitation.email}</p>
+			</InviteShell>
+		);
+	}
+
+	if (rejectMutation.isSuccess || invitation.status !== "pending") {
+		return (
+			<InviteShell>
+				<CardHeader className="text-center">
+					<div className="flex justify-center mb-4">
+						<div className="rounded-full bg-muted p-3">
+							<IconCircleX className="size-8 text-muted-foreground" />
+						</div>
 					</div>
-
-					<Tabs
-						defaultValue={userExists ? "login" : "signup"}
-						className="w-full"
-					>
-						<TabsList className="grid w-full grid-cols-2 mb-4">
-							<TabsTrigger value="signup">New Account</TabsTrigger>
-							<TabsTrigger value="login">Existing Account</TabsTrigger>
-						</TabsList>
-
-						<TabsContent value="signup">
-							<Form {...signupForm}>
-								<form
-									onSubmit={signupForm.handleSubmit(onSignupSubmit)}
-									className="space-y-4"
-								>
-									<FormField
-										control={signupForm.control}
-										name="name"
-										render={({ field }) => (
-											<FormItem>
-												<FormLabel>Full Name</FormLabel>
-												<FormControl>
-													<Input
-														placeholder="John Doe"
-														{...field}
-														disabled={isSubmitting}
-													/>
-												</FormControl>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
-									<FormField
-										control={signupForm.control}
-										name="password"
-										render={({ field }) => (
-											<FormItem>
-												<FormLabel>Password</FormLabel>
-												<FormControl>
-													<Input
-														type="password"
-														placeholder="Create a password"
-														{...field}
-														disabled={isSubmitting}
-													/>
-												</FormControl>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
-									<FormField
-										control={signupForm.control}
-										name="confirmPassword"
-										render={({ field }) => (
-											<FormItem>
-												<FormLabel>Confirm Password</FormLabel>
-												<FormControl>
-													<Input
-														type="password"
-														placeholder="Confirm your password"
-														{...field}
-														disabled={isSubmitting}
-													/>
-												</FormControl>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
-									<Button
-										type="submit"
-										className="w-full"
-										disabled={isSubmitting}
-									>
-										{isAuthLoading ? (
-											<>
-												<IconLoader2 className="mr-2 size-4 animate-spin" />
-												Creating account...
-											</>
-										) : (
-											"Create Account & Join"
-										)}
-									</Button>
-								</form>
-							</Form>
-						</TabsContent>
-
-						<TabsContent value="login">
-							<Form {...loginForm}>
-								<form
-									onSubmit={loginForm.handleSubmit(onLoginSubmit)}
-									className="space-y-4"
-								>
-									<FormField
-										control={loginForm.control}
-										name="password"
-										render={({ field }) => (
-											<FormItem>
-												<FormLabel>Password</FormLabel>
-												<FormControl>
-													<Input
-														type="password"
-														placeholder="Enter your password"
-														{...field}
-														disabled={isSubmitting}
-													/>
-												</FormControl>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
-									<Button
-										type="submit"
-										className="w-full"
-										disabled={isSubmitting}
-									>
-										{isAuthLoading ? (
-											<>
-												<IconLoader2 className="mr-2 size-4 animate-spin" />
-												Signing in...
-											</>
-										) : (
-											"Sign In & Join"
-										)}
-									</Button>
-								</form>
-							</Form>
-						</TabsContent>
-					</Tabs>
+					<CardTitle>
+						{rejectMutation.isSuccess
+							? "Invitation Declined"
+							: "Invitation no longer available"}
+					</CardTitle>
+					<CardDescription>
+						{rejectMutation.isSuccess
+							? `You've declined the invitation to join ${invitation.organizationName}.`
+							: `This invitation to ${invitation.organizationName} was already ${invitation.status}.`}
+					</CardDescription>
+				</CardHeader>
+				<CardContent className="flex justify-center">
+					<Button variant="outline" onClick={() => router.navigate({ to: "/" })}>
+						Go to dashboard
+					</Button>
 				</CardContent>
-			</Card>
-		</div>
+			</InviteShell>
+		);
+	}
+
+	const isBusy = acceptMutation.isPending || rejectMutation.isPending;
+
+	return (
+		<InviteShell>
+			<CardHeader className="text-center">
+				<div className="flex justify-center mb-4">
+					<div className="rounded-full bg-primary/10 p-3">
+						<IconBuilding className="size-8 text-primary" />
+					</div>
+				</div>
+				<CardTitle>Join {invitation.organizationName}</CardTitle>
+				<CardDescription>
+					{invitation.inviterEmail} invited you to join as{" "}
+					<span className="font-medium">{invitation.role}</span>.
+				</CardDescription>
+			</CardHeader>
+			<CardContent className="flex flex-col gap-2">
+				<Button onClick={() => acceptMutation.mutate()} disabled={isBusy}>
+					{acceptMutation.isPending && (
+						<IconLoader2 className="mr-2 size-4 animate-spin" />
+					)}
+					Accept invitation
+				</Button>
+				<Button
+					variant="outline"
+					onClick={() => rejectMutation.mutate({ invitationId: inviteId })}
+					disabled={isBusy}
+				>
+					Decline
+				</Button>
+			</CardContent>
+		</InviteShell>
 	);
 }

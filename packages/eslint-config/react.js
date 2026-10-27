@@ -24,13 +24,18 @@ export default defineConfig([
 		},
 	},
 	{
+		// Plain scripts served as-is from public/.
+		files: ["public/**/*.js"],
+		languageOptions: {
+			globals: globals.browser,
+		},
+	},
+	{
 		// TanStack Router file routes export `Route` next to their component.
 		files: ["src/routes/**/*.{ts,tsx}"],
 		rules: {
-			"react-refresh/only-export-components": [
-				"warn",
-				{ allowConstantExport: true, allowExportNames: ["Route"] },
-			],
+			// Fast refresh still works for these; the rule cannot tell `Route` apart.
+			"react-refresh/only-export-components": "off",
 		},
 	},
 ]);

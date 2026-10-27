@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useRef } from "react";
-import { Layout } from "@/components/layout/layout";
-import { orpc } from "@/lib/orpc";
+import { useState, useRef, useEffect } from "react";
+import { orpc, type RouterOutputs } from "@/lib/orpc";
+import { errorMessage } from "@/lib/validation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { format } from "date-fns";
@@ -57,11 +57,51 @@ import {
 	IconLoader2,
 	IconFile,
 	IconAlertCircle,
+	IconChevronLeft,
+	IconChevronRight,
 } from "@tabler/icons-react";
 
 export const Route = createFileRoute("/_auth/documents")({
+	staticData: { title: "Documents" },
 	component: DocumentsPage,
 });
+
+const PAGE_SIZE = 20;
+const POLL_MS = 3000;
+// Mirrors the API (apps/api/src/utils/file_validation.ts)
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MIME_BY_EXTENSION: Record<string, string> = {
+	pdf: "application/pdf",
+	txt: "text/plain",
+	md: "text/markdown",
+	html: "text/html",
+	docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+};
+const ACCEPT = Object.keys(MIME_BY_EXTENSION)
+	.map((e) => `.${e}`)
+	.join(",");
+
+type DocumentRow = RouterOutputs["documents"]["listDocuments"]["documents"][number];
+
+const isActiveStatus = (status: string) =>
+	status === "pending" || status === "processing";
+
+/** Returns a File the API will accept, or an error message. */
+function prepareUpload(file: File): { file: File } | { error: string } {
+	if (file.size === 0) return { error: "The file is empty" };
+	if (file.size > MAX_FILE_SIZE) {
+		return { error: "The file is larger than the 10 MB limit" };
+	}
+	const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+	const mime = MIME_BY_EXTENSION[ext];
+	if (!mime) {
+		return { error: "Unsupported file type. Use PDF, TXT, MD, HTML or DOCX" };
+	}
+	// Browsers often send an empty or generic type for .md
+	return file.type === mime
+		? { file }
+		: { file: new File([file], file.name, { type: mime }) };
+}
 
 const STATUS_BADGES: Record<string, { label: string; className: string }> = {
 	indexed: {
@@ -86,36 +126,64 @@ function DocumentsPage() {
 	const queryClient = useQueryClient();
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
+	const [offset, setOffset] = useState(0);
 	const [isUploadOpen, setIsUploadOpen] = useState(false);
 	const [deletingDocId, setDeletingDocId] = useState<string | null>(null);
 	const [selectedFile, setSelectedFile] = useState<File | null>(null);
 	const [uploadTitle, setUploadTitle] = useState("");
 	const [uploadSource, setUploadSource] = useState("");
 	const [uploadProfileId, setUploadProfileId] = useState("none");
+	// Remounting the input is how a file input is cleared
+	const [fileInputKey, setFileInputKey] = useState(0);
 
-	const { data: docs, isLoading } = useQuery(
-		orpc.documents.listDocuments.queryOptions({ input: { limit: 50 } }),
-	);
+	// Poll while any document on the page is still being indexed
+	const { data: docs, isLoading } = useQuery({
+		...orpc.documents.listDocuments.queryOptions({
+			input: { limit: PAGE_SIZE, offset },
+		}),
+		placeholderData: (previous) => previous,
+		refetchInterval: (query) =>
+			query.state.data?.documents.some((d) => isActiveStatus(d.status))
+				? POLL_MS
+				: false,
+	});
 
-	const { data: pendingJobs } = useQuery(
-		orpc.documents.getPendingJobs.queryOptions({}),
-	);
+	const hasActiveDocs =
+		docs?.documents.some((d) => isActiveStatus(d.status)) ?? false;
+
+	const { data: pendingJobs } = useQuery({
+		...orpc.documents.getPendingJobs.queryOptions({ input: {} }),
+		refetchInterval: (query) =>
+			hasActiveDocs || (query.state.data?.jobs.length ?? 0) > 0
+				? POLL_MS
+				: false,
+	});
 
 	const { data: profiles } = useQuery(
 		orpc.profiles.listProfiles.queryOptions({ input: { limit: 50 } }),
 	);
+
+	// Indexing spends credits: refresh balance and usage once it finishes
+	const wasActive = useRef(false);
+	useEffect(() => {
+		if (wasActive.current && !hasActiveDocs) {
+			void queryClient.invalidateQueries({ queryKey: orpc.credits.key() });
+			void queryClient.invalidateQueries({ queryKey: orpc.usage.key() });
+		}
+		wasActive.current = hasActiveDocs;
+	}, [hasActiveDocs, queryClient]);
 
 	const deleteMutation = useMutation(
 		orpc.documents.deleteDocument.mutationOptions({
 			onSuccess: () => {
 				toast.success("Document deleted");
 				setDeletingDocId(null);
-				queryClient.invalidateQueries({
+				void queryClient.invalidateQueries({
 					queryKey: orpc.documents.listDocuments.key(),
 				});
 			},
-			onError: (err: any) =>
-				toast.error(err.message || "Failed to delete document"),
+			onError: (err) =>
+				toast.error(errorMessage(err, "Failed to delete document")),
 		}),
 	);
 
@@ -125,22 +193,41 @@ function DocumentsPage() {
 				toast.success("Document uploaded and processing started");
 				setIsUploadOpen(false);
 				resetUpload();
-				queryClient.invalidateQueries({
+				setOffset(0);
+				void queryClient.invalidateQueries({
 					queryKey: orpc.documents.listDocuments.key(),
 				});
-				queryClient.invalidateQueries({
+				void queryClient.invalidateQueries({
 					queryKey: orpc.documents.getPendingJobs.key(),
 				});
+				void queryClient.invalidateQueries({ queryKey: orpc.credits.key() });
+				void queryClient.invalidateQueries({ queryKey: orpc.usage.key() });
 			},
-			onError: (err: any) => toast.error(err.message || "Upload failed"),
+			onError: (err) => toast.error(errorMessage(err, "Upload failed")),
 		}),
 	);
 
-	const resetUpload = () => {
+	function resetUpload() {
 		setSelectedFile(null);
 		setUploadTitle("");
 		setUploadSource("");
 		setUploadProfileId("none");
+		setFileInputKey((k) => k + 1);
+	}
+
+	const handleSelectFile = (file: File | null) => {
+		if (!file) {
+			setSelectedFile(null);
+			return;
+		}
+		const prepared = prepareUpload(file);
+		if ("error" in prepared) {
+			toast.error(prepared.error);
+			setSelectedFile(null);
+			setFileInputKey((k) => k + 1);
+			return;
+		}
+		setSelectedFile(prepared.file);
 	};
 
 	const handleUpload = () => {
@@ -153,12 +240,16 @@ function DocumentsPage() {
 		});
 	};
 
-	const docList = (docs as any)?.documents ?? [];
-	const jobList = Array.isArray(pendingJobs) ? pendingJobs : [];
-	const profileList = (profiles as any)?.profiles ?? [];
+	const docList: DocumentRow[] = docs?.documents ?? [];
+	const total = docs?.total ?? 0;
+	const jobList = pendingJobs?.jobs ?? [];
+	const profileList = profiles?.profiles ?? [];
+	const titleByDocId = new Map(docList.map((d) => [d.id, d.title]));
+	const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+	const page = Math.floor(offset / PAGE_SIZE) + 1;
 
 	return (
-		<Layout>
+		<>
 			<div className="space-y-6">
 				<div className="flex items-center justify-between">
 					<div>
@@ -180,16 +271,16 @@ function DocumentsPage() {
 							<CardTitle className="text-sm flex items-center gap-2">
 								<IconLoader2 className="size-4 animate-spin text-blue-600" />
 								{jobList.length} document{jobList.length > 1 ? "s" : ""}{" "}
-								processing
+								processing{pendingJobs?.hasMore ? " (more not shown)" : ""}
 							</CardTitle>
 						</CardHeader>
 						<CardContent className="space-y-2">
-							{jobList.map((job: any) => (
+							{jobList.map((job) => (
 								<div key={job.jobId} className="flex items-center gap-3">
 									<span className="text-xs font-mono text-muted-foreground flex-1 truncate">
-										{job.jobId}
+										{titleByDocId.get(job.documentId) ?? "Document"}
 									</span>
-									<Progress value={job.progress ?? 0} className="w-32 h-1.5" />
+									<Progress value={job.progress} className="w-32 h-1.5" />
 									<span className="text-xs text-muted-foreground">
 										{job.state}
 									</span>
@@ -203,7 +294,7 @@ function DocumentsPage() {
 					<CardHeader>
 						<CardTitle>Documents</CardTitle>
 						<CardDescription>
-							{(docs as any)?.total ?? 0} total documents in your knowledge base
+							{total} total documents in your knowledge base
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
@@ -242,7 +333,7 @@ function DocumentsPage() {
 											</TableCell>
 										</TableRow>
 									) : (
-										docList.map((doc: any) => {
+										docList.map((doc) => {
 											const statusInfo = STATUS_BADGES[doc.status] ?? {
 												label: doc.status,
 												className: "",
@@ -279,6 +370,7 @@ function DocumentsPage() {
 															variant="ghost"
 															size="icon"
 															className="size-8 text-destructive hover:text-destructive"
+															aria-label={`Delete ${doc.title}`}
 															onClick={() => setDeletingDocId(doc.id)}
 														>
 															<IconTrash className="size-4" />
@@ -291,6 +383,33 @@ function DocumentsPage() {
 								</TableBody>
 							</Table>
 						</div>
+						{total > PAGE_SIZE && (
+							<div className="flex items-center justify-between pt-4">
+								<span className="text-sm text-muted-foreground">
+									Page {page} of {pageCount}
+								</span>
+								<div className="flex gap-2">
+									<Button
+										variant="outline"
+										size="icon"
+										aria-label="Previous page"
+										disabled={offset === 0}
+										onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+									>
+										<IconChevronLeft className="size-4" />
+									</Button>
+									<Button
+										variant="outline"
+										size="icon"
+										aria-label="Next page"
+										disabled={offset + PAGE_SIZE >= total}
+										onClick={() => setOffset(offset + PAGE_SIZE)}
+									>
+										<IconChevronRight className="size-4" />
+									</Button>
+								</div>
+							</div>
+						)}
 					</CardContent>
 				</Card>
 			</div>
@@ -307,15 +426,16 @@ function DocumentsPage() {
 					<DialogHeader>
 						<DialogTitle>Upload Document</DialogTitle>
 						<DialogDescription>
-							Supported formats: PDF, TXT, MD, DOCX. The document will be
-							chunked and indexed automatically.
+							Supported formats: PDF, TXT, MD, HTML, DOCX (up to 10 MB). The
+							document will be chunked and indexed automatically.
 						</DialogDescription>
 					</DialogHeader>
 					<div className="space-y-4 py-4">
 						<div className="space-y-2">
-							<Label>File</Label>
-							<div
-								className="border-2 border-dashed rounded-md p-6 text-center cursor-pointer hover:border-primary/50 transition-colors"
+							<Label htmlFor="upload-file">File</Label>
+							<button
+								type="button"
+								className="w-full border-2 border-dashed rounded-md p-6 text-center cursor-pointer hover:border-primary/50 focus-visible:border-primary transition-colors outline-none"
 								onClick={() => fileInputRef.current?.click()}
 							>
 								{selectedFile ? (
@@ -332,43 +452,48 @@ function DocumentsPage() {
 										<span className="text-sm">Click to select a file</span>
 									</div>
 								)}
-								<input
-									ref={fileInputRef}
-									type="file"
-									className="hidden"
-									accept=".pdf,.txt,.md,.docx"
-									onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
-								/>
-							</div>
+							</button>
+							<input
+								key={fileInputKey}
+								id="upload-file"
+								ref={fileInputRef}
+								type="file"
+								className="sr-only"
+								tabIndex={-1}
+								accept={ACCEPT}
+								onChange={(e) => handleSelectFile(e.target.files?.[0] ?? null)}
+							/>
 						</div>
 						<div className="space-y-2">
-							<Label>Title (optional)</Label>
+							<Label htmlFor="upload-title">Title (optional)</Label>
 							<Input
+								id="upload-title"
 								placeholder="My Document"
 								value={uploadTitle}
 								onChange={(e) => setUploadTitle(e.target.value)}
 							/>
 						</div>
 						<div className="space-y-2">
-							<Label>Source (optional)</Label>
+							<Label htmlFor="upload-source">Source (optional)</Label>
 							<Input
+								id="upload-source"
 								placeholder="e.g. website, manual, internal"
 								value={uploadSource}
 								onChange={(e) => setUploadSource(e.target.value)}
 							/>
 						</div>
 						<div className="space-y-2">
-							<Label>Profile (optional)</Label>
+							<Label htmlFor="upload-profile">Profile (optional)</Label>
 							<Select
 								value={uploadProfileId}
 								onValueChange={(value) => setUploadProfileId(value || "none")}
 							>
-								<SelectTrigger>
+								<SelectTrigger id="upload-profile">
 									<SelectValue />
 								</SelectTrigger>
 								<SelectContent>
 									<SelectItem value="none">No profile</SelectItem>
-									{profileList.map((p: any) => (
+									{profileList.map((p) => (
 										<SelectItem key={p.id} value={p.id}>
 											{p.name}
 										</SelectItem>
@@ -378,7 +503,13 @@ function DocumentsPage() {
 						</div>
 					</div>
 					<DialogFooter>
-						<Button variant="outline" onClick={() => setIsUploadOpen(false)}>
+						<Button
+							variant="outline"
+							onClick={() => {
+								setIsUploadOpen(false);
+								resetUpload();
+							}}
+						>
 							Cancel
 						</Button>
 						<Button
@@ -420,6 +551,6 @@ function DocumentsPage() {
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
-		</Layout>
+		</>
 	);
 }

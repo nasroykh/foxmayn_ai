@@ -1,9 +1,10 @@
-import { useTheme } from "next-themes"
+import { useAtomValue } from "jotai"
+import { themeAtom } from "@/atoms/global"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 import { IconCircleCheck, IconInfoCircle, IconAlertTriangle, IconAlertOctagon, IconLoader } from "@tabler/icons-react"
 
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = "system" } = useTheme()
+  const theme = useAtomValue(themeAtom)
 
   return (
     <Sonner

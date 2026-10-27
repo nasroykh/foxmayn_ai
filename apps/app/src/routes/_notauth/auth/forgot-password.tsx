@@ -8,6 +8,7 @@ import {
 	StepWrapper,
 	FormStep,
 	SuccessStep,
+	OtpStep,
 } from "@/components/auth";
 import {
 	Form,
@@ -19,6 +20,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { authClient } from "@/lib/auth";
+import { errorMessage, newPasswordSchema } from "@/lib/validation";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_notauth/auth/forgot-password")({
@@ -30,13 +32,9 @@ const emailSchema = z.object({
 	email: z.email("Invalid email address"),
 });
 
-const verificationSchema = z.object({
-	code: z.string().length(6, "Verification code must be 6 digits"),
-});
-
 const resetPasswordSchema = z
 	.object({
-		password: z.string().min(8, "Password must be at least 8 characters"),
+		password: newPasswordSchema,
 		confirmPassword: z.string(),
 	})
 	.refine((data) => data.password === data.confirmPassword, {
@@ -45,7 +43,6 @@ const resetPasswordSchema = z
 	});
 
 type EmailFormValues = z.infer<typeof emailSchema>;
-type VerificationFormValues = z.infer<typeof verificationSchema>;
 type ResetPasswordFormValues = z.infer<typeof resetPasswordSchema>;
 
 function RouteComponent() {
@@ -58,11 +55,6 @@ function RouteComponent() {
 	const emailForm = useForm<EmailFormValues>({
 		resolver: zodResolver(emailSchema),
 		defaultValues: { email: "" },
-	});
-
-	const verificationForm = useForm<VerificationFormValues>({
-		resolver: zodResolver(verificationSchema),
-		defaultValues: { code: "" },
 	});
 
 	const resetPasswordForm = useForm<ResetPasswordFormValues>({
@@ -86,17 +78,24 @@ function RouteComponent() {
 			toast.success("Reset email sent");
 			setUserEmail(values.email);
 			setCurrentStep(2);
-		} catch (err: any) {
-			toast.error(err.message || "An unexpected error occurred");
+		} catch (err) {
+			toast.error(errorMessage(err, "An unexpected error occurred"));
 		} finally {
 			setIsLoading(false);
 		}
 	};
 
-	const onVerificationSubmit = async (values: VerificationFormValues) => {
-		// Better Auth doesn't have a standalone 'check otp' for forget-password.
-		// We just store the OTP and proceed to the next step.
-		setOtp(values.code);
+	const onVerificationSubmit = async (code: string) => {
+		// Check the code now so a typo is caught before the user picks a password
+		const { data, error } = await authClient.emailOtp.checkVerificationOtp({
+			email: userEmail,
+			type: "forget-password",
+			otp: code,
+		});
+		if (error || !data?.success) {
+			throw new Error(error?.message || "Invalid or expired code");
+		}
+		setOtp(code);
 		setCurrentStep(3);
 	};
 
@@ -116,39 +115,27 @@ function RouteComponent() {
 
 			toast.success("Password reset successful");
 			setCurrentStep(4);
-		} catch (err: any) {
-			toast.error(err.message || "Password reset failed");
+		} catch (err) {
+			toast.error(errorMessage(err, "Password reset failed"));
 		} finally {
 			setIsLoading(false);
 		}
 	};
 
-	const handleResendOTP = async () => {
-		if (!userEmail || isLoading) return;
-		setIsLoading(true);
-		try {
-			const { error } = await authClient.emailOtp.sendVerificationOtp({
-				email: userEmail,
-				type: "forget-password",
-			});
-			if (error) {
-				toast.error(error.message || "Failed to resend code");
-			} else {
-				toast.success("Reset code resent");
-			}
-		} catch (err: any) {
-			toast.error(err.message || "Failed to resend code");
-		} finally {
-			setIsLoading(false);
-		}
+	const resendCode = async () => {
+		const { error } = await authClient.emailOtp.sendVerificationOtp({
+			email: userEmail,
+			type: "forget-password",
+		});
+		if (error) throw new Error(error.message || "Failed to resend code");
 	};
 
 	const handleReset = () => {
 		setCurrentStep(1);
 		emailForm.reset();
-		verificationForm.reset();
 		resetPasswordForm.reset();
 		setUserEmail("");
+		setOtp("");
 	};
 
 	return (
@@ -161,13 +148,13 @@ function RouteComponent() {
 			{currentStep === 1 && (
 				<StepWrapper
 					title="Reset password"
-					description="We'll send you an email to reset your password"
+					description="We'll email you a code to reset your password"
 				>
 					<Form {...emailForm}>
 						<FormStep
 							onSubmit={emailForm.handleSubmit(onEmailSubmit)}
 							isLoading={isLoading}
-							submitText="Send reset link"
+							submitText="Send reset code"
 							footerContent={
 								<>
 									Remember your password?{" "}
@@ -190,6 +177,7 @@ function RouteComponent() {
 											<Input
 												placeholder="name@example.com"
 												type="email"
+												autoComplete="email"
 												{...field}
 												disabled={isLoading}
 											/>
@@ -204,53 +192,13 @@ function RouteComponent() {
 			)}
 
 			{currentStep === 2 && (
-				<StepWrapper
+				<OtpStep
+					email={userEmail}
 					title="Verify email"
-					description={`We sent a 6-digit code to ${userEmail}`}
-				>
-					<Form {...verificationForm}>
-						<FormStep
-							onSubmit={verificationForm.handleSubmit(onVerificationSubmit)}
-							isLoading={isLoading}
-							submitText="Verify code"
-							footerContent={
-								<>
-									Didn't receive a code?{" "}
-									<button
-										type="button"
-										onClick={handleResendOTP}
-										disabled={isLoading}
-										className="text-primary hover:underline font-medium disabled:opacity-50"
-									>
-										{isLoading ? "Wait..." : "Resend"}
-									</button>
-								</>
-							}
-						>
-							<FormField
-								control={verificationForm.control}
-								name="code"
-								render={({ field }) => (
-									<FormItem>
-										<FormLabel>Verification Code</FormLabel>
-										<FormControl>
-											<Input
-												placeholder="000000"
-												type="text"
-												inputMode="numeric"
-												maxLength={6}
-												{...field}
-												disabled={isLoading}
-												className="tracking-widest text-center text-lg font-semibold"
-											/>
-										</FormControl>
-										<FormMessage />
-									</FormItem>
-								)}
-							/>
-						</FormStep>
-					</Form>
-				</StepWrapper>
+					submitText="Verify code"
+					onSubmit={onVerificationSubmit}
+					onResend={resendCode}
+				/>
 			)}
 
 			{currentStep === 3 && (
@@ -274,6 +222,7 @@ function RouteComponent() {
 											<Input
 												placeholder="Enter new password"
 												type="password"
+												autoComplete="new-password"
 												{...field}
 												disabled={isLoading}
 											/>
@@ -292,6 +241,7 @@ function RouteComponent() {
 											<Input
 												placeholder="Confirm new password"
 												type="password"
+												autoComplete="new-password"
 												{...field}
 												disabled={isLoading}
 											/>

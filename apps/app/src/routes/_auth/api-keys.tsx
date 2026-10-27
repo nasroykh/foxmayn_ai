@@ -3,8 +3,8 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { Layout } from "@/components/layout/layout";
-import { orpc } from "@/lib/orpc";
+import { orpc, type RouterOutputs } from "@/lib/orpc";
+import { errorMessage } from "@/lib/validation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { format } from "date-fns";
@@ -51,6 +51,7 @@ import {
 	FormItem,
 	FormLabel,
 	FormMessage,
+	FormDescription,
 } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -63,17 +64,37 @@ import {
 } from "@tabler/icons-react";
 
 export const Route = createFileRoute("/_auth/api-keys")({
+	staticData: { title: "API Keys" },
 	component: ApiKeysPage,
 });
 
+const SECONDS_PER_DAY = 86_400;
+
+// Number inputs hand back strings; an empty box means "not set".
+const optionalNumber = (schema: z.ZodNumber) =>
+	z.preprocess(
+		(v) => (v === "" || v === null || v === undefined ? undefined : Number(v)),
+		schema.optional(),
+	);
+
 const createKeySchema = z.object({
-	name: z.string().min(1, "Name is required"),
-	prefix: z.string().optional(),
-	expiresIn: z.number().optional(),
-	remaining: z.number().optional(),
+	name: z.string().trim().min(1, "Name is required").max(100),
+	prefix: z
+		.string()
+		.trim()
+		.max(32)
+		.regex(/^[A-Za-z0-9_-]*$/, "Letters, numbers, _ and - only")
+		.optional(),
+	// days in the form, seconds on the wire
+	expiresInDays: optionalNumber(
+		z.number().int("Whole days only").min(1, "At least 1 day").max(3650),
+	),
 });
 
-type CreateKeyValues = z.infer<typeof createKeySchema>;
+type CreateKeyInput = z.input<typeof createKeySchema>;
+type CreateKeyValues = z.output<typeof createKeySchema>;
+
+type ApiKeyRow = RouterOutputs["apikeys"]["listApiKeys"]["apiKeys"][number];
 
 function ApiKeysPage() {
 	const queryClient = useQueryClient();
@@ -88,15 +109,16 @@ function ApiKeysPage() {
 
 	const createMutation = useMutation(
 		orpc.apikeys.createApiKey.mutationOptions({
-			onSuccess: (data: any) => {
-				setCreatedKey(data.key || data.token || null);
+			onSuccess: (data) => {
+				setCreatedKey(data.key);
 				setIsCreateOpen(false);
-				queryClient.invalidateQueries({
+				form.reset();
+				void queryClient.invalidateQueries({
 					queryKey: orpc.apikeys.listApiKeys.key(),
 				});
 			},
-			onError: (err: any) =>
-				toast.error(err.message || "Failed to create API key"),
+			onError: (err) =>
+				toast.error(errorMessage(err, "Failed to create API key")),
 		}),
 	);
 
@@ -105,12 +127,12 @@ function ApiKeysPage() {
 			onSuccess: () => {
 				toast.success("API key deleted");
 				setDeletingKeyId(null);
-				queryClient.invalidateQueries({
+				void queryClient.invalidateQueries({
 					queryKey: orpc.apikeys.listApiKeys.key(),
 				});
 			},
-			onError: (err: any) =>
-				toast.error(err.message || "Failed to delete API key"),
+			onError: (err) =>
+				toast.error(errorMessage(err, "Failed to delete API key")),
 		}),
 	);
 
@@ -118,47 +140,50 @@ function ApiKeysPage() {
 		orpc.apikeys.deleteAllExpiredApiKeys.mutationOptions({
 			onSuccess: () => {
 				toast.success("Expired keys cleared");
-				queryClient.invalidateQueries({
+				void queryClient.invalidateQueries({
 					queryKey: orpc.apikeys.listApiKeys.key(),
 				});
 			},
-			onError: (err: any) => toast.error(err.message),
+			onError: (err) => toast.error(errorMessage(err, "Request failed")),
 		}),
 	);
 
 	const toggleMutation = useMutation(
 		orpc.apikeys.updateApiKey.mutationOptions({
 			onSuccess: () => {
-				queryClient.invalidateQueries({
+				void queryClient.invalidateQueries({
 					queryKey: orpc.apikeys.listApiKeys.key(),
 				});
 			},
-			onError: (err: any) => toast.error(err.message),
+			onError: (err) => toast.error(errorMessage(err, "Request failed")),
 		}),
 	);
 
-	const form = useForm<CreateKeyValues>({
+	const form = useForm<CreateKeyInput, unknown, CreateKeyValues>({
 		resolver: zodResolver(createKeySchema),
 		defaultValues: {
 			name: "",
 			prefix: "",
-			expiresIn: undefined,
-			remaining: undefined,
+			expiresInDays: "",
 		},
 	});
 
-	const handleCopy = () => {
-		if (createdKey) {
-			navigator.clipboard.writeText(createdKey);
+	const handleCopy = async () => {
+		if (!createdKey) return;
+		try {
+			await navigator.clipboard.writeText(createdKey);
 			setCopied(true);
 			setTimeout(() => setCopied(false), 2000);
+		} catch {
+			// insecure origin or permission denied
+			toast.error("Could not copy. Select the key and copy it manually.");
 		}
 	};
 
-	const keyList = Array.isArray(keys) ? keys : ((keys as any)?.keys ?? []);
+	const keyList: ApiKeyRow[] = keys?.apiKeys ?? [];
 
 	return (
-		<Layout>
+		<>
 			<div className="space-y-6">
 				<div className="flex items-center justify-between">
 					<div>
@@ -197,8 +222,7 @@ function ApiKeysPage() {
 										<TableHead>Name</TableHead>
 										<TableHead>Prefix</TableHead>
 										<TableHead>Status</TableHead>
-										<TableHead>Uses Left</TableHead>
-										<TableHead>Expires</TableHead>
+																				<TableHead>Expires</TableHead>
 										<TableHead>Created</TableHead>
 										<TableHead className="text-right">Actions</TableHead>
 									</TableRow>
@@ -207,7 +231,7 @@ function ApiKeysPage() {
 									{isLoading ? (
 										Array.from({ length: 3 }).map((_, i) => (
 											<TableRow key={i}>
-												{Array.from({ length: 7 }).map((_, j) => (
+												{Array.from({ length: 6 }).map((_, j) => (
 													<TableCell key={j}>
 														<Skeleton className="h-4 w-full" />
 													</TableCell>
@@ -217,14 +241,14 @@ function ApiKeysPage() {
 									) : keyList.length === 0 ? (
 										<TableRow>
 											<TableCell
-												colSpan={7}
+												colSpan={6}
 												className="h-24 text-center text-muted-foreground"
 											>
 												No API keys yet. Create one to get started.
 											</TableCell>
 										</TableRow>
 									) : (
-										keyList.map((key: any) => (
+										keyList.map((key) => (
 											<TableRow key={key.id}>
 												<TableCell className="font-medium">
 													{key.name || "—"}
@@ -234,13 +258,18 @@ function ApiKeysPage() {
 												</TableCell>
 												<TableCell>
 													<button
+														type="button"
+														role="switch"
+														aria-checked={key.enabled !== false}
+														aria-label={`${key.name || "API key"} enabled`}
+														disabled={toggleMutation.isPending}
 														onClick={() =>
 															toggleMutation.mutate({
 																keyId: key.id,
-																enabled: !key.enabled,
+																enabled: key.enabled === false,
 															})
 														}
-														className="cursor-pointer"
+														className="cursor-pointer rounded-md focus-visible:ring-2 focus-visible:ring-ring outline-none"
 													>
 														<Badge
 															variant={
@@ -256,7 +285,6 @@ function ApiKeysPage() {
 														</Badge>
 													</button>
 												</TableCell>
-												<TableCell>{key.remaining ?? "Unlimited"}</TableCell>
 												<TableCell className="text-sm text-muted-foreground">
 													{key.expiresAt
 														? format(new Date(key.expiresAt), "MMM d, yyyy")
@@ -272,6 +300,7 @@ function ApiKeysPage() {
 														variant="ghost"
 														size="icon"
 														className="size-8 text-destructive hover:text-destructive"
+														aria-label={`Delete API key ${key.name || ""}`.trim()}
 														onClick={() => setDeletingKeyId(key.id)}
 													>
 														<IconTrash className="size-4" />
@@ -302,8 +331,9 @@ function ApiKeysPage() {
 								createMutation.mutate({
 									name: v.name,
 									prefix: v.prefix || undefined,
-									expiresIn: v.expiresIn || undefined,
-									remaining: v.remaining || undefined,
+									expiresIn: v.expiresInDays
+										? v.expiresInDays * SECONDS_PER_DAY
+										: undefined,
 								}),
 							)}
 							className="space-y-4 py-4"
@@ -334,38 +364,33 @@ function ApiKeysPage() {
 									</FormItem>
 								)}
 							/>
-							<div className="grid grid-cols-2 gap-4">
-								<FormField
-									control={form.control}
-									name="expiresIn"
-									render={({ field }) => (
-										<FormItem>
-											<FormLabel>Expires in (days)</FormLabel>
-											<FormControl>
-												<Input {...field} type="number" placeholder="30" />
-											</FormControl>
-											<FormMessage />
-										</FormItem>
-									)}
-								/>
-								<FormField
-									control={form.control}
-									name="remaining"
-									render={({ field }) => (
-										<FormItem>
-											<FormLabel>Max uses</FormLabel>
-											<FormControl>
-												<Input
-													{...field}
-													type="number"
-													placeholder="Unlimited"
-												/>
-											</FormControl>
-											<FormMessage />
-										</FormItem>
-									)}
-								/>
-							</div>
+							<FormField
+								control={form.control}
+								name="expiresInDays"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Expires in (days)</FormLabel>
+										<FormControl>
+											<Input
+												type="number"
+												min={1}
+												step={1}
+												placeholder="Never"
+												name={field.name}
+												ref={field.ref}
+												onBlur={field.onBlur}
+												onChange={field.onChange}
+												value={field.value === undefined ? "" : String(field.value)}
+											/>
+										</FormControl>
+										<FormDescription>
+											Leave empty for a key that never expires. The key works
+											for your active organization.
+										</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
 							<DialogFooter className="pt-4">
 								<Button
 									variant="outline"
@@ -405,7 +430,8 @@ function ApiKeysPage() {
 								variant="ghost"
 								size="icon"
 								className="shrink-0"
-								onClick={handleCopy}
+								aria-label="Copy API key"
+								onClick={() => void handleCopy()}
 							>
 								{copied ? (
 									<IconCheck className="size-4 text-emerald-600" />
@@ -448,6 +474,6 @@ function ApiKeysPage() {
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
-		</Layout>
+		</>
 	);
 }

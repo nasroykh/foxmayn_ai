@@ -6,13 +6,6 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
-import {
-	ChartContainer,
-	ChartTooltip,
-	ChartTooltipContent,
-} from "@/components/ui/chart";
-import { Area, AreaChart, XAxis, YAxis } from "recharts";
-import { Layout } from "@/components/layout/layout";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -23,19 +16,19 @@ import {
 } from "@tabler/icons-react";
 import { orpc } from "@/lib/orpc";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
-import { format, subDays } from "date-fns";
+import { Suspense, lazy, useMemo } from "react";
+import { format, startOfDay, subDays } from "date-fns";
+import { useMemberRole } from "@/hooks/use-member-role";
+
+// recharts is large; load it only when the dashboard renders the chart
+const UsageChart = lazy(() => import("@/components/dashboard/usage-chart"));
 
 export const Route = createFileRoute("/_auth/")({
+	staticData: { title: "Dashboard" },
 	component: Dashboard,
 });
 
-const chartConfig = {
-	cost: {
-		label: "Cost ($)",
-		color: "var(--chart-1)",
-	},
-};
+const HISTORY_LIMIT = 100;
 
 const TX_TYPE_COLORS: Record<string, string> = {
 	topup: "text-emerald-600 border-emerald-200 bg-emerald-50",
@@ -45,6 +38,8 @@ const TX_TYPE_COLORS: Record<string, string> = {
 };
 
 function Dashboard() {
+	const { isManager } = useMemberRole();
+
 	const { data: balance, isLoading: balanceLoading } = useQuery(
 		orpc.credits.getBalance.queryOptions({}),
 	);
@@ -57,28 +52,29 @@ function Dashboard() {
 		orpc.conversations.listConversations.queryOptions({ input: { limit: 1 } }),
 	);
 
-	const statsDateRange = useMemo(
-		() => ({ from: subDays(new Date(), 1), to: new Date() }),
-		[], // intentionally empty: snapshot dates at mount time
-	);
+	// Keyed by calendar day (not by a fresh Date) so the query is cached
+	const today = format(new Date(), "yyyy-MM-dd");
+	const todayStart = useMemo(() => startOfDay(new Date(`${today}T00:00:00`)), [today]);
 
-	const { data: usageStats, isLoading: statsLoading } = useQuery(
-		orpc.usage.getStats.queryOptions({
-			input: statsDateRange,
-		}),
-	);
+	// Owner/admin only on the API (FORBIDDEN for plain members)
+	const { data: usageStats, isLoading: statsLoading } = useQuery({
+		...orpc.usage.getStats.queryOptions({ input: { from: todayStart } }),
+		enabled: isManager,
+	});
 
+	// Members only receive their own rows
 	const { data: usageHistory } = useQuery(
 		orpc.usage.getHistory.queryOptions({
-			input: { limit: 100 },
+			input: { limit: HISTORY_LIMIT },
 		}),
 	);
 
-	const { data: transactions } = useQuery(
-		orpc.credits.getTransactions.queryOptions({ input: { limit: 5 } }),
-	);
+	const { data: transactions } = useQuery({
+		...orpc.credits.getTransactions.queryOptions({ input: { limit: 5 } }),
+		enabled: isManager,
+	});
 
-	// Build chart data from usage history (last 7 days)
+	// Chart data from the most recent usage rows (last 7 days)
 	const historyList = usageHistory?.history ?? [];
 	const last7Days = Array.from({ length: 7 }, (_, i) => {
 		const date = subDays(new Date(), 6 - i);
@@ -88,12 +84,17 @@ function Dashboard() {
 			.reduce((sum: number, h) => sum + Number(h.costCredits ?? 0), 0);
 		return { date: dateStr, cost: parseFloat(cost.toFixed(6)) };
 	});
+	const chartTruncated = historyList.length >= HISTORY_LIMIT;
+
+	const opsToday = isManager
+		? (usageStats?.totalCalls ?? 0)
+		: historyList.filter((h) => new Date(h.createdAt) >= todayStart).length;
+	const opsLoading = isManager ? statsLoading : usageHistory === undefined;
 
 	const txList = transactions?.transactions ?? [];
 
 	return (
-		<Layout>
-			<div className="space-y-6">
+		<div className="space-y-6">
 				{/* Stats Cards */}
 				<div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
 					<Card>
@@ -158,11 +159,11 @@ function Dashboard() {
 							<IconActivity className="size-4 text-muted-foreground" />
 						</CardHeader>
 						<CardContent>
-							{statsLoading ? (
+							{opsLoading ? (
 								<Skeleton className="h-8 w-16" />
 							) : (
 								<div className="text-2xl font-bold">
-									{usageStats?.totalCalls ?? 0}
+									{opsToday}
 								</div>
 							)}
 						</CardContent>
@@ -177,43 +178,20 @@ function Dashboard() {
 							<CardDescription>Daily AI operation costs</CardDescription>
 						</CardHeader>
 						<CardContent>
-							<ChartContainer config={chartConfig} className="h-[200px] w-full">
-								<AreaChart data={last7Days}>
-									<defs>
-										<linearGradient id="fillCost" x1="0" y1="0" x2="0" y2="1">
-											<stop
-												offset="5%"
-												stopColor="var(--chart-1)"
-												stopOpacity={0.8}
-											/>
-											<stop
-												offset="95%"
-												stopColor="var(--chart-1)"
-												stopOpacity={0.1}
-											/>
-										</linearGradient>
-									</defs>
-									<XAxis
-										dataKey="date"
-										tickLine={false}
-										axisLine={false}
-										tickMargin={8}
-									/>
-									<YAxis tickLine={false} axisLine={false} tickMargin={8} />
-									<ChartTooltip content={<ChartTooltipContent />} />
-									<Area
-										type="monotone"
-										dataKey="cost"
-										stroke="var(--chart-1)"
-										fillOpacity={1}
-										fill="url(#fillCost)"
-									/>
-								</AreaChart>
-							</ChartContainer>
+							<Suspense fallback={<Skeleton className="h-[200px] w-full" />}>
+								<UsageChart data={last7Days} />
+							</Suspense>
+							{chartTruncated && (
+								<p className="mt-2 text-xs text-muted-foreground">
+									Based on the {HISTORY_LIMIT} most recent operations; older
+									days may be undercounted.
+								</p>
+							)}
 						</CardContent>
 					</Card>
 
-					{/* Recent Transactions */}
+					{/* Recent Transactions (owners and admins only) */}
+					{isManager && (
 					<Card>
 						<CardHeader>
 							<CardTitle>Recent Transactions</CardTitle>
@@ -254,8 +232,8 @@ function Dashboard() {
 							)}
 						</CardContent>
 					</Card>
+					)}
 				</div>
-			</div>
-		</Layout>
+		</div>
 	);
 }

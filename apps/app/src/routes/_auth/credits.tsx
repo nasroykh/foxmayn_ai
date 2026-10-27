@@ -1,7 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { Layout } from "@/components/layout/layout";
+import { useDeferredValue, useState } from "react";
 import { orpc } from "@/lib/orpc";
+import { errorMessage } from "@/lib/validation";
+import { hasAdminRole } from "@/lib/roles";
+import { useMemberRole } from "@/hooks/use-member-role";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "@/lib/auth";
 import { toast } from "sonner";
@@ -52,6 +54,7 @@ import {
 } from "@/components/ui/combobox";
 
 export const Route = createFileRoute("/_auth/credits")({
+	staticData: { title: "Credits" },
 	component: CreditsPage,
 });
 
@@ -62,9 +65,12 @@ const TX_TYPE_COLORS: Record<string, string> = {
 	adjustment: "text-orange-600 border-orange-200 bg-orange-50",
 };
 
+type TxType = "topup" | "usage" | "refund" | "adjustment";
+
 function CreditsPage() {
 	const { data: sessionData } = useSession();
-	const isAdmin = sessionData?.user?.role === "admin";
+	const isAdmin = hasAdminRole(sessionData?.user?.role);
+	const { isManager } = useMemberRole();
 	const queryClient = useQueryClient();
 
 	const [txTypeFilter, setTxTypeFilter] = useState<string>("all");
@@ -77,25 +83,35 @@ function CreditsPage() {
 		orpc.credits.getBalance.queryOptions({}),
 	);
 
-	const { data: transactions, isLoading: txLoading } = useQuery(
-		orpc.credits.getTransactions.queryOptions({
+	// Transactions and stats are owner/admin only on the API (FORBIDDEN for members)
+	const { data: transactions, isLoading: txLoading } = useQuery({
+		...orpc.credits.getTransactions.queryOptions({
 			input: {
 				limit: 50,
-				type: txTypeFilter !== "all" ? (txTypeFilter as "topup" | "usage" | "refund" | "adjustment") : undefined,
+				type: txTypeFilter !== "all" ? (txTypeFilter as TxType) : undefined,
 			},
 		}),
-	);
+		enabled: isManager,
+	});
 
-	const { data: usageStats } = useQuery(
-		orpc.usage.getStats.queryOptions({ input: {} }),
-	);
+	const { data: usageStats } = useQuery({
+		...orpc.usage.getStats.queryOptions({ input: {} }),
+		enabled: isManager,
+	});
 
 	const { data: usageHistory, isLoading: usageLoading } = useQuery(
 		orpc.usage.getHistory.queryOptions({ input: { limit: 20 } }),
 	);
 
-	const { data: orgsData } = useQuery(orpc.organization.list.queryOptions({}));
-	const organizations = orgsData ?? [];
+	const [orgSearch, setOrgSearch] = useState("");
+	const deferredOrgSearch = useDeferredValue(orgSearch.trim());
+	const { data: orgsData } = useQuery({
+		...orpc.organization.adminList.queryOptions({
+			input: { search: deferredOrgSearch || undefined, limit: 50 },
+		}),
+		enabled: isAdmin && isTopUpOpen,
+	});
+	const organizations = orgsData?.organizations ?? [];
 
 	const topUpMutation = useMutation(
 		orpc.credits.topUp.mutationOptions({
@@ -105,24 +121,25 @@ function CreditsPage() {
 				);
 				setIsTopUpOpen(false);
 				setTopUpOrgId(null);
+				setOrgSearch("");
 				setTopUpAmount("");
 				setTopUpDesc("");
-				queryClient.invalidateQueries({
-					queryKey: orpc.credits.getBalance.key(),
-				});
-				queryClient.invalidateQueries({
-					queryKey: orpc.credits.getTransactions.key(),
-				});
+				void queryClient.invalidateQueries({ queryKey: orpc.credits.key() });
 			},
-			onError: (err) => toast.error(err.message || "Top-up failed"),
+			onError: (err) => toast.error(errorMessage(err, "Top-up failed")),
 		}),
 	);
+
+	const amountValue = Number(topUpAmount);
+	const amountValid =
+		Number.isFinite(amountValue) && amountValue > 0 && amountValue <= 10000;
+	const targetOrgId = topUpOrgId;
 
 	const txList = transactions?.transactions ?? [];
 	const historyList = usageHistory?.history ?? [];
 
 	return (
-		<Layout>
+		<>
 			<div className="space-y-6">
 				<div className="flex items-center justify-between">
 					<div>
@@ -140,7 +157,7 @@ function CreditsPage() {
 				</div>
 
 				{/* Balance + Stats */}
-				<div className="grid gap-4 md:grid-cols-4">
+				<div className={isManager ? "grid gap-4 md:grid-cols-4" : "grid gap-4 md:grid-cols-1"}>
 					<Card className="md:col-span-1">
 						<CardHeader className="pb-2">
 							<CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
@@ -159,6 +176,7 @@ function CreditsPage() {
 						</CardContent>
 					</Card>
 
+					{isManager && (<>
 					<Card>
 						<CardHeader className="pb-2">
 							<CardTitle className="text-sm font-medium text-muted-foreground">
@@ -197,9 +215,11 @@ function CreditsPage() {
 							</div>
 						</CardContent>
 					</Card>
+					</>)}
 				</div>
 
-				{/* Transactions */}
+				{/* Transactions (owners and admins only) */}
+				{isManager && (
 				<Card>
 					<CardHeader className="flex flex-row items-center justify-between">
 						<div>
@@ -212,7 +232,7 @@ function CreditsPage() {
 							value={txTypeFilter}
 							onValueChange={(value) => setTxTypeFilter(value || "all")}
 						>
-							<SelectTrigger className="w-36">
+							<SelectTrigger className="w-36" aria-label="Filter by type">
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>
@@ -295,12 +315,15 @@ function CreditsPage() {
 						</div>
 					</CardContent>
 				</Card>
+				)}
 
 				{/* Usage History */}
 				<Card>
 					<CardHeader>
 						<CardTitle>Usage History</CardTitle>
-						<CardDescription>Recent AI operations</CardDescription>
+						<CardDescription>
+							{isManager ? "Recent AI operations" : "Your recent AI operations"}
+						</CardDescription>
 					</CardHeader>
 					<CardContent>
 						<div className="rounded-md border border-input overflow-hidden">
@@ -376,16 +399,18 @@ function CreditsPage() {
 						</DialogHeader>
 						<div className="space-y-4 py-4">
 							<div className="space-y-2">
-								<Label>Organization</Label>
+								<Label htmlFor="topup-org">Organization</Label>
 								<Combobox
 									value={topUpOrgId}
 									onValueChange={(value) => setTopUpOrgId(value)}
+									onInputValueChange={(value) => setOrgSearch(value)}
 									items={organizations.map((org) => ({
-										label: org.name,
+										label: `${org.name} (${org.slug})`,
 										value: org.id,
 									}))}
 								>
 									<ComboboxInput
+										id="topup-org"
 										className="w-full"
 										placeholder="Search organization..."
 										showClear
@@ -403,8 +428,9 @@ function CreditsPage() {
 								</Combobox>
 							</div>
 							<div className="space-y-2">
-								<Label>Amount ($)</Label>
+								<Label htmlFor="topup-amount">Amount ($)</Label>
 								<Input
+									id="topup-amount"
 									type="number"
 									min="0.01"
 									max="10000"
@@ -415,8 +441,9 @@ function CreditsPage() {
 								/>
 							</div>
 							<div className="space-y-2">
-								<Label>Description (optional)</Label>
+								<Label htmlFor="topup-desc">Description (optional)</Label>
 								<Input
+									id="topup-desc"
 									placeholder="Manual top-up"
 									value={topUpDesc}
 									onChange={(e) => setTopUpDesc(e.target.value)}
@@ -429,12 +456,12 @@ function CreditsPage() {
 							</Button>
 							<Button
 								disabled={
-									!topUpOrgId || !topUpAmount || topUpMutation.isPending
+									!targetOrgId || !amountValid || topUpMutation.isPending
 								}
 								onClick={() =>
 									topUpMutation.mutate({
-										organizationId: topUpOrgId!,
-										amount: parseFloat(topUpAmount),
+										organizationId: targetOrgId!,
+										amount: amountValue,
 										description: topUpDesc || undefined,
 									})
 								}
@@ -448,6 +475,6 @@ function CreditsPage() {
 					</DialogContent>
 				</Dialog>
 			)}
-		</Layout>
+		</>
 	);
 }
