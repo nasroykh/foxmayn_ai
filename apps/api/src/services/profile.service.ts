@@ -1,5 +1,5 @@
 import { db, ragProfile } from "@repo/db";
-import { eq, desc, and } from "@repo/db/drizzle-orm";
+import { eq, desc, and, ne } from "@repo/db/drizzle-orm";
 import { type RagProfileInsert, type RagProfileUpdate } from "@repo/db/types";
 import { randomUUID } from "node:crypto";
 
@@ -10,58 +10,59 @@ export const createProfile = async (
 	data: Omit<RagProfileInsert, "id" | "createdAt" | "updatedAt">,
 ) => {
 	const id = randomUUID();
-	const [newProfile] = await db
-		.insert(ragProfile)
-		.values({ ...data, id })
-		.returning();
-	return newProfile;
+	return await db.transaction(async (tx) => {
+		// One default per user (unique index): demote the current one first
+		if (data.isDefault) {
+			await tx
+				.update(ragProfile)
+				.set({ isDefault: false })
+				.where(
+					and(eq(ragProfile.userId, data.userId), eq(ragProfile.isDefault, true)),
+				);
+		}
+		const [newProfile] = await tx
+			.insert(ragProfile)
+			.values({ ...data, id })
+			.returning();
+		return newProfile;
+	});
 };
 
 /**
  * Get a RAG profile by ID (scoped to user)
  */
-export const getProfile = async (id: string, userId?: string) => {
-	const conditions = [eq(ragProfile.id, id)];
-	if (userId) conditions.push(eq(ragProfile.userId, userId));
-
+export const getProfile = async (id: string, userId: string) => {
 	const [profile] = await db
 		.select()
 		.from(ragProfile)
-		.where(and(...conditions));
+		.where(and(eq(ragProfile.id, id), eq(ragProfile.userId, userId)));
 	return profile || null;
 };
 
 /**
  * Get the default RAG profile for a user
  */
-export const getDefaultProfile = async (userId?: string) => {
-	const conditions = [eq(ragProfile.isDefault, true)];
-	if (userId) conditions.push(eq(ragProfile.userId, userId));
-
+export const getDefaultProfile = async (userId: string) => {
 	const [profile] = await db
 		.select()
 		.from(ragProfile)
-		.where(and(...conditions))
+		.where(and(eq(ragProfile.isDefault, true), eq(ragProfile.userId, userId)))
 		.limit(1);
 	return profile || null;
 };
 
 /**
- * List all RAG profiles (scoped to user)
+ * List RAG profiles (scoped to user)
  */
-export const listProfiles = async (limit = 20, offset = 0, userId?: string) => {
-	if (userId) {
-		return await db
-			.select()
-			.from(ragProfile)
-			.where(eq(ragProfile.userId, userId))
-			.limit(limit)
-			.offset(offset)
-			.orderBy(desc(ragProfile.createdAt));
-	}
+export const listProfiles = async (
+	limit: number,
+	offset: number,
+	userId: string,
+) => {
 	return await db
 		.select()
 		.from(ragProfile)
+		.where(eq(ragProfile.userId, userId))
 		.limit(limit)
 		.offset(offset)
 		.orderBy(desc(ragProfile.createdAt));
@@ -73,25 +74,47 @@ export const listProfiles = async (limit = 20, offset = 0, userId?: string) => {
 export const updateProfile = async (
 	id: string,
 	data: Partial<RagProfileUpdate>,
-	userId?: string,
+	userId: string,
 ) => {
-	const conditions = [eq(ragProfile.id, id)];
-	if (userId) conditions.push(eq(ragProfile.userId, userId));
+	return await db.transaction(async (tx) => {
+		if (data.isDefault) {
+			// Never demote the current default when the target does not exist
+			const [target] = await tx
+				.select({ id: ragProfile.id })
+				.from(ragProfile)
+				.where(and(eq(ragProfile.id, id), eq(ragProfile.userId, userId)));
+			if (!target) return undefined;
 
-	const [updatedProfile] = await db
-		.update(ragProfile)
-		.set(data)
-		.where(and(...conditions))
-		.returning();
-	return updatedProfile;
+			await tx
+				.update(ragProfile)
+				.set({ isDefault: false })
+				.where(
+					and(
+						eq(ragProfile.userId, userId),
+						eq(ragProfile.isDefault, true),
+						ne(ragProfile.id, id),
+					),
+				);
+		}
+		const [updatedProfile] = await tx
+			.update(ragProfile)
+			.set(data)
+			.where(and(eq(ragProfile.id, id), eq(ragProfile.userId, userId)))
+			.returning();
+		return updatedProfile;
+	});
 };
 
 /**
- * Delete a RAG profile (scoped to user)
+ * Delete a RAG profile (scoped to user).
+ * Documents and conversations that used it keep existing (profile_id is set to null).
+ *
+ * @returns true when a profile was deleted, false when none matched
  */
-export const deleteProfile = async (id: string, userId?: string) => {
-	const conditions = [eq(ragProfile.id, id)];
-	if (userId) conditions.push(eq(ragProfile.userId, userId));
-
-	await db.delete(ragProfile).where(and(...conditions));
+export const deleteProfile = async (id: string, userId: string) => {
+	const deleted = await db
+		.delete(ragProfile)
+		.where(and(eq(ragProfile.id, id), eq(ragProfile.userId, userId)))
+		.returning({ id: ragProfile.id });
+	return deleted.length > 0;
 };

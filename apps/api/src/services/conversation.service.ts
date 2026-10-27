@@ -29,14 +29,11 @@ export const createConversation = async (
 /**
  * Get a conversation by ID (scoped to user)
  */
-export const getConversation = async (id: string, userId?: string) => {
-	const conditions = [eq(conversation.id, id)];
-	if (userId) conditions.push(eq(conversation.userId, userId));
-
+export const getConversation = async (id: string, userId: string) => {
 	const [conv] = await db
 		.select()
 		.from(conversation)
-		.where(and(...conditions));
+		.where(and(eq(conversation.id, id), eq(conversation.userId, userId)));
 	return conv || null;
 };
 
@@ -45,16 +42,9 @@ export const getConversation = async (id: string, userId?: string) => {
  */
 export const getConversationWithMessages = async (
 	id: string,
-	userId?: string,
+	userId: string,
 ) => {
-	const conditions = [eq(conversation.id, id)];
-	if (userId) conditions.push(eq(conversation.userId, userId));
-
-	const [conv] = await db
-		.select()
-		.from(conversation)
-		.where(and(...conditions));
-
+	const conv = await getConversation(id, userId);
 	if (!conv) return null;
 
 	const messages = await db
@@ -67,52 +57,40 @@ export const getConversationWithMessages = async (
 };
 
 /**
- * List all conversations with optional profile filter (scoped to user)
+ * List conversations with optional profile filter (scoped to user)
  */
 export const listConversations = async (
-	limit = 20,
-	offset = 0,
-	profileId?: string,
-	userId?: string,
+	limit: number,
+	offset: number,
+	profileId: string | undefined,
+	userId: string,
 ) => {
-	const conditions = [];
-	if (userId) conditions.push(eq(conversation.userId, userId));
+	const conditions = [eq(conversation.userId, userId)];
 	if (profileId) conditions.push(eq(conversation.profileId, profileId));
 
-	const query = db
+	return await db
 		.select()
 		.from(conversation)
+		.where(and(...conditions))
 		.limit(limit)
 		.offset(offset)
 		.orderBy(desc(conversation.updatedAt));
-
-	if (conditions.length > 0) {
-		return await query.where(and(...conditions));
-	}
-
-	return await query;
 };
 
 /**
  * Count total conversations with optional profile filter (scoped to user)
  */
 export const countConversations = async (
-	profileId?: string,
-	userId?: string,
+	profileId: string | undefined,
+	userId: string,
 ) => {
-	const conditions = [];
-	if (userId) conditions.push(eq(conversation.userId, userId));
+	const conditions = [eq(conversation.userId, userId)];
 	if (profileId) conditions.push(eq(conversation.profileId, profileId));
 
-	if (conditions.length > 0) {
-		const [result] = await db
-			.select({ count: count() })
-			.from(conversation)
-			.where(and(...conditions));
-		return result?.count ?? 0;
-	}
-
-	const [result] = await db.select({ count: count() }).from(conversation);
+	const [result] = await db
+		.select({ count: count() })
+		.from(conversation)
+		.where(and(...conditions));
 	return result?.count ?? 0;
 };
 
@@ -122,15 +100,12 @@ export const countConversations = async (
 export const updateConversation = async (
 	id: string,
 	data: Partial<ConversationUpdate>,
-	userId?: string,
+	userId: string,
 ) => {
-	const conditions = [eq(conversation.id, id)];
-	if (userId) conditions.push(eq(conversation.userId, userId));
-
 	const [updatedConversation] = await db
 		.update(conversation)
 		.set(data)
-		.where(and(...conditions))
+		.where(and(eq(conversation.id, id), eq(conversation.userId, userId)))
 		.returning();
 	return updatedConversation;
 };
@@ -138,11 +113,10 @@ export const updateConversation = async (
 /**
  * Delete a conversation (cascades to messages, scoped to user)
  */
-export const deleteConversation = async (id: string, userId?: string) => {
-	const conditions = [eq(conversation.id, id)];
-	if (userId) conditions.push(eq(conversation.userId, userId));
-
-	await db.delete(conversation).where(and(...conditions));
+export const deleteConversation = async (id: string, userId: string) => {
+	await db
+		.delete(conversation)
+		.where(and(eq(conversation.id, id), eq(conversation.userId, userId)));
 };
 
 // ============================================================================
@@ -193,6 +167,22 @@ export const listMessages = async (
 		.limit(limit)
 		.offset(offset)
 		.orderBy(message.createdAt);
+};
+
+/**
+ * The newest `limit` messages of a conversation, newest first.
+ * Callers that replay history to the model reverse them (see selectHistory).
+ */
+export const listRecentMessages = async (
+	conversationId: string,
+	limit: number,
+) => {
+	return await db
+		.select({ role: message.role, content: message.content })
+		.from(message)
+		.where(eq(message.conversationId, conversationId))
+		.orderBy(desc(message.createdAt))
+		.limit(limit);
 };
 
 /**

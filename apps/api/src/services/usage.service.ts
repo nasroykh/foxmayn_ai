@@ -2,12 +2,10 @@ import { randomUUID } from "node:crypto";
 import { db, aiUsageLog } from "@repo/db";
 import { eq, and, desc, sql, gte, lte } from "@repo/db/drizzle-orm";
 import { ORPCError } from "@orpc/server";
-import Redis from "ioredis";
-import { env } from "../config/env";
-import { calculateCost } from "../utils/cost";
+import { redis } from "../config/redis";
+import { calculateCost, CREDIT_EPSILON } from "../utils/cost";
 import { deductCredits } from "./credits.service";
 
-const redis = new Redis(env.REDIS_URL);
 const STATS_CACHE_TTL = 30; // seconds
 
 // ============================================================================
@@ -42,18 +40,72 @@ export interface UsageStatsResult {
 }
 
 // ============================================================================
+// Usage log
+// ============================================================================
+
+const statsVersionKey = (orgId: string) => `usage_stats_ver:${orgId}`;
+
+/**
+ * Invalidate cached stats for an org by bumping its version counter
+ * (part of every stats cache key). Best-effort: a Redis failure must never
+ * fail a request that was already billed.
+ */
+async function invalidateUsageStats(orgId: string): Promise<void> {
+	await redis
+		.incr(statsVersionKey(orgId))
+		.catch((err) =>
+			console.error("[Usage] Failed to invalidate usage stats cache:", err),
+		);
+}
+
+/**
+ * Insert an ai_usage_log row for a call whose credits were already settled.
+ * Best-effort: the credit transaction is the source of truth for billing.
+ */
+export async function recordUsage(input: {
+	id?: string;
+	organizationId: string;
+	userId: string;
+	operationType: "chat" | "embedding";
+	model: string;
+	inputTokens: number;
+	outputTokens: number;
+	costCredits: number;
+	metadata?: Record<string, unknown>;
+}): Promise<void> {
+	await db
+		.insert(aiUsageLog)
+		.values({
+			id: input.id ?? randomUUID(),
+			organizationId: input.organizationId,
+			userId: input.userId,
+			operationType: input.operationType,
+			model: input.model,
+			inputTokens: input.inputTokens,
+			outputTokens: input.outputTokens,
+			totalTokens: input.inputTokens + input.outputTokens,
+			costCredits: input.costCredits.toFixed(8),
+			metadata: input.metadata ?? {},
+		})
+		.onConflictDoNothing()
+		.catch((err) =>
+			console.error("[Usage] Failed to insert usage log:", err),
+		);
+
+	await invalidateUsageStats(input.organizationId);
+}
+
+// ============================================================================
 // Log AI Usage & Deduct Credits
 // ============================================================================
 
 /**
- * Log an AI API call and deduct credits from the organization.
+ * Log a finished AI API call and collect its cost from the organization.
  *
- * This is the single entry point for recording usage — it:
- * 1. Calculates the cost based on model pricing
- * 2. Deducts credits atomically — throws if insufficient balance
- * 3. Inserts a row into ai_usage_log (best-effort; deduction already committed)
+ * Used for small calls that are billed after the fact (query embeddings).
+ * The work is already done, so the cost is always collected, even when that
+ * drives the balance slightly negative — it is never dropped.
  *
- * @throws If the organization has insufficient credits to cover the cost
  * @returns The usage log entry and deduction result
  */
 export async function logUsageAndDeduct(input: LogUsageInput): Promise<{
@@ -81,19 +133,20 @@ export async function logUsageAndDeduct(input: LogUsageInput): Promise<{
 	let newBalance = 0;
 	let transactionId = "";
 
-	if (costCredits > 0) {
-		// Deduct credits atomically.
+	// Costs below the column precision round to zero: nothing to collect
+	if (costCredits >= CREDIT_EPSILON) {
 		const deductionResult = await deductCredits({
 			orgId: organizationId,
 			amount: costCredits,
 			description: `${operationType} — ${model} (${totalTokens} tokens)`,
 			referenceId: usageId,
 			userId,
+			allowNegative: true,
 		});
 
 		if (!deductionResult) {
-			throw new ORPCError("FORBIDDEN", {
-				message: `Insufficient credits: ${operationType} on ${model} costs $${costCredits.toFixed(6)} but organization ${organizationId} has an insufficient balance`,
+			throw new ORPCError("NOT_FOUND", {
+				message: `Organization not found: ${organizationId}`,
 			});
 		}
 
@@ -101,8 +154,7 @@ export async function logUsageAndDeduct(input: LogUsageInput): Promise<{
 		transactionId = deductionResult.transactionId;
 	}
 
-	// Insert usage log. If this fails, throw so callers know something went wrong.
-	await db.insert(aiUsageLog).values({
+	await recordUsage({
 		id: usageId,
 		organizationId,
 		userId,
@@ -110,15 +162,9 @@ export async function logUsageAndDeduct(input: LogUsageInput): Promise<{
 		model,
 		inputTokens,
 		outputTokens,
-		totalTokens,
-		costCredits: costCredits.toString(),
-		metadata: metadata ?? {},
+		costCredits,
+		metadata,
 	});
-
-	// Invalidate cached stats for this org
-	const pattern = `usage_stats:${organizationId}:*`;
-	const keys = await redis.keys(pattern);
-	if (keys.length > 0) await redis.del(...keys);
 
 	return {
 		usageId,
@@ -140,9 +186,16 @@ export async function getUsageStats(
 	orgId: string,
 	options: { from?: Date; to?: Date } = {},
 ): Promise<UsageStatsResult> {
-	const cacheKey = `usage_stats:${orgId}:${options.from?.toISOString() ?? "all"}:${options.to?.toISOString() ?? "all"}`;
-	const cached = await redis.get(cacheKey);
-	if (cached) return JSON.parse(cached) as UsageStatsResult;
+	// Cache is best-effort: a Redis failure falls through to the database
+	let cacheKey: string | null = null;
+	try {
+		const version = (await redis.get(statsVersionKey(orgId))) ?? "0";
+		cacheKey = `usage_stats:${orgId}:v${version}:${options.from?.toISOString() ?? "all"}:${options.to?.toISOString() ?? "all"}`;
+		const cached = await redis.get(cacheKey);
+		if (cached) return JSON.parse(cached) as UsageStatsResult;
+	} catch (err) {
+		console.error("[Usage] Stats cache read failed:", err);
+	}
 
 	const conditions = [eq(aiUsageLog.organizationId, orgId)];
 	if (options.from) conditions.push(gte(aiUsageLog.createdAt, options.from));
@@ -205,7 +258,11 @@ export async function getUsageStats(
 		})),
 	};
 
-	await redis.setex(cacheKey, STATS_CACHE_TTL, JSON.stringify(result));
+	if (cacheKey) {
+		await redis
+			.setex(cacheKey, STATS_CACHE_TTL, JSON.stringify(result))
+			.catch((err) => console.error("[Usage] Stats cache write failed:", err));
+	}
 	return result;
 }
 

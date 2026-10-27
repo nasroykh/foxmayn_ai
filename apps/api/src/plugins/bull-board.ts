@@ -7,7 +7,8 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { documentQueue, emailQueue } from "../jobs";
 import { env } from "../config/env";
 import { auth } from "../config/auth";
-import { hasAdminRole } from "../router/middleware";
+import { API_KEY_HEADER } from "../config/constants";
+import { hasAdminRole } from "../router/access";
 
 const bullBoardEndpoint = `/admin/queues`;
 
@@ -18,6 +19,11 @@ const bullBoardEndpoint = `/admin/queues`;
 export const registerBullBoard = (app: Hono) => {
 	// Same admin check as the oRPC `adminProcedure`, on the session cookie
 	app.use(`${bullBoardEndpoint}/*`, async (c, next) => {
+		// API keys never get admin access
+		if (c.req.header(API_KEY_HEADER)) {
+			return c.json({ message: "Admin access required" }, 403);
+		}
+
 		const sessionData = await auth.api.getSession({
 			headers: c.req.raw.headers,
 		});

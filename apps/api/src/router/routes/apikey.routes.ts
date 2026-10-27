@@ -1,7 +1,9 @@
 import { z } from "zod";
-import { adminProcedure, authProcedure } from "../middleware";
+import { ORPCError } from "@orpc/server";
+import { adminProcedure, sessionProcedure } from "../middleware";
 import {
 	createApiKey,
+	createApiKeyForUser,
 	getApiKey,
 	updateApiKey,
 	deleteApiKey,
@@ -14,7 +16,9 @@ export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
 /**
  * API Key Routes
- * These routes allow users to manage their personal API keys.
+ * These routes allow users to manage their personal API keys. A key is bound
+ * to an organization (the creator's active organization) and calls made with
+ * it run against that organization. Keys cannot manage keys.
  */
 export const apiKeyRoutes = {
 	createApiKeyForUser: adminProcedure
@@ -26,6 +30,10 @@ export const apiKeyRoutes = {
 		.input(
 			z.object({
 				userId: z.string().min(1).describe("User ID for the API key"),
+				organizationId: z
+					.string()
+					.min(1)
+					.describe("Organization the key is bound to (the user must be a member)"),
 				name: z
 					.string()
 					.optional()
@@ -50,17 +58,18 @@ export const apiKeyRoutes = {
 			})
 		)
 		.handler(async ({ input }) => {
-			return await createApiKey(input);
+			return await createApiKeyForUser(input);
 		}),
 
 	/**
 	 * Create a new API key
 	 */
-	createApiKey: authProcedure
+	createApiKey: sessionProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/api-keys`,
-			description: "Create a new API key for the current user",
+			description:
+				"Create a new API key for the current user, bound to their active organization",
 		})
 		.input(
 			z.object({
@@ -73,28 +82,28 @@ export const apiKeyRoutes = {
 					.string()
 					.optional()
 					.describe("Custom prefix for the generated key"),
-				remaining: z
-					.number()
-					.optional()
-					.describe("Initial number of remaining requests"),
-				permissions: z
-					.record(z.string(), z.array(z.string()))
-					.optional()
-					.describe("Permissions for the API key"),
-				metadata: z
-					.record(z.string(), z.unknown())
-					.optional()
-					.describe("Additional metadata"),
 			})
 		)
 		.handler(async ({ input, context }) => {
-			return await createApiKey(input, context.headers);
+			const organizationId = context.session.activeOrganizationId;
+			if (!organizationId) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: "No active organization. Set an active organization first.",
+				});
+			}
+
+			return await createApiKey(
+				input,
+				context.user.id,
+				organizationId,
+				context.headers,
+			);
 		}),
 
 	/**
 	 * List all API keys
 	 */
-	listApiKeys: authProcedure
+	listApiKeys: sessionProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/api-keys`,
@@ -107,7 +116,7 @@ export const apiKeyRoutes = {
 	/**
 	 * Get API key details
 	 */
-	getApiKey: authProcedure
+	getApiKey: sessionProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/api-keys/{id}`,
@@ -121,7 +130,7 @@ export const apiKeyRoutes = {
 	/**
 	 * Update an API key
 	 */
-	updateApiKey: authProcedure
+	updateApiKey: sessionProcedure
 		.route({
 			method: "PATCH",
 			path: `${PREFIX}/api-keys/{keyId}`,
@@ -132,26 +141,6 @@ export const apiKeyRoutes = {
 				keyId: z.string(),
 				name: z.string().optional().describe("Update the name of the key"),
 				enabled: z.boolean().optional().describe("Enable or disable the key"),
-				remaining: z
-					.number()
-					.optional()
-					.describe("Update the number of remaining requests"),
-				refillAmount: z
-					.number()
-					.optional()
-					.describe("Update the refill amount"),
-				refillInterval: z
-					.number()
-					.optional()
-					.describe("Update the refill interval in milliseconds"),
-				permissions: z
-					.record(z.string(), z.array(z.string()))
-					.optional()
-					.describe("Update permissions"),
-				metadata: z
-					.record(z.string(), z.unknown())
-					.optional()
-					.describe("Update metadata"),
 			})
 		)
 		.handler(async ({ input, context }) => {
@@ -161,7 +150,7 @@ export const apiKeyRoutes = {
 	/**
 	 * Delete an API key
 	 */
-	deleteApiKey: authProcedure
+	deleteApiKey: sessionProcedure
 		.route({
 			method: "DELETE",
 			path: `${PREFIX}/api-keys/{keyId}`,
@@ -175,7 +164,7 @@ export const apiKeyRoutes = {
 	/**
 	 * Clear all expired API keys
 	 */
-	deleteAllExpiredApiKeys: authProcedure
+	deleteAllExpiredApiKeys: sessionProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/api-keys/clear-expired`,

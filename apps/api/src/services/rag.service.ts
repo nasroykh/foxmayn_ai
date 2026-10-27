@@ -1,42 +1,70 @@
 import { randomUUID } from "node:crypto";
-import { db, document, documentChunk, aiUsageLog } from "@repo/db";
+import { db, document, documentChunk } from "@repo/db";
 import { searchVectors } from "@repo/qdrant";
-import { eq, and, count } from "@repo/db/drizzle-orm";
+import {
+	eq,
+	and,
+	or,
+	isNull,
+	inArray,
+	desc,
+	count,
+} from "@repo/db/drizzle-orm";
 import {
 	OpenRouterQuery,
 	OpenRouterEmbed,
 	type AIUsage,
 } from "@repo/llm/openrouter";
+import { ORPCError } from "@orpc/server";
 import { getProfile, getDefaultProfile } from "./profile.service";
 import {
 	addIndexDocumentJob,
 	addDeleteDocumentJob,
-	getDocumentJobStatus,
+	addReindexDocumentJob,
 } from "../jobs";
 import { parseDocx, parseHTML, parsePDF } from "../utils/parsers";
-import { ORPCError } from "@orpc/server";
-import { GET_MAIN_SYSTEM_PROMPT } from "../utils/system_prompts";
+import {
+	DOCX_MIME,
+	MAX_DOCX_UNCOMPRESSED_BYTES,
+	MAX_EXTRACTED_CHARS,
+	MAX_FILE_SIZE,
+	isAllowedFileType,
+	matchesFileSignature,
+	zipDeclaredUncompressedSize,
+	ALLOWED_FILE_TYPES,
+} from "../utils/file_validation";
+import { buildSystemPrompt } from "../utils/system_prompts";
 import { qdrant, ensureCollection, type VectorPayload } from "./qdrant.shared";
 import { buildChunkFilter } from "./qdrant.filter";
-import { logUsageAndDeduct } from "./usage.service";
-import { deductCredits, addCredits } from "./credits.service";
-import { estimateChatCost, calculateCost } from "../utils/cost";
+import { logUsageAndDeduct, recordUsage } from "./usage.service";
+import {
+	reserveCredits,
+	settleReservation,
+	type CreditReservation,
+} from "./credits.service";
+import {
+	estimateChatCost,
+	isKnownChatModel,
+	resolveChatCost,
+	CREDIT_EPSILON,
+} from "../utils/cost";
+import { estimateTokens } from "./chunking.service";
 
-const ALLOWED_FILE_TYPES = [
-	"text/plain",
-	"text/markdown",
-	// "text/csv",
-	// "application/json",
-	// "application/xml",
-	"text/html",
-	"application/pdf",
-	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-];
-export const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const DEFAULT_CHAT_MODEL = "google/gemini-2.5-flash-lite";
+const DEFAULT_EMBEDDING_MODEL = "openai/text-embedding-3-small";
+const DEFAULT_MAX_TOKENS = 2048;
+// Per-message framing overhead of chat formats, in tokens
+const MESSAGE_OVERHEAD_TOKENS = 4;
+// How long to wait for the provider to report usage after a stream ended
+const USAGE_TIMEOUT_MS = 15_000;
+
+type ReasoningEffort = NonNullable<
+	Parameters<typeof OpenRouterQuery>[0]["reasoning"]
+>;
 
 // Types
 export interface ChatMessage {
-	role: "user" | "assistant" | "system";
+	role: "user" | "assistant";
 	content: string;
 }
 
@@ -49,8 +77,8 @@ export interface QueryOptions {
 		documentId?: string;
 		source?: string;
 	};
-	// Usage tracking context
-	organizationId?: string;
+	// Organization billed for the call
+	organizationId: string;
 	// Owner of the documents to search (mandatory: retrieval is always scoped to it)
 	userId: string;
 }
@@ -73,33 +101,39 @@ export interface SearchResult {
 	score: number;
 }
 
-/**
- * Index a document into the RAG system (ASYNC - via background job)
- *
- * This now returns immediately with a jobId. The actual indexing
- * happens in a background worker process.
- *
- * @returns documentId and jobId for tracking
- */
-export const indexDocument = async (options: {
-	file: File;
-	title?: string;
-	source?: string;
-	profileId?: string;
-	metadata?: Record<string, unknown>;
-	userId: string;
-	organizationId?: string;
-}): Promise<{ documentId: string; jobId: string | undefined }> => {
-	const { file, title, source, profileId, metadata, userId, organizationId } =
-		options;
+type Profile = NonNullable<Awaited<ReturnType<typeof getProfile>>>;
 
+// Everything except `content`, which can be megabytes
+const documentSummaryColumns = {
+	id: document.id,
+	userId: document.userId,
+	profileId: document.profileId,
+	title: document.title,
+	source: document.source,
+	embeddingModel: document.embeddingModel,
+	metadata: document.metadata,
+	status: document.status,
+	chunkCount: document.chunkCount,
+	createdAt: document.createdAt,
+	updatedAt: document.updatedAt,
+};
+
+// ============================================================================
+// Documents
+// ============================================================================
+
+/**
+ * Validate an upload and extract its text.
+ * Checks type allowlist, size, file signature, and bounds the extracted text.
+ * Throws BAD_REQUEST for anything unacceptable.
+ */
+export const extractTextFromDocument = async (file: File): Promise<string> => {
 	if (!file || !file.name || !file.type)
 		throw new ORPCError("BAD_REQUEST", {
 			message: "File is required",
 		});
 
-	// Validate file extension
-	if (!ALLOWED_FILE_TYPES.includes(file.type))
+	if (!isAllowedFileType(file.type))
 		throw new ORPCError("BAD_REQUEST", {
 			message: "Invalid file type.",
 			data: {
@@ -112,9 +146,82 @@ export const indexDocument = async (options: {
 			message: "File too large (max 10MB)",
 		});
 
+	const bytes = new Uint8Array(await file.arrayBuffer());
+	if (bytes.length > MAX_FILE_SIZE)
+		throw new ORPCError("BAD_REQUEST", {
+			message: "File too large (max 10MB)",
+		});
+
+	if (!matchesFileSignature(file.type, bytes))
+		throw new ORPCError("BAD_REQUEST", {
+			message: "File content does not match its type",
+		});
+
+	const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+	let text: string;
+	try {
+		switch (file.type) {
+			case "text/html":
+				text = parseHTML(buffer.toString("utf-8"));
+				break;
+			case "application/pdf":
+				text = await parsePDF(buffer);
+				break;
+			case DOCX_MIME: {
+				const declared = zipDeclaredUncompressedSize(bytes);
+				if (declared === null || declared > MAX_DOCX_UNCOMPRESSED_BYTES)
+					throw new ORPCError("BAD_REQUEST", {
+						message: "DOCX file is invalid or too large once unpacked",
+					});
+				text = await parseDocx(buffer);
+				break;
+			}
+			default:
+				text = buffer.toString("utf-8");
+		}
+	} catch (err) {
+		if (err instanceof ORPCError) throw err;
+		console.error("[RAG] Failed to parse upload:", err);
+		throw new ORPCError("BAD_REQUEST", {
+			message: "Could not read the file. It may be corrupt.",
+		});
+	}
+
+	if (text.length > MAX_EXTRACTED_CHARS)
+		throw new ORPCError("BAD_REQUEST", {
+			message: `Document text is too long (max ${MAX_EXTRACTED_CHARS.toLocaleString("en-US")} characters)`,
+		});
+
+	return text;
+};
+
+/**
+ * Index a document into the RAG system (ASYNC - via background job)
+ *
+ * This returns immediately with a jobId. The actual indexing
+ * happens in a background worker process.
+ *
+ * @returns documentId and jobId for tracking
+ */
+export const indexDocument = async (options: {
+	file: File;
+	title?: string;
+	source?: string;
+	profileId?: string;
+	metadata?: Record<string, unknown>;
+	userId: string;
+	organizationId: string;
+}): Promise<{ documentId: string; jobId: string | undefined }> => {
+	const { file, title, source, profileId, metadata, userId, organizationId } =
+		options;
+
+	// The profile id is stored as-is: it must belong to the caller
+	if (profileId) await loadProfile(profileId, userId);
+
 	const content = await extractTextFromDocument(file);
 
-	if (!content?.trim())
+	if (!content.trim())
 		throw new ORPCError("BAD_REQUEST", {
 			message: "File is empty",
 		});
@@ -134,53 +241,157 @@ export const indexDocument = async (options: {
 		status: "processing",
 	});
 
-	// Add job to queue - returns immediately
-	// Pass organizationId so the worker can track usage
-	const { jobId } = await addIndexDocumentJob({
-		documentId,
-		title: docTitle,
-		content,
-		source,
-		metadata,
-		profileId,
-		organizationId,
-		userId,
-	});
-
-	return { documentId, jobId };
+	// Add job to queue - returns immediately. The worker reads the content from the row.
+	try {
+		const { jobId } = await addIndexDocumentJob({
+			documentId,
+			profileId,
+			organizationId,
+			userId,
+		});
+		return { documentId, jobId };
+	} catch (err) {
+		// Without a job the document would stay "processing" forever
+		await db.delete(document).where(eq(document.id, documentId));
+		throw err;
+	}
 };
 
 /**
- * Get the status of a document indexing job
+ * Delete a document and its vectors (ASYNC - via background job).
+ * The caller must have verified ownership.
  */
-export const getIndexingStatus = async (jobId: string) => {
-	return getDocumentJobStatus(jobId);
+export const deleteDocument = async (
+	documentId: string,
+	userId: string,
+): Promise<{ jobId: string | undefined }> => {
+	const { jobId } = await addDeleteDocumentJob({ documentId, userId });
+	return { jobId };
 };
 
 /**
- * Search for relevant chunks.
- * Logs embedding usage if organizationId is provided.
+ * Re-index every document of a profile (after its embedding model changed).
+ * Documents without a profile belong to the user's default profile.
+ * Billed to `organizationId` like any other indexing.
  */
-export const searchChunks = async (
+export const reindexProfileDocuments = async (
+	profile: { id: string; isDefault: boolean },
+	userId: string,
+	organizationId: string,
+): Promise<{ count: number }> => {
+	const ownedByProfile = profile.isDefault
+		? or(eq(document.profileId, profile.id), isNull(document.profileId))
+		: eq(document.profileId, profile.id);
+
+	const docs = await db
+		.select({ id: document.id })
+		.from(document)
+		.where(and(eq(document.userId, userId), ownedByProfile));
+
+	if (docs.length === 0) return { count: 0 };
+
+	const ids = docs.map((d) => d.id);
+	await db
+		.update(document)
+		.set({ status: "processing" })
+		.where(inArray(document.id, ids));
+
+	await Promise.all(
+		ids.map((documentId) =>
+			addReindexDocumentJob({
+				documentId,
+				profileId: profile.id,
+				organizationId,
+				userId,
+			}),
+		),
+	);
+
+	return { count: ids.length };
+};
+
+/**
+ * Get document by ID (scoped to user). Never selects the document text.
+ */
+export const getDocument = async (documentId: string, userId: string) => {
+	const [doc] = await db
+		.select(documentSummaryColumns)
+		.from(document)
+		.where(and(eq(document.id, documentId), eq(document.userId, userId)));
+
+	return doc || null;
+};
+
+/**
+ * List documents (scoped to user). Never selects the document text.
+ */
+export const listDocuments = async (
+	limit: number,
+	offset: number,
+	userId: string,
+) => {
+	return await db
+		.select(documentSummaryColumns)
+		.from(document)
+		.where(eq(document.userId, userId))
+		.orderBy(desc(document.createdAt))
+		.limit(limit)
+		.offset(offset);
+};
+
+/**
+ * Count total documents (scoped to user)
+ */
+export const countDocuments = async (userId: string) => {
+	const [result] = await db
+		.select({ count: count() })
+		.from(document)
+		.where(eq(document.userId, userId));
+	return result?.count ?? 0;
+};
+
+// ============================================================================
+// Retrieval
+// ============================================================================
+
+/**
+ * Load the profile for a request. An explicit profile id must belong to the
+ * caller; without one the caller's default profile is used (or null).
+ */
+const loadProfile = async (
+	profileId: string | undefined,
+	userId: string,
+): Promise<Profile | null> => {
+	if (profileId) {
+		const profile = await getProfile(profileId, userId);
+		if (!profile)
+			throw new ORPCError("NOT_FOUND", { message: "Profile not found" });
+		return profile;
+	}
+	return await getDefaultProfile(userId);
+};
+
+/**
+ * Search the caller's documents with an already loaded profile.
+ * Logs embedding usage and bills it to the organization.
+ */
+const searchWithProfile = async (
 	query: string,
+	profile: Profile | null,
 	options: QueryOptions,
 ): Promise<SearchResult[]> => {
-	const { profileId, filter, organizationId, userId } = options;
+	const { filter, organizationId, userId } = options;
 
-	// Load profile or use default (scoped to the caller)
-	const profile = profileId
-		? await getProfile(profileId, userId)
-		: await getDefaultProfile(userId);
-
-	const embeddingModelId =
-		profile?.embeddingModel || "openai/text-embedding-3-small";
-	const limit = options.limit || profile?.topK || 5;
+	const embeddingModelId = profile?.embeddingModel ?? DEFAULT_EMBEDDING_MODEL;
+	const limit = options.limit ?? profile?.topK ?? 5;
 	const scoreThreshold =
-		options.scoreThreshold || profile?.scoreThreshold || 0.3;
+		options.scoreThreshold ?? profile?.scoreThreshold ?? 0.3;
 
+	// Throws BAD_REQUEST for a model that is not in the supported list
 	const collectionName = await ensureCollection(embeddingModelId);
 
-	// Early exit: if no chunks are indexed yet, skip the embedding API call entirely.
+	// Early exit: if no chunks are indexed with this model yet, skip the embedding API call.
+	// Documents indexed with another embedding model live in another collection.
 	const [chunkCount] = await db
 		.select({ count: count() })
 		.from(documentChunk)
@@ -188,6 +399,7 @@ export const searchChunks = async (
 		.where(
 			and(
 				eq(document.userId, userId),
+				eq(document.embeddingModel, embeddingModelId),
 				filter?.documentId
 					? eq(document.id, filter.documentId)
 					: eq(document.status, "indexed"),
@@ -195,24 +407,21 @@ export const searchChunks = async (
 		);
 	if ((chunkCount?.count ?? 0) === 0) return [];
 
-	// Generate query embedding — now returns usage data
 	const { embeddings, usage: embedUsage } = await OpenRouterEmbed(
 		embeddingModelId,
 		[query],
 	);
 
-	// Log embedding usage if org context is available
-	if (organizationId && userId) {
-		await logUsageAndDeduct({
-			organizationId,
-			userId,
-			operationType: "embedding",
-			model: embeddingModelId,
-			inputTokens: embedUsage.totalTokens,
-			outputTokens: 0,
-			metadata: { context: "search_query" },
-		});
-	}
+	// The embedding is already paid for: always collect it
+	await logUsageAndDeduct({
+		organizationId,
+		userId,
+		operationType: "embedding",
+		model: embeddingModelId,
+		inputTokens: embedUsage.totalTokens,
+		outputTokens: 0,
+		metadata: { context: "search_query" },
+	});
 
 	// Build filter (always scoped to the owner)
 	const qdrantFilter = buildChunkFilter({
@@ -221,7 +430,6 @@ export const searchChunks = async (
 		source: filter?.source,
 	});
 
-	// Search Qdrant
 	const results = await searchVectors(qdrant, collectionName, embeddings[0], {
 		limit,
 		scoreThreshold,
@@ -240,76 +448,223 @@ export const searchChunks = async (
 };
 
 /**
+ * Search for relevant chunks (no LLM generation).
+ */
+export const searchChunks = async (
+	query: string,
+	options: QueryOptions,
+): Promise<SearchResult[]> => {
+	const profile = await loadProfile(options.profileId, options.userId);
+	return searchWithProfile(query, profile, options);
+};
+
+// ============================================================================
+// Chat
+// ============================================================================
+
+interface PreparedChat {
+	modelId: string;
+	maxTokens: number;
+	temperature: number;
+	topP: number | undefined;
+	reasoning: ReasoningEffort;
+	systemPrompt: string;
+	messages: ChatMessage[];
+	sources: SearchResult[];
+	promptTokens: number;
+	reservation: CreditReservation;
+	usageId: string;
+}
+
+/**
+ * Everything both chat paths share: load the profile, retrieve context, build
+ * the one system prompt, and reserve the worst-case cost of the call.
+ * Throws FORBIDDEN (before any LLM spend) when the balance cannot cover it.
+ */
+const prepareChat = async (
+	query: string,
+	options: QueryOptions,
+): Promise<PreparedChat> => {
+	const { organizationId, userId } = options;
+
+	const profile = await loadProfile(options.profileId, userId);
+
+	const modelId = profile?.model ?? DEFAULT_CHAT_MODEL;
+	if (!isKnownChatModel(modelId))
+		throw new ORPCError("BAD_REQUEST", {
+			message: `Unsupported model: ${modelId}`,
+		});
+
+	const sources = await searchWithProfile(query, profile, options);
+
+	const context = sources.map((r, i) => `[${i + 1}] ${r.content}`).join("\n\n");
+	const systemPrompt = buildSystemPrompt(profile, context);
+	const messages = options.messages ?? [];
+
+	// Tokenize the full prompt that will be sent
+	const promptTokens =
+		estimateTokens(systemPrompt) +
+		estimateTokens(query) +
+		messages.reduce(
+			(sum, m) => sum + estimateTokens(m.content) + MESSAGE_OVERHEAD_TOKENS,
+			0,
+		) +
+		2 * MESSAGE_OVERHEAD_TOKENS;
+	const maxTokens = profile?.maxTokens ?? DEFAULT_MAX_TOKENS;
+
+	const estimatedCost = Math.max(
+		estimateChatCost(modelId, promptTokens, maxTokens),
+		CREDIT_EPSILON,
+	);
+
+	const usageId = randomUUID();
+	const reservation = await reserveCredits({
+		orgId: organizationId,
+		userId,
+		amount: estimatedCost,
+		description: `chat reservation — ${modelId}`,
+		referenceId: usageId,
+	});
+
+	return {
+		modelId,
+		maxTokens,
+		temperature: profile?.temperature ?? 1.0,
+		topP: profile?.topP,
+		reasoning: (profile?.reasoningEffort as ReasoningEffort | undefined) ?? "none",
+		systemPrompt,
+		messages,
+		sources,
+		promptTokens,
+		reservation,
+		usageId,
+	};
+};
+
+/**
+ * Turn the reservation into the real cost and log it. Always runs (from a
+ * `finally`), so errors and client disconnects are billed too:
+ * - provider never called: full refund
+ * - usage reported: actual cost (a shortfall is collected even below zero balance)
+ * - usage missing after a call: the reserved estimate is charged
+ * Never throws; billing problems are logged for reconciliation.
+ */
+const settleChat = async (input: {
+	prepared: PreparedChat;
+	options: QueryOptions;
+	providerCalled: boolean;
+	usage: AIUsage | null;
+	context: string;
+}): Promise<void> => {
+	const { prepared, options, providerCalled, usage, context } = input;
+	const { modelId, reservation, usageId } = prepared;
+
+	const { cost, usageKnown } = providerCalled
+		? resolveChatCost({
+				modelId,
+				usage,
+				reservedAmount: reservation.amount,
+			})
+		: { cost: 0, usageKnown: false };
+
+	try {
+		await settleReservation(reservation, cost, `chat ${modelId}`, usageId);
+	} catch (err) {
+		console.error(
+			`[Usage] SETTLEMENT FAILED (org ${options.organizationId}, usage ${usageId}, reserved ${reservation.amount}, actual ${cost}):`,
+			err,
+		);
+	}
+
+	if (!providerCalled) return;
+
+	await recordUsage({
+		id: usageId,
+		organizationId: options.organizationId,
+		userId: options.userId,
+		operationType: "chat",
+		model: modelId,
+		inputTokens: usageKnown && usage ? usage.inputTokens : prepared.promptTokens,
+		outputTokens: usageKnown && usage ? usage.outputTokens : 0,
+		costCredits: cost,
+		metadata: { context, usageEstimated: !usageKnown },
+	});
+};
+
+/**
+ * Ask the provider for usage after a stream ended, without waiting forever.
+ * Returns null when unavailable.
+ */
+const fetchStreamUsage = async (
+	getUsage: (() => Promise<AIUsage>) | null,
+): Promise<AIUsage | null> => {
+	if (!getUsage) return null;
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		return await Promise.race([
+			getUsage(),
+			new Promise<null>((resolve) => {
+				timer = setTimeout(() => resolve(null), USAGE_TIMEOUT_MS);
+			}),
+		]);
+	} catch {
+		return null;
+	} finally {
+		clearTimeout(timer);
+	}
+};
+
+/**
  * Query the RAG system (non-streaming).
- * Tracks usage and deducts credits.
+ * Reserves credits first and settles on actual usage afterwards.
  */
 export const queryRAG = async (
 	query: string,
 	options: QueryOptions,
 ): Promise<QueryResult> => {
-	const profile = options.profileId
-		? await getProfile(options.profileId, options.userId)
-		: await getDefaultProfile(options.userId);
+	const prepared = await prepareChat(query, options);
 
-	const searchResults = await searchChunks(query, options);
+	let providerCalled = false;
+	let usage: AIUsage | null = null;
+	try {
+		const pending = OpenRouterQuery(
+			{
+				model: prepared.modelId,
+				temperature: prepared.temperature,
+				topP: prepared.topP,
+				maxTokens: prepared.maxTokens,
+				reasoning: prepared.reasoning,
+				stream: false,
+			},
+			prepared.messages,
+			prepared.systemPrompt,
+			query,
+		);
+		providerCalled = true;
 
-	// Build context from search results
-	const context = searchResults
-		.map((r, i) => `[${i + 1}] ${r.content}`)
-		.join("\n\n");
+		const result = await pending;
+		usage = result.usage;
 
-	const systemPrompt = GET_MAIN_SYSTEM_PROMPT({
-		context,
-		assistantName: profile?.assistantName || "Assistant",
-		companyName: profile?.companyName || undefined,
-		tone: profile?.tone || "friendly",
-		domain: profile?.domain || undefined,
-		enableCitations: profile?.enableCitations ?? true,
-		responseLength: profile?.responseLength || "balanced",
-		language: profile?.language || "English",
-		customInstructions: profile?.customInstructions || [],
-	});
-
-	const modelId = profile?.model || "google/gemini-2.5-flash-lite";
-
-	// Generate answer — now returns text + usage
-	const result = await OpenRouterQuery(
-		{
-			model: modelId,
-			temperature: profile?.temperature ?? 1.0,
-			topP: profile?.topP,
-			maxTokens: profile?.maxTokens ?? 2048,
-			reasoning: (profile?.reasoningEffort as "none") || "none",
-			stream: false,
-		},
-		options.messages,
-		systemPrompt,
-		query,
-	);
-
-	// Log chat usage if org context is available
-	if (options.organizationId && options.userId) {
-		await logUsageAndDeduct({
-			organizationId: options.organizationId,
-			userId: options.userId,
-			operationType: "chat",
-			model: modelId,
-			inputTokens: result.usage.inputTokens,
-			outputTokens: result.usage.outputTokens,
-			metadata: { context: "query" },
+		return {
+			answer: result.text,
+			sources: prepared.sources,
+			usage: result.usage,
+		};
+	} finally {
+		await settleChat({
+			prepared,
+			options,
+			providerCalled,
+			usage,
+			context: "query",
 		});
 	}
-
-	return {
-		answer: result.text,
-		sources: searchResults,
-		usage: result.usage,
-	};
 };
 
 /**
  * Query the RAG system with streaming.
- * Tracks usage after stream completes.
+ * Reserves credits first; settles in `finally`, so completed, failed and
+ * abandoned (client disconnect) streams are all billed.
  */
 export async function* queryRAGStream(
 	query: string,
@@ -322,264 +677,47 @@ export async function* queryRAGStream(
 	void,
 	unknown
 > {
-	const profile = options.profileId
-		? await getProfile(options.profileId, options.userId)
-		: await getDefaultProfile(options.userId);
+	const prepared = await prepareChat(query, options);
 
-	const searchResults = await searchChunks(query, options);
+	let providerCalled = false;
+	let getUsage: (() => Promise<AIUsage>) | null = null;
+	let usage: AIUsage | null = null;
 
-	// Yield sources first
-	yield { type: "sources", data: searchResults };
-
-	// if (searchResults.length === 0) {
-	// 	yield {
-	// 		type: "token",
-	// 		data: "I couldn't find any relevant information to answer your question.",
-	// 	};
-	// 	yield { type: "done" };
-	// 	return;
-	// }
-
-	// Build context from search results
-	const context = searchResults
-		.map((r, i) => `[${i + 1}] ${r.content}`)
-		.join("\n\n");
-
-	const systemPrompt =
-		profile?.systemPrompt ||
-		GET_MAIN_SYSTEM_PROMPT({
-			context,
-			assistantName: profile?.assistantName || "Assistant",
-			companyName: profile?.companyName || undefined,
-			tone: profile?.tone || "friendly",
-			domain: profile?.domain || undefined,
-			enableCitations: profile?.enableCitations ?? true,
-			responseLength: profile?.responseLength || "balanced",
-			language: profile?.language || "English",
-			customInstructions: profile?.customInstructions || [],
-		});
-
-	const modelId = profile?.model || "google/gemini-2.5-flash-lite";
-
-	// Generate streaming answer — now returns stream + getUsage()
-	const { stream, getUsage } = OpenRouterQuery(
-		{
-			model: modelId,
-			temperature: profile?.temperature ?? 1.0,
-			topP: profile?.topP,
-			maxTokens: profile?.maxTokens ?? 2048,
-			reasoning: (profile?.reasoningEffort as "none") || "none",
-			stream: true,
-		},
-		options.messages,
-		systemPrompt,
-		query,
-	);
-
-	// Pre-authorize: estimate cost and reserve credits before streaming begins.
-	// This prevents users from receiving free AI when their balance is drained by concurrent ops.
-	let reservationId: string | null = null;
-	let estimatedCost = 0;
-
-	if (options.organizationId && options.userId) {
-		estimatedCost = estimateChatCost(modelId, query.length, 500);
-		if (estimatedCost > 0) {
-			const reservation = await deductCredits({
-				orgId: options.organizationId,
-				amount: estimatedCost,
-				description: `chat reservation — ${modelId}`,
-				userId: options.userId,
-			});
-
-			if (!reservation) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "Insufficient credits to start this request",
-				});
-			}
-			reservationId = reservation.transactionId;
-		}
-	}
-
-	// Stream tokens
-	let streamError: unknown = null;
 	try {
-		for await (const delta of stream) {
+		yield { type: "sources", data: prepared.sources };
+
+		const call = OpenRouterQuery(
+			{
+				model: prepared.modelId,
+				temperature: prepared.temperature,
+				topP: prepared.topP,
+				maxTokens: prepared.maxTokens,
+				reasoning: prepared.reasoning,
+				stream: true,
+			},
+			prepared.messages,
+			prepared.systemPrompt,
+			query,
+		);
+		providerCalled = true;
+		getUsage = call.getUsage;
+
+		for await (const delta of call.stream) {
 			if (delta) {
 				yield { type: "token", data: delta };
 			}
 		}
-	} catch (err) {
-		streamError = err;
+	} finally {
+		if (providerCalled) usage = await fetchStreamUsage(getUsage);
+		await settleChat({
+			prepared,
+			options,
+			providerCalled,
+			usage,
+			context: "query_stream",
+		});
 	}
 
-	// After stream completes (or errors), get actual usage and settle
-	const usage = await getUsage();
-	yield { type: "usage", data: usage };
-
-	if (options.organizationId && options.userId && reservationId) {
-		if (streamError) {
-			// Stream failed — refund full reservation
-			await addCredits({
-				orgId: options.organizationId,
-				amount: estimatedCost,
-				type: "refund",
-				description: `chat reservation refund — stream error`,
-				referenceId: reservationId,
-				userId: options.userId,
-			}).catch((err) =>
-				console.error(
-					"[Usage] Failed to refund reservation after stream error:",
-					err,
-				),
-			);
-		} else {
-			// Settle: calculate actual cost and adjust
-			const actualCost = calculateCost(
-				modelId,
-				usage.inputTokens,
-				usage.outputTokens,
-			);
-			const diff = estimatedCost - actualCost;
-
-			if (diff > 0.000001) {
-				// Refund the over-charged amount
-				await addCredits({
-					orgId: options.organizationId,
-					amount: diff,
-					type: "adjustment",
-					description: `chat settlement refund — ${modelId}`,
-					referenceId: reservationId,
-					userId: options.userId,
-				}).catch((err) =>
-					console.error(
-						"[Usage] Failed to refund over-charged reservation:",
-						err,
-					),
-				);
-			} else if (diff < -0.000001) {
-				// Charge the under-charged amount (small, allow failure)
-				await deductCredits({
-					orgId: options.organizationId,
-					amount: -diff,
-					description: `chat settlement charge — ${modelId}`,
-					referenceId: reservationId,
-					userId: options.userId,
-				}).catch((err) =>
-					console.error(
-						"[Usage] Failed to charge under-charged settlement:",
-						err,
-					),
-				);
-			}
-
-			// Insert usage log (credits already settled above — no additional deduction)
-			await db
-				.insert(aiUsageLog)
-				.values({
-					id: randomUUID(),
-					organizationId: options.organizationId,
-					userId: options.userId,
-					operationType: "chat",
-					model: modelId,
-					inputTokens: usage.inputTokens,
-					outputTokens: usage.outputTokens,
-					totalTokens: usage.inputTokens + usage.outputTokens,
-					costCredits: actualCost.toString(),
-					metadata: { context: "query_stream" },
-				})
-				.catch((err) =>
-					console.error(
-						"[Usage] Failed to insert usage log after settlement:",
-						err,
-					),
-				);
-		}
-	}
-
-	if (streamError) throw streamError;
-
+	if (usage) yield { type: "usage", data: usage };
 	yield { type: "done" };
 }
-
-/**
- * Delete a document and its vectors (ASYNC - via background job)
- */
-export const deleteDocument = async (
-	documentId: string,
-): Promise<{ jobId: string | undefined }> => {
-	const { jobId } = await addDeleteDocumentJob({ documentId });
-	return { jobId };
-};
-
-/**
- * Get document by ID (scoped to user)
- */
-export const getDocument = async (documentId: string, userId?: string) => {
-	const conditions = [eq(document.id, documentId)];
-	if (userId) conditions.push(eq(document.userId, userId));
-
-	const [doc] = await db
-		.select()
-		.from(document)
-		.where(and(...conditions));
-
-	return doc || null;
-};
-
-/**
- * List documents (scoped to user)
- */
-export const listDocuments = async (
-	limit = 20,
-	offset = 0,
-	userId?: string,
-) => {
-	if (userId) {
-		return await db
-			.select()
-			.from(document)
-			.where(eq(document.userId, userId))
-			.limit(limit)
-			.offset(offset);
-	}
-	return await db.select().from(document).limit(limit).offset(offset);
-};
-
-/**
- * Count total documents (scoped to user)
- */
-export const countDocuments = async (userId?: string) => {
-	if (userId) {
-		const [result] = await db
-			.select({ count: count() })
-			.from(document)
-			.where(eq(document.userId, userId));
-		return result?.count ?? 0;
-	}
-	const [result] = await db.select({ count: count() }).from(document);
-	return result?.count ?? 0;
-};
-
-export const extractTextFromDocument = async (file: File) => {
-	const { type } = file;
-
-	switch (type) {
-		case "text/html": {
-			return parseHTML(await file.text());
-		}
-		case "application/pdf": {
-			const pdfBuffer = await file.arrayBuffer();
-			return await parsePDF(Buffer.from(pdfBuffer));
-		}
-		case "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
-			const docxBuffer = await file.arrayBuffer();
-			return await parseDocx(Buffer.from(docxBuffer));
-		}
-		case "text/plain":
-		case "text/markdown": {
-			return await file.text();
-		}
-		default:
-			throw new Error("Unsupported file type");
-	}
-};

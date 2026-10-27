@@ -1,8 +1,8 @@
-import { Worker, Job } from "bullmq";
+import { Worker, Job, UnrecoverableError } from "bullmq";
 import { randomUUID } from "crypto";
 import { db, document, documentChunk, aiUsageLog } from "@repo/db";
 import { upsertVectors, deleteVectorsByFilter, type Point } from "@repo/qdrant";
-import { eq } from "@repo/db/drizzle-orm";
+import { eq, and } from "@repo/db/drizzle-orm";
 import { OpenRouterEmbed } from "@repo/llm/openrouter";
 import { redisConnection } from "../connection";
 import {
@@ -12,7 +12,7 @@ import {
 	type IndexDocumentJobResult,
 	DocumentJobNames,
 } from "./types";
-import { chunkText, calculateTokens } from "../../services/chunking.service";
+import { chunkText, estimateTokens } from "../../services/chunking.service";
 import { getProfile, getDefaultProfile } from "../../services/profile.service";
 import {
 	qdrant,
@@ -20,238 +20,274 @@ import {
 	deleteDocumentVectors,
 	type VectorPayload,
 } from "../../services/qdrant.shared";
-import { deductCredits, addCredits } from "../../services/credits.service";
-import { calculateCost } from "../../utils/cost";
+import {
+	reserveCredits,
+	settleReservation,
+	findTransactionByReference,
+	type CreditReservation,
+} from "../../services/credits.service";
+import { recordUsage } from "../../services/usage.service";
+import { calculateCost, CREDIT_EPSILON } from "../../utils/cost";
+import {
+	DEFAULT_CHUNK_SIZE,
+	DEFAULT_CHUNK_OVERLAP,
+} from "../../utils/profile_schema";
 
 // Constants
 const QUEUE_NAME = "document";
-const EMBEDDING_BATCH_SIZE = 20; // Process embeddings in batches of 20
+// Chunks per embedding request, Postgres insert and Qdrant upsert
+const INDEX_BATCH_SIZE = 64;
+const DEFAULT_EMBEDDING_MODEL = "openai/text-embedding-3-small";
 
 /**
- * Process document indexing job
+ * Index a document: chunk, embed, store chunks and vectors, bill.
+ * Shared by the index and re-index jobs.
+ *
+ * - Idempotent: existing chunks and vectors of the document are removed first,
+ *   so a retry or a crash recovery never duplicates them.
+ * - Billing: the real chunk token counts are reserved up front. The reservation
+ *   is keyed by job id, so a retry reuses it. It is settled on the tokens actually
+ *   embedded, on success or on terminal failure.
  */
 async function processIndexDocument(
 	job: Job<IndexDocumentJobData>,
 ): Promise<IndexDocumentJobResult> {
 	const startTime = Date.now();
-	const {
-		documentId,
-		content,
-		source,
-		metadata,
-		chunkOptions,
-		profileId,
-		organizationId,
-		userId,
-	} = job.data;
+	const { documentId, organizationId, userId } = job.data;
+	const jobId = job.id ?? documentId;
+	const reserveRef = `reserve-${jobId}`;
+	const usageId = `usage-${jobId}`;
+	const isRetry = job.attemptsMade > 0 || job.attemptsStarted > 1;
+	const maxAttempts = job.opts.attempts ?? 1;
 
-	console.log(
-		`[Document Worker] Starting indexing for document: ${documentId} with profile: ${
-			profileId || "default"
-		}`,
-	);
+	let embeddingModelId = DEFAULT_EMBEDDING_MODEL;
+	let reservation: CreditReservation | null = null;
+	let settled = false;
+	// Tokens embedded (and paid to the provider) by earlier failed attempts + this one
+	const paidBefore = job.data.embeddedTokens ?? 0;
+	let attemptTokens = 0;
 
-	// The document row is the source of truth for the owner (tenant key)
-	const [doc] = await db
-		.select({ userId: document.userId })
-		.from(document)
-		.where(eq(document.id, documentId));
-	if (!doc) throw new Error(`Document not found: ${documentId}`);
-	const ownerId = doc.userId;
+	const findReservation = async (): Promise<CreditReservation | null> => {
+		const tx = await findTransactionByReference(organizationId, reserveRef);
+		if (!tx) return null;
+		return {
+			orgId: organizationId,
+			userId,
+			amount: Math.abs(Number(tx.amount)),
+			transactionId: tx.id,
+		};
+	};
 
-	const profile = profileId
-		? await getProfile(profileId, ownerId)
-		: await getDefaultProfile(ownerId);
-	const embeddingModelId =
-		profile?.embeddingModel || "openai/text-embedding-3-small";
+	const settle = async (tokens: number, context: Record<string, unknown>) => {
+		settled = true;
+		const actualCost = calculateCost(embeddingModelId, tokens, 0);
+		try {
+			await settleReservation(
+				reservation ?? {
+					orgId: organizationId,
+					userId,
+					amount: 0,
+					transactionId: "",
+				},
+				actualCost,
+				`embedding ${documentId}`,
+				usageId,
+			);
+		} catch (err) {
+			// Never fail the job over billing; log everything needed to reconcile
+			console.error(
+				`[Document Worker] SETTLEMENT FAILED for ${documentId} (org ${organizationId}, reserved ${reservation?.amount ?? 0}, actual ${actualCost}):`,
+				err,
+			);
+		}
+		if (tokens > 0) {
+			await recordUsage({
+				id: usageId,
+				organizationId,
+				userId,
+				operationType: "embedding",
+				model: embeddingModelId,
+				inputTokens: tokens,
+				outputTokens: 0,
+				costCredits: actualCost,
+				metadata: { documentId, context: "document_indexing", ...context },
+			});
+		}
+	};
 
-	const collectionName = await ensureCollection(embeddingModelId);
-
-	// Update progress: Starting
-	await job.updateProgress(5);
-
-	// Track reservation for pre-authorization settlement
-	let reservationId: string | null = null;
-	let estimatedCost = 0;
+	console.log(`[Document Worker] Starting indexing for document: ${documentId}`);
 
 	try {
+		// The document row is the source of truth (owner, content, settings)
+		const [doc] = await db
+			.select({
+				userId: document.userId,
+				profileId: document.profileId,
+				content: document.content,
+				source: document.source,
+				metadata: document.metadata,
+			})
+			.from(document)
+			.where(eq(document.id, documentId));
+
+		// Deleted while queued: nothing to index and nothing was spent
+		if (!doc) {
+			console.warn(`[Document Worker] Document ${documentId} no longer exists`);
+			return { documentId, chunkCount: 0, processingTimeMs: Date.now() - startTime };
+		}
+		if (doc.userId !== userId) {
+			throw new UnrecoverableError(
+				`Document ${documentId} does not belong to user ${userId}`,
+			);
+		}
+
+		// A retry whose billing already completed must not bill again
+		if (isRetry) {
+			const [log] = await db
+				.select({ id: aiUsageLog.id })
+				.from(aiUsageLog)
+				.where(eq(aiUsageLog.id, usageId));
+			if (log) settled = true;
+		}
+
+		const profileId = job.data.profileId ?? doc.profileId;
+		const profile =
+			(profileId ? await getProfile(profileId, userId) : null) ??
+			(await getDefaultProfile(userId));
+		embeddingModelId = profile?.embeddingModel ?? DEFAULT_EMBEDDING_MODEL;
+		const collectionName = await ensureCollection(embeddingModelId);
+
+		// Record the model first so searches only see the document through its own collection
+		await db
+			.update(document)
+			.set({
+				status: "processing",
+				embeddingModel: embeddingModelId,
+				chunkCount: 0,
+			})
+			.where(eq(document.id, documentId));
+
+		// Idempotent start: drop whatever an earlier attempt or model left behind
+		await deleteDocumentVectors(documentId);
+		await db
+			.delete(documentChunk)
+			.where(eq(documentChunk.documentId, documentId));
+
+		await job.updateProgress(5);
+
 		// Step 1: Chunk the content
-		const chunks = await chunkText(content, {
-			chunkSize: chunkOptions?.chunkSize || profile?.chunkSize || 500,
-			chunkOverlap: chunkOptions?.chunkOverlap || profile?.chunkOverlap || 50,
+		const chunks = await chunkText(doc.content, {
+			chunkSize: profile?.chunkSize ?? DEFAULT_CHUNK_SIZE,
+			chunkOverlap: profile?.chunkOverlap ?? DEFAULT_CHUNK_OVERLAP,
 			separators: profile?.separators || undefined,
 		});
 		console.log(
 			`[Document Worker] Document ${documentId}: Created ${chunks.length} chunks`,
 		);
 
-		await job.updateProgress(20);
+		const tokenCounts = chunks.map((c) => estimateTokens(c.content));
+		const estimatedTokens = tokenCounts.reduce((sum, n) => sum + n, 0);
 
-		// Pre-authorize: estimate embedding cost before generating any embeddings.
-		// This prevents fully indexing a document and then failing at billing time.
-		if (organizationId && userId) {
-			const avgTokensPerChunk = 120; // conservative estimate
-			estimatedCost = calculateCost(
-				embeddingModelId,
-				chunks.length * avgTokensPerChunk,
-				0,
-			);
-			if (estimatedCost > 0) {
-				const reservation = await deductCredits({
-					orgId: organizationId,
-					amount: estimatedCost,
-					description: `embedding reservation — ${documentId} (${chunks.length} chunks)`,
-					userId,
-				});
+		await job.updateProgress(15);
 
-				if (!reservation) {
-					await db
-						.update(document)
-						.set({ status: "failed" })
-						.where(eq(document.id, documentId));
-					throw new Error(
-						`Insufficient credits to index document ${documentId}: estimated cost $${estimatedCost.toFixed(6)}`,
+		// Step 2: Reserve the cost of embedding every chunk before spending anything
+		if (!settled) {
+			if (isRetry) reservation = await findReservation();
+			const estimatedCost = calculateCost(embeddingModelId, estimatedTokens, 0);
+			if (!reservation && estimatedCost >= CREDIT_EPSILON) {
+				try {
+					reservation = await reserveCredits({
+						orgId: organizationId,
+						userId,
+						amount: estimatedCost,
+						description: `embedding reservation — ${documentId} (${chunks.length} chunks)`,
+						referenceId: reserveRef,
+					});
+				} catch (err) {
+					// Retrying cannot add credits
+					throw new UnrecoverableError(
+						err instanceof Error ? err.message : "Insufficient credits",
 					);
 				}
-				reservationId = reservation.transactionId;
 			}
 		}
 
-		// Step 2: Generate embeddings in batches
-		const embeddings: number[][] = [];
-		const totalBatches = Math.ceil(chunks.length / EMBEDDING_BATCH_SIZE);
-		let totalEmbeddingTokens = 0;
+		// Step 3: Embed, then store chunks and vectors, batch by batch
+		const totalBatches = Math.ceil(chunks.length / INDEX_BATCH_SIZE);
+		for (let i = 0; i < chunks.length; i += INDEX_BATCH_SIZE) {
+			const batch = chunks.slice(i, i + INDEX_BATCH_SIZE);
 
-		for (let i = 0; i < chunks.length; i += EMBEDDING_BATCH_SIZE) {
-			const batchChunks = chunks.slice(i, i + EMBEDDING_BATCH_SIZE);
-			const batchTexts = batchChunks.map((c) => c.content);
-
-			// Batch embedding call — now returns usage data
-			const { embeddings: batchEmbeddings, usage: batchUsage } =
-				await OpenRouterEmbed(embeddingModelId, batchTexts);
-
-			embeddings.push(...batchEmbeddings);
-			totalEmbeddingTokens += batchUsage.totalTokens;
-
-			// Update progress: 20% to 70% during embedding generation
-			const batchNumber = Math.floor(i / EMBEDDING_BATCH_SIZE) + 1;
-			const progress = 20 + Math.floor((batchNumber / totalBatches) * 50);
-			await job.updateProgress(progress);
-
-			console.log(
-				`[Document Worker] Document ${documentId}: Embedded batch ${batchNumber}/${totalBatches}`,
+			const { embeddings, usage } = await OpenRouterEmbed(
+				embeddingModelId,
+				batch.map((c) => c.content),
 			);
-		}
+			if (embeddings.length !== batch.length) {
+				throw new Error(
+					`Embedding count mismatch: expected ${batch.length}, got ${embeddings.length}`,
+				);
+			}
+			// Providers occasionally omit usage: fall back to our own count
+			attemptTokens +=
+				usage.totalTokens > 0
+					? usage.totalTokens
+					: tokenCounts.slice(i, i + batch.length).reduce((s, n) => s + n, 0);
 
-		await job.updateProgress(75);
-
-		// Step 3: Prepare vectors and chunk records
-		const points: Point<VectorPayload>[] = [];
-		const chunkRecords = chunks.map((chunk, index) => {
-			const chunkId = randomUUID();
-
-			points.push({
-				id: chunkId,
-				vector: embeddings[index],
-				payload: {
+			const points: Point<VectorPayload>[] = [];
+			const chunkRecords = batch.map((chunk, j) => {
+				const chunkId = randomUUID();
+				points.push({
+					id: chunkId,
+					vector: embeddings[j],
+					payload: {
+						documentId,
+						chunkId,
+						content: chunk.content,
+						chunkIndex: chunk.index,
+						userId,
+						source: doc.source ?? undefined,
+						metadata: doc.metadata ?? undefined,
+					},
+				});
+				return {
+					id: chunkId,
 					documentId,
-					chunkId,
 					content: chunk.content,
 					chunkIndex: chunk.index,
-					userId: ownerId,
-					source,
-					metadata,
-				},
+					tokenCount: tokenCounts[i + j],
+					qdrantPointId: chunkId,
+				};
 			});
 
-			return {
-				id: chunkId,
-				documentId,
-				content: chunk.content,
-				chunkIndex: chunk.index,
-				tokenCount: calculateTokens(chunk.content, "gpt-4o"),
-				qdrantPointId: chunkId,
-			};
-		});
-
-		await job.updateProgress(80);
-
-		// Step 4: Insert chunk records into PostgreSQL
-		if (chunkRecords.length > 0) {
 			await db.insert(documentChunk).values(chunkRecords);
-		}
-
-		await job.updateProgress(90);
-
-		// Step 5: Upsert vectors into Qdrant
-		if (points.length > 0) {
 			await upsertVectors(qdrant, collectionName, points);
+
+			const batchNumber = i / INDEX_BATCH_SIZE + 1;
+			await job.updateProgress(15 + Math.floor((batchNumber / totalBatches) * 75));
 		}
 
-		await job.updateProgress(95);
-
-		// Step 6: Settle actual embedding usage and insert usage log.
-		// Clear reservationId so the catch block doesn't attempt a double-refund.
-		if (organizationId && userId && reservationId) {
-			const settledReservationId = reservationId;
-			reservationId = null; // Prevents double-refund if steps after this fail
-
-			const actualCost = calculateCost(embeddingModelId, totalEmbeddingTokens, 0);
-			const diff = estimatedCost - actualCost;
-
-			if (diff > 0.000001) {
-				// Refund over-charged amount
-				await addCredits({
-					orgId: organizationId,
-					amount: diff,
-					type: "adjustment",
-					description: `embedding settlement refund — ${documentId}`,
-					referenceId: settledReservationId,
-					userId,
-				}).catch((err) =>
-					console.error(`[Document Worker] Failed to refund reservation for ${documentId}:`, err),
-				);
-			} else if (diff < -0.000001) {
-				// Charge under-charged amount
-				await deductCredits({
-					orgId: organizationId,
-					amount: -diff,
-					description: `embedding settlement charge — ${documentId}`,
-					referenceId: settledReservationId,
-					userId,
-				}).catch((err) =>
-					console.error(`[Document Worker] Failed to charge settlement for ${documentId}:`, err),
-				);
-			}
-
-			// Insert usage log (credits already settled — no additional deduction)
-			await db.insert(aiUsageLog).values({
-				id: randomUUID(),
-				organizationId,
-				userId,
-				operationType: "embedding",
-				model: embeddingModelId,
-				inputTokens: totalEmbeddingTokens,
-				outputTokens: 0,
-				totalTokens: totalEmbeddingTokens,
-				costCredits: actualCost.toString(),
-				metadata: {
-					documentId,
-					chunkCount: chunks.length,
-					context: "document_indexing",
-				},
-			}).catch((err) =>
-				console.error(`[Document Worker] Failed to insert usage log for ${documentId}:`, err),
-			);
+		// Step 4: The document may have been deleted while we were embedding.
+		// Its row (and chunks) are gone; remove the vectors that were just written.
+		const [stillThere] = await db
+			.select({ id: document.id })
+			.from(document)
+			.where(eq(document.id, documentId));
+		if (!stillThere) {
+			await deleteVectorsByFilter(qdrant, collectionName, {
+				must: [{ key: "documentId", match: { value: documentId } }],
+			});
 		}
 
-		// Step 7: Update document status to indexed
+		// Step 5: Settle on the tokens actually embedded (including failed attempts)
+		if (!settled) {
+			await settle(paidBefore + attemptTokens, {
+				chunkCount: chunks.length,
+			});
+		}
+
+		// Step 6: Mark indexed
 		await db
 			.update(document)
-			.set({
-				status: "indexed",
-				chunkCount: chunks.length,
-			})
+			.set({ status: "indexed", chunkCount: chunks.length })
 			.where(eq(document.id, documentId));
 
 		await job.updateProgress(100);
@@ -263,46 +299,73 @@ async function processIndexDocument(
 
 		return {
 			documentId,
-			chunkCount: chunks.length,
+			chunkCount: stillThere ? chunks.length : 0,
 			processingTimeMs,
 		};
 	} catch (error) {
-		// Refund the reservation if we pre-authorized but didn't settle yet
-		if (organizationId && userId && reservationId) {
-			await addCredits({
-				orgId: organizationId,
-				amount: estimatedCost,
-				type: "refund",
-				description: `embedding reservation refund — indexing failed for ${documentId}`,
-				referenceId: reservationId,
-				userId,
-			}).catch((refundErr) =>
-				console.error(`[Document Worker] Failed to refund reservation for ${documentId}:`, refundErr),
+		const terminal =
+			error instanceof UnrecoverableError ||
+			job.attemptsMade + 1 >= maxAttempts;
+		const tokensPaid = paidBefore + attemptTokens;
+
+		console.error(
+			`[Document Worker] Document ${documentId}: Indexing failed (attempt ${job.attemptsMade + 1}/${maxAttempts})`,
+			error,
+		);
+
+		if (!terminal) {
+			// Keep the reservation for the retry and remember what was already paid for
+			await job
+				.updateData({ ...job.data, embeddedTokens: tokensPaid })
+				.catch((err) =>
+					console.error(
+						`[Document Worker] Failed to persist embedded tokens for ${documentId}:`,
+						err,
+					),
+				);
+			throw error;
+		}
+
+		// Terminal failure: charge what the provider was paid for, refund the rest
+		if (!settled) {
+			try {
+				reservation ??= await findReservation();
+			} catch (err) {
+				console.error(
+					`[Document Worker] Failed to look up reservation for ${documentId}:`,
+					err,
+				);
+			}
+			await settle(tokensPaid, { failed: true }).catch((err) =>
+				console.error(
+					`[Document Worker] Failed to settle failed job ${documentId}:`,
+					err,
+				),
 			);
 		}
 
-		// Clean up Qdrant vectors that were upserted before failure
-		await deleteVectorsByFilter(qdrant, collectionName, {
-			must: [{ key: "documentId", match: { value: documentId } }],
-		}).catch((cleanupErr) =>
-			console.error(`[Document Worker] Failed to clean up Qdrant vectors for ${documentId}:`, cleanupErr),
+		// Remove partial output, then mark failed
+		await deleteDocumentVectors(documentId).catch((cleanupErr) =>
+			console.error(
+				`[Document Worker] Failed to clean up Qdrant vectors for ${documentId}:`,
+				cleanupErr,
+			),
 		);
+		try {
+			await db
+				.delete(documentChunk)
+				.where(eq(documentChunk.documentId, documentId));
+			await db
+				.update(document)
+				.set({ status: "failed", chunkCount: 0 })
+				.where(eq(document.id, documentId));
+		} catch (markErr) {
+			console.error(
+				`[Document Worker] Failed to mark ${documentId} as failed:`,
+				markErr,
+			);
+		}
 
-		// Clean up any chunk records that were inserted before failure
-		await db
-			.delete(documentChunk)
-			.where(eq(documentChunk.documentId, documentId));
-
-		// Mark document as failed
-		await db
-			.update(document)
-			.set({ status: "failed" })
-			.where(eq(document.id, documentId));
-
-		console.error(
-			`[Document Worker] Document ${documentId}: Indexing failed`,
-			error,
-		);
 		throw error;
 	}
 }
@@ -313,19 +376,21 @@ async function processIndexDocument(
 async function processDeleteDocument(
 	job: Job<DeleteDocumentJobData>,
 ): Promise<void> {
-	const { documentId } = job.data;
+	const { documentId, userId } = job.data;
 
 	console.log(
 		`[Document Worker] Starting deletion for document: ${documentId}`,
 	);
 
-	// Delete from Qdrant first (every embedding-dimension collection)
+	// Delete from Qdrant first (every per-model collection)
 	await deleteDocumentVectors(documentId);
 
 	await job.updateProgress(50);
 
 	// Delete from PostgreSQL (cascades to chunks)
-	await db.delete(document).where(eq(document.id, documentId));
+	await db
+		.delete(document)
+		.where(and(eq(document.id, documentId), eq(document.userId, userId)));
 
 	await job.updateProgress(100);
 
@@ -333,67 +398,16 @@ async function processDeleteDocument(
 }
 
 /**
- * Process document re-indexing job
+ * Process document re-indexing job.
+ * Indexing already clears old chunks and vectors, so re-indexing is the same run.
  */
 async function processReindexDocument(
 	job: Job<ReindexDocumentJobData>,
 ): Promise<IndexDocumentJobResult> {
-	const { documentId, chunkOptions, profileId, organizationId, userId } =
-		job.data;
-
 	console.log(
-		`[Document Worker] Starting re-indexing for document: ${documentId}`,
+		`[Document Worker] Starting re-indexing for document: ${job.data.documentId}`,
 	);
-
-	// Get existing document
-	const [doc] = await db
-		.select()
-		.from(document)
-		.where(eq(document.id, documentId));
-
-	if (!doc) {
-		throw new Error(`Document not found: ${documentId}`);
-	}
-
-	await job.updateProgress(10);
-
-	// Delete existing vectors (every embedding-dimension collection)
-	await deleteDocumentVectors(documentId);
-
-	// Delete existing chunks from PostgreSQL
-	await db
-		.delete(documentChunk)
-		.where(eq(documentChunk.documentId, documentId));
-
-	await job.updateProgress(20);
-
-	// Update status to processing
-	await db
-		.update(document)
-		.set({ status: "processing" })
-		.where(eq(document.id, documentId));
-
-	// Re-run indexing logic (reuse the index processor)
-	const indexJob = {
-		...job,
-		data: {
-			documentId,
-			title: doc.title,
-			content: doc.content,
-			source: doc.source ?? undefined,
-			metadata: doc.metadata ?? undefined,
-			chunkOptions,
-			profileId: profileId || doc.profileId || undefined,
-			organizationId,
-			userId,
-		},
-		updateProgress: async (progress: number) => {
-			// Scale progress from 20-100 since we already used 0-20
-			await job.updateProgress(20 + Math.floor(progress * 0.8));
-		},
-	} as Job<IndexDocumentJobData>;
-
-	return processIndexDocument(indexJob);
+	return processIndexDocument(job);
 }
 
 /**

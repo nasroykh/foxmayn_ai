@@ -1,3 +1,15 @@
+const HTML_ESCAPES: Record<string, string> = {
+	"&": "&amp;",
+	"<": "&lt;",
+	">": "&gt;",
+	'"': "&quot;",
+	"'": "&#39;",
+};
+
+/** Escape text for HTML content and double- or single-quoted attributes. */
+export const escapeHtml = (value: string): string =>
+	String(value).replace(/[&<>"']/g, (char) => HTML_ESCAPES[char]);
+
 export const INVITATION_EMAIL_HTML = (
 	inviterName: string,
 	organizationName: string,
@@ -21,12 +33,12 @@ export const INVITATION_EMAIL_HTML = (
                                 You've been invited!
                             </h1>
                             <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 24px; color: #555555;">
-                                <strong>${inviterName}</strong> has invited you to join <strong>${organizationName}</strong>.
+                                <strong>${escapeHtml(inviterName)}</strong> has invited you to join <strong>${escapeHtml(organizationName)}</strong>.
                             </p>
                             <table role="presentation" cellspacing="0" cellpadding="0" border="0">
                                 <tr>
                                     <td style="background-color: #007BFF; border-radius: 6px;">
-                                        <a href="${inviteLink}" style="display: inline-block; padding: 14px 28px; color: #ffffff; text-decoration: none; font-weight: bold; font-size: 16px;">
+                                        <a href="${escapeHtml(inviteLink)}" style="display: inline-block; padding: 14px 28px; color: #ffffff; text-decoration: none; font-weight: bold; font-size: 16px;">
                                             Accept Invitation
                                         </a>
                                     </td>
@@ -86,7 +98,7 @@ export const OTP_EMAIL_HTML = (otp: string) => `
                                 <tr>
                                     <td style="background-color: #f8f9fa; padding: 16px 32px; border-left: 4px solid #007BFF;">
                                         <span style="font-size: 32px; font-weight: bold; color: #007BFF; font-family: 'Courier New', monospace; letter-spacing: 4px;">
-                                            ${otp}
+                                            ${escapeHtml(otp)}
                                         </span>
                                     </td>
                                 </tr>

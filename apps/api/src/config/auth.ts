@@ -13,9 +13,17 @@ import * as schema from "@repo/db/schema";
 import { eq } from "@repo/db/drizzle-orm";
 import { sendOTPEmail, sendInvitationEmail } from "../services/email.service";
 import { env } from "./env";
+import { API_KEY_HEADER } from "./constants";
+import { maskEmail } from "./redact";
+import { redis } from "./redis";
+import { createRedisRateLimitStorage } from "./rate-limit-storage";
 
 export const auth = betterAuth({
+	// The API is served on the app origin (reverse proxy), so links built by
+	// better-auth (verification, callbacks) resolve through the proxy path
+	baseURL: env.APP_URL,
 	basePath: `${env.API_V1_PREFIX}/auth`,
+	secret: env.BETTER_AUTH_SECRET,
 	database: drizzleAdapter(db, {
 		provider: "pg",
 		schema,
@@ -29,11 +37,14 @@ export const auth = betterAuth({
 				timeWindow: 1000 * 60 * 5, // 5 minutes
 			},
 			enableSessionForAPIKeys: true,
+			apiKeyHeaders: API_KEY_HEADER,
+			// Used to bind a key to an organization (metadata.organizationId)
+			enableMetadata: true,
 		}),
 		organization({
 			async sendInvitationEmail(data) {
 				const inviteLink = `${env.APP_URL}/invite/${data.id}`;
-				sendInvitationEmail(
+				await sendInvitationEmail(
 					data.email,
 					data.inviter.user.name,
 					data.organization.name,
@@ -44,7 +55,7 @@ export const auth = betterAuth({
 		emailOTP({
 			overrideDefaultEmailVerification: true,
 			async sendVerificationOTP({ email, otp }) {
-				sendOTPEmail(email, otp);
+				await sendOTPEmail(email, otp);
 			},
 		}),
 	],
@@ -55,7 +66,19 @@ export const auth = betterAuth({
 	session: {
 		cookieCache: {
 			enabled: true,
-			maxAge: 5 * 60, // 5 minutes
+			// Kept short: a banned user or a revoked session stays valid in the
+			// cookie cache until it expires
+			maxAge: 60,
+		},
+	},
+	// Shared across API instances and restarts (the default is per-process memory)
+	rateLimit: {
+		customStorage: createRedisRateLimitStorage(redis),
+	},
+	advanced: {
+		ipAddress: {
+			// Behind Cloudflare and the reverse proxy the socket address is the proxy
+			ipAddressHeaders: ["cf-connecting-ip", "x-forwarded-for"],
 		},
 	},
 	trustedOrigins: [env.APP_URL],
@@ -63,7 +86,7 @@ export const auth = betterAuth({
 		user: {
 			create: {
 				after: async (user) => {
-					console.log(`User created: ${user.email}`);
+					console.log(`User created: ${maskEmail(user.email)}`);
 
 					// Check if user already has an organization (e.g., accepted an invitation)
 					const existingMemberships = await db
@@ -92,7 +115,9 @@ export const auth = betterAuth({
 							},
 						});
 
-						console.log(`Created default organization for user: ${user.email}`);
+						console.log(
+							`Created default organization for user: ${maskEmail(user.email)}`,
+						);
 					}
 				},
 			},

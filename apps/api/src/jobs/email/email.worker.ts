@@ -7,6 +7,7 @@ import {
 } from "./types";
 import { transporter } from "../../config/nodemailer";
 import { env } from "../../config/env";
+import { maskEmails } from "../../config/redact";
 
 const QUEUE_NAME = "email";
 
@@ -18,9 +19,7 @@ async function processSendEmail(
 ): Promise<SendEmailJobResult> {
 	const { to, subject, html, text, template } = job.data;
 
-	console.log(
-		`[Email Worker] Sending email to: ${Array.isArray(to) ? to.join(", ") : to}`
-	);
+	console.log(`[Email Worker] Sending email to: ${maskEmails(to)}`);
 
 	let emailHtml = html;
 	let emailText = text;

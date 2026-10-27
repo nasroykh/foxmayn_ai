@@ -4,7 +4,7 @@ import { ORPCError } from "@orpc/server";
 import { db, user } from "@repo/db";
 import { eq } from "@repo/db/drizzle-orm";
 
-import { adminProcedure, authProcedure, publicProcedure } from "../middleware";
+import { adminProcedure, authProcedure } from "../middleware";
 import { env } from "../../config/env";
 import {
 	createUser,
@@ -18,9 +18,6 @@ import {
 	listUserSessions,
 	revokeUserSession,
 	revokeUserSessions,
-	impersonateUser,
-	stopImpersonating,
-	loginUser,
 } from "../../services/user.service";
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
@@ -108,23 +105,6 @@ const sessionTokenSchema = z.object({
 // =============================================================================
 
 export const userRoutes = {
-	loginUser: publicProcedure
-		.route({
-			method: "POST",
-			path: `${PREFIX}/auth/login`,
-			description: "Login a user",
-		})
-		.input(
-			z.object({
-				email: z.email(),
-				password: z.string().min(8),
-			}),
-		)
-		.handler(async ({ input, context }) => {
-			const user = await loginUser(input, context.headers);
-			return user;
-		}),
-
 	me: authProcedure
 		.route({
 			method: "GET",
@@ -337,35 +317,6 @@ export const userRoutes = {
 		.handler(async ({ input, context }) => {
 			await revokeUserSessions(input.userId, context.headers);
 			return { message: "All sessions revoked successfully" };
-		}),
-
-	// -------------------------------------------------------------------------
-	// Impersonate User
-	// -------------------------------------------------------------------------
-	impersonateUser: adminProcedure
-		.route({
-			method: "POST",
-			path: `${PREFIX}/admin/users/{userId}/impersonate`,
-			description: "Impersonate a user (Admin only)",
-		})
-		.input(userIdSchema)
-		.handler(async ({ input, context }) => {
-			const result = await impersonateUser(input.userId, context.headers);
-			return result;
-		}),
-
-	// -------------------------------------------------------------------------
-	// Stop Impersonating
-	// -------------------------------------------------------------------------
-	stopImpersonating: adminProcedure
-		.route({
-			method: "POST",
-			path: `${PREFIX}/admin/impersonation/stop`,
-			description: "Stop impersonating a user",
-		})
-		.handler(async ({ context }) => {
-			await stopImpersonating(context.headers);
-			return { message: "Stopped impersonating" };
 		}),
 
 	// -------------------------------------------------------------------------

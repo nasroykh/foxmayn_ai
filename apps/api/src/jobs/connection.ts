@@ -1,5 +1,8 @@
 import { type ConnectionOptions } from "bullmq";
 import { env } from "../config/env";
+import { parseRedisUrl } from "../config/redis-url";
+
+const redisUrl = parseRedisUrl(env.REDIS_URL);
 
 /**
  * BullMQ Redis connection options
@@ -8,9 +11,8 @@ import { env } from "../config/env";
  * to handle Redis reconnection properly without throwing errors
  */
 export const redisConnection: ConnectionOptions = {
-	host: new URL(env.REDIS_URL).hostname,
-	port: parseInt(new URL(env.REDIS_URL).port || "6379"),
-	password: new URL(env.REDIS_URL).password || undefined,
+	// Keeps username, password, db index and TLS (rediss://) from REDIS_URL
+	...redisUrl,
 	// Critical for BullMQ - prevents connection errors from breaking workers
 	maxRetriesPerRequest: null,
 	// Enable ready check for connection validation

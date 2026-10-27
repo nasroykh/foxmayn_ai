@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { orgProcedure } from "../middleware";
+import { orgProcedure, orgManagerProcedure } from "../middleware";
+import { isOrgManager } from "../access";
 import { env } from "../../config/env";
 import { getUsageStats, getUsageHistory } from "../../services/usage.service";
 
@@ -7,9 +8,10 @@ export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
 export const usageRoutes = {
 	/**
-	 * Get aggregated usage statistics for the active organization.
+	 * Get aggregated usage statistics for the active organization
+	 * (organization owners and admins only).
 	 */
-	getStats: orgProcedure
+	getStats: orgManagerProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/usage/stats`,
@@ -33,6 +35,8 @@ export const usageRoutes = {
 
 	/**
 	 * Get paginated AI usage history for the active organization.
+	 * Owners and admins see every member's rows (optionally filtered by user);
+	 * other members only see their own.
 	 */
 	getHistory: orgProcedure
 		.route({
@@ -42,8 +46,8 @@ export const usageRoutes = {
 		})
 		.input(
 			z.object({
-				limit: z.number().min(1).max(100).optional(),
-				offset: z.number().min(0).optional(),
+				limit: z.coerce.number().min(1).max(100).optional(),
+				offset: z.coerce.number().min(0).optional(),
 				operationType: z.enum(["chat", "embedding"]).optional(),
 				userId: z.string().optional(),
 			}),
@@ -53,7 +57,9 @@ export const usageRoutes = {
 				limit: input.limit,
 				offset: input.offset,
 				operationType: input.operationType,
-				userId: input.userId,
+				userId: isOrgManager(context.memberRole)
+					? input.userId
+					: context.user.id,
 			});
 
 			return { history };

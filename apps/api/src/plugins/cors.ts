@@ -8,7 +8,7 @@ export const registerCors = (app: Hono) => {
 		cors({
 			origin: [env.APP_URL],
 			allowHeaders: ["Content-Type", "Authorization"],
-			allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+			allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 			exposeHeaders: ["Content-Length"],
 			credentials: true,
 			maxAge: 600,

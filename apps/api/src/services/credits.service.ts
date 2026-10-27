@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { db, organization, creditTransaction } from "@repo/db";
 import { eq, desc, and, sql } from "@repo/db/drizzle-orm";
+import { ORPCError } from "@orpc/server";
+import { computeSettlement } from "../utils/cost";
 
 // ============================================================================
 // Balance Operations
@@ -33,9 +35,21 @@ export async function hasEnoughCredits(
 // Credit Mutations (atomic)
 // ============================================================================
 
+// Credit columns are numeric(18,8)
+const toNumeric = (amount: number) => amount.toFixed(8);
+
+export interface CreditReservation {
+	orgId: string;
+	userId: string;
+	amount: number;
+	transactionId: string;
+}
+
 /**
  * Deduct credits from an organization.
- * Uses an atomic SQL UPDATE with a balance check to prevent negative balances.
+ * By default the atomic UPDATE only succeeds while the balance covers the amount.
+ * With `allowNegative` the amount is always collected (used to settle work that
+ * has already been done), and the balance may go below zero.
  *
  * @returns The new balance and transaction ID, or null if insufficient funds.
  */
@@ -44,29 +58,38 @@ export async function deductCredits(input: {
 	amount: number;
 	description: string;
 	referenceId?: string;
-	userId?: string;
+	userId: string;
+	allowNegative?: boolean;
 }): Promise<{ newBalance: number; transactionId: string } | null> {
-	const { orgId, amount, description, referenceId, userId } = input;
+	const { orgId, amount, description, referenceId, userId, allowNegative } =
+		input;
 
-	if (amount <= 0) throw new Error("Deduction amount must be positive");
+	if (!(amount > 0))
+		throw new ORPCError("BAD_REQUEST", {
+			message: "Deduction amount must be positive",
+		});
+
+	const fixed = toNumeric(amount);
 
 	return db.transaction(async (tx) => {
-		// Atomic: UPDATE ... SET balance = balance - amount WHERE balance >= amount
+		// Atomic: UPDATE ... SET balance = balance - amount [WHERE balance >= amount]
 		const [updated] = await tx
 			.update(organization)
 			.set({
-				creditsBalance: sql`${organization.creditsBalance} - ${amount}`,
+				creditsBalance: sql`${organization.creditsBalance} - ${fixed}::numeric`,
 			})
 			.where(
-				and(
-					eq(organization.id, orgId),
-					sql`${organization.creditsBalance} >= ${amount}`,
-				),
+				allowNegative
+					? eq(organization.id, orgId)
+					: and(
+							eq(organization.id, orgId),
+							sql`${organization.creditsBalance} >= ${fixed}::numeric`,
+						),
 			)
 			.returning({ creditsBalance: organization.creditsBalance });
 
 		if (!updated) {
-			// Insufficient balance — return null without rolling back (nothing changed)
+			// Insufficient balance (or unknown org) — nothing changed
 			return null;
 		}
 
@@ -76,11 +99,11 @@ export async function deductCredits(input: {
 			id: txId,
 			organizationId: orgId,
 			type: "usage",
-			amount: (-amount).toString(), // Negative for deductions
+			amount: `-${fixed}`, // Negative for deductions
 			balanceAfter: updated.creditsBalance ?? "0",
 			description,
 			referenceId: referenceId ?? null,
-			createdBy: userId ?? null,
+			createdBy: userId,
 		});
 
 		return { newBalance: Number(updated.creditsBalance), transactionId: txId };
@@ -96,37 +119,134 @@ export async function addCredits(input: {
 	type: "topup" | "refund" | "adjustment";
 	description: string;
 	referenceId?: string;
-	userId?: string;
+	userId: string;
 }): Promise<{ newBalance: number; transactionId: string }> {
 	const { orgId, amount, type, description, referenceId, userId } = input;
 
-	if (amount <= 0) throw new Error("Credit amount must be positive");
+	if (!(amount > 0))
+		throw new ORPCError("BAD_REQUEST", {
+			message: "Credit amount must be positive",
+		});
+
+	const fixed = toNumeric(amount);
 
 	return db.transaction(async (tx) => {
 		const [updated] = await tx
 			.update(organization)
 			.set({
-				creditsBalance: sql`${organization.creditsBalance} + ${amount}`,
+				creditsBalance: sql`${organization.creditsBalance} + ${fixed}::numeric`,
 			})
 			.where(eq(organization.id, orgId))
 			.returning({ creditsBalance: organization.creditsBalance });
 
-		if (!updated) throw new Error(`Organization not found: ${orgId}`);
+		if (!updated)
+			throw new ORPCError("NOT_FOUND", {
+				message: `Organization not found: ${orgId}`,
+			});
 
 		const txId = randomUUID();
 		await tx.insert(creditTransaction).values({
 			id: txId,
 			organizationId: orgId,
 			type,
-			amount: amount.toString(), // Positive for additions
+			amount: fixed, // Positive for additions
 			balanceAfter: updated.creditsBalance ?? "0",
 			description,
 			referenceId: referenceId ?? null,
-			createdBy: userId ?? null,
+			createdBy: userId,
 		});
 
 		return { newBalance: Number(updated.creditsBalance), transactionId: txId };
 	});
+}
+
+// ============================================================================
+// Reserve then settle
+// ============================================================================
+
+/**
+ * Hold `amount` credits before doing paid work.
+ * Throws FORBIDDEN when the balance does not cover it.
+ */
+export async function reserveCredits(input: {
+	orgId: string;
+	userId: string;
+	amount: number;
+	description: string;
+	referenceId?: string;
+}): Promise<CreditReservation> {
+	const { orgId, userId, amount, description, referenceId } = input;
+
+	const result = await deductCredits({
+		orgId,
+		userId,
+		amount,
+		description,
+		referenceId,
+	});
+
+	if (!result) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "Insufficient credits to start this request",
+		});
+	}
+
+	return { orgId, userId, amount, transactionId: result.transactionId };
+}
+
+/**
+ * Turn a reservation into the real cost: refund the unused part, or collect the
+ * shortfall even when that drives the balance negative. Never drops a charge.
+ */
+export async function settleReservation(
+	reservation: CreditReservation,
+	actualCost: number,
+	label: string,
+	referenceId?: string,
+): Promise<void> {
+	const settlement = computeSettlement(reservation.amount, actualCost);
+	const ref = referenceId ?? reservation.transactionId;
+
+	if (settlement.kind === "refund") {
+		await addCredits({
+			orgId: reservation.orgId,
+			userId: reservation.userId,
+			amount: settlement.amount,
+			type: "adjustment",
+			description: `${label} settlement refund`,
+			referenceId: ref,
+		});
+	} else if (settlement.kind === "charge") {
+		await deductCredits({
+			orgId: reservation.orgId,
+			userId: reservation.userId,
+			amount: settlement.amount,
+			description: `${label} settlement charge`,
+			referenceId: ref,
+			allowNegative: true,
+		});
+	}
+}
+
+/**
+ * Find a transaction an earlier attempt wrote for `referenceId`.
+ * Lets a retried job reuse its reservation instead of reserving twice.
+ */
+export async function findTransactionByReference(
+	orgId: string,
+	referenceId: string,
+): Promise<(typeof creditTransaction.$inferSelect) | null> {
+	const [row] = await db
+		.select()
+		.from(creditTransaction)
+		.where(
+			and(
+				eq(creditTransaction.organizationId, orgId),
+				eq(creditTransaction.referenceId, referenceId),
+			),
+		)
+		.limit(1);
+	return row ?? null;
 }
 
 // ============================================================================

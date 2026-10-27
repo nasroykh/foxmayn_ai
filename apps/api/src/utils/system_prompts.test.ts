@@ -1,0 +1,43 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { buildSystemPrompt, GET_MAIN_SYSTEM_PROMPT } from "./system_prompts";
+
+const CONTEXT = "[1] The vault code is 4242.";
+
+test("buildSystemPrompt always injects the retrieved context", () => {
+	assert.ok(buildSystemPrompt(null, CONTEXT).includes(CONTEXT));
+	assert.ok(buildSystemPrompt({ tone: "formal" }, CONTEXT).includes(CONTEXT));
+});
+
+test("a profile systemPrompt is appended and does not replace the template", () => {
+	const prompt = buildSystemPrompt(
+		{ systemPrompt: "Always answer in haiku." },
+		CONTEXT,
+	);
+	assert.ok(prompt.includes(CONTEXT), "context kept");
+	assert.ok(prompt.includes("Guidelines:"), "template kept");
+	assert.ok(prompt.includes("Always answer in haiku."));
+	assert.ok(
+		prompt.indexOf("Always answer in haiku.") > prompt.indexOf("Guidelines:"),
+		"custom prompt comes after the template",
+	);
+});
+
+test("blank systemPrompt adds nothing", () => {
+	assert.equal(
+		buildSystemPrompt({ systemPrompt: "   " }, CONTEXT),
+		buildSystemPrompt({ systemPrompt: null }, CONTEXT),
+	);
+});
+
+test("stream and non-stream share one builder: same input, same prompt", () => {
+	const profile = { assistantName: "Ada", systemPrompt: "Be brief." };
+	assert.equal(
+		buildSystemPrompt(profile, CONTEXT),
+		buildSystemPrompt(profile, CONTEXT),
+	);
+});
+
+test("empty context is stated explicitly", () => {
+	assert.ok(GET_MAIN_SYSTEM_PROMPT({ context: "" }).includes("no relevant information"));
+});

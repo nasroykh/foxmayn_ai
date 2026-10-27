@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { orgProcedure, adminProcedure } from "../middleware";
+import {
+	orgProcedure,
+	orgManagerProcedure,
+	adminProcedure,
+} from "../middleware";
 import { env } from "../../config/env";
 import {
 	getBalance,
@@ -25,9 +29,10 @@ export const creditsRoutes = {
 		}),
 
 	/**
-	 * Get credit transaction history for the active organization.
+	 * Get credit transaction history for the active organization
+	 * (organization owners and admins only).
 	 */
-	getTransactions: orgProcedure
+	getTransactions: orgManagerProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/credits/transactions`,
@@ -35,8 +40,8 @@ export const creditsRoutes = {
 		})
 		.input(
 			z.object({
-				limit: z.number().min(1).max(100).optional(),
-				offset: z.number().min(0).optional(),
+				limit: z.coerce.number().min(1).max(100).optional(),
+				offset: z.coerce.number().min(0).optional(),
 				type: z.enum(["topup", "usage", "refund", "adjustment"]).optional(),
 			}),
 		)

@@ -1,11 +1,10 @@
 import { z } from "zod";
 
-import { publicProcedure, authProcedure } from "../middleware";
+import { authProcedure } from "../middleware";
 import { env } from "../../config/env";
 import {
 	createOrganization,
 	updateOrganization,
-	setActiveOrganization,
 	listOrganizations,
 	getFullOrganization,
 	listMembers,
@@ -13,7 +12,6 @@ import {
 	updateMemberRole,
 	removeMember,
 	getInvitation,
-	acceptInvitation,
 	rejectInvitation,
 } from "../../services/organization.service";
 
@@ -35,10 +33,6 @@ const updateOrgSchema = z.object({
 	slug: z.string().min(1).optional(),
 	logo: z.string().optional(),
 	metadata: z.record(z.string(), z.unknown()).optional(),
-});
-
-const setActiveOrgSchema = z.object({
-	organizationId: z.string(),
 });
 
 const inviteMemberSchema = z.object({
@@ -93,20 +87,6 @@ export const organizationRoutes = {
 		.input(updateOrgSchema)
 		.handler(async ({ input, context }) => {
 			return updateOrganization(input, context.headers);
-		}),
-
-	// -------------------------------------------------------------------------
-	// Set Active Organization
-	// -------------------------------------------------------------------------
-	setActive: authProcedure
-		.route({
-			method: "POST",
-			path: `${PREFIX}/organizations/set-active`,
-			description: "Set active organization for current user",
-		})
-		.input(setActiveOrgSchema)
-		.handler(async ({ input, context }) => {
-			return setActiveOrganization(input.organizationId, context.headers);
 		}),
 
 	// -------------------------------------------------------------------------
@@ -193,29 +173,15 @@ export const organizationRoutes = {
 	// -------------------------------------------------------------------------
 	// Get Invitation
 	// -------------------------------------------------------------------------
-	getInvitation: publicProcedure
+	getInvitation: authProcedure
 		.route({
 			method: "GET",
-			path: `${PREFIX}/organizations/invitations/:invitationId`,
+			path: `${PREFIX}/organizations/invitations/{invitationId}`,
 			description: "Get invitation details",
 		})
 		.input(invitationIdSchema)
 		.handler(async ({ input, context }) => {
 			return getInvitation(input.invitationId, context.headers);
-		}),
-
-	// -------------------------------------------------------------------------
-	// Accept Invitation
-	// -------------------------------------------------------------------------
-	acceptInvitation: authProcedure
-		.route({
-			method: "POST",
-			path: `${PREFIX}/organizations/invitations/accept`,
-			description: "Accept organization invitation",
-		})
-		.input(invitationIdSchema)
-		.handler(async ({ input, context }) => {
-			return acceptInvitation(input.invitationId, context.headers);
 		}),
 
 	// -------------------------------------------------------------------------

@@ -8,7 +8,6 @@ import {
 	deleteDocument,
 	indexDocument,
 	extractTextFromDocument,
-	MAX_FILE_SIZE,
 } from "../../services/rag.service";
 import { getDocumentJobStatus, getPendingDocumentJobs } from "../../jobs";
 import { authProcedure, creditsProcedure } from "../middleware";
@@ -95,9 +94,9 @@ export const documentRoutes = {
 				finishedOn: z.number().optional(),
 			}),
 		)
-		.handler(async ({ input }) => {
-			const { jobId } = input;
-			const status = await getDocumentJobStatus(jobId);
+		.handler(async ({ input, context }) => {
+			// Jobs of other users answer NOT_FOUND, same as missing jobs
+			const status = await getDocumentJobStatus(input.jobId, context.user.id);
 
 			if (!status) {
 				throw new ORPCError("NOT_FOUND", {
@@ -106,8 +105,8 @@ export const documentRoutes = {
 			}
 
 			return {
-				jobId: status.jobId || "",
-				state: status.state || "",
+				jobId: status.jobId,
+				state: status.state,
 				progress: status.progress.toString(),
 				result: status.returnvalue,
 				error: status.failedReason,
@@ -121,10 +120,31 @@ export const documentRoutes = {
 		.route({
 			method: "GET",
 			path: `${PREFIX}/documents/jobs`,
-			description: "Get all pending/active jobs",
+			description: "Get the caller's pending/active jobs (paginated)",
 		})
-		.handler(async () => {
-			return await getPendingDocumentJobs();
+		.input(
+			z.object({
+				offset: z.coerce.number().int().min(0).optional(),
+				limit: z.coerce.number().int().min(1).max(100).optional(),
+			}),
+		)
+		.output(
+			z.object({
+				jobs: z.array(
+					z.object({
+						jobId: z.string(),
+						name: z.string(),
+						documentId: z.string(),
+						state: z.enum(["active", "waiting", "prioritized", "delayed"]),
+						progress: z.number(),
+					}),
+				),
+				hasMore: z.boolean(),
+			}),
+		)
+		.handler(async ({ input, context }) => {
+			const { limit = 50, offset = 0 } = input;
+			return await getPendingDocumentJobs(context.user.id, { limit, offset });
 		}),
 
 	getDocument: authProcedure
@@ -241,7 +261,7 @@ export const documentRoutes = {
 				});
 			}
 
-			const { jobId } = await deleteDocument(id);
+			const { jobId } = await deleteDocument(id, context.user.id);
 
 			return {
 				message: "Document deletion queued",
@@ -263,17 +283,9 @@ export const documentRoutes = {
 		)
 		.output(z.number())
 		.handler(async ({ input }) => {
-			const { file } = input;
+			// Same type allowlist, size cap, signature check and extraction bounds as upload
+			const text = await extractTextFromDocument(input.file);
 
-			if (file.size > MAX_FILE_SIZE)
-				throw new ORPCError("BAD_REQUEST", {
-					message: "File too large (max 10MB)",
-				});
-
-			const text = await extractTextFromDocument(file);
-
-			const tokens = calculateTokens(text, input.model);
-
-			return tokens;
+			return calculateTokens(text, input.model);
 		}),
 };

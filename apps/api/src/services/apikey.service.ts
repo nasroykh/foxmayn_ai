@@ -1,43 +1,82 @@
+import { ORPCError } from "@orpc/server";
 import { auth } from "../config/auth";
+import { getMemberRole } from "./organization.service";
 
 /**
- * Interface for creating an API key
+ * API keys belong to an organization: the organization id is stored in the key
+ * metadata at creation, and orgProcedure resolves the organization from it for
+ * API-key sessions (re-checking that the key owner is still a member).
+ */
+
+/**
+ * Interface for creating an API key (self-service)
  */
 export type CreateApiKeyInput = {
 	name?: string;
 	expiresIn?: number;
 	prefix?: string;
-	remaining?: number;
-	permissions?: Record<string, string[]>;
-	metadata?: any;
-	userId?: string;
 };
 
 /**
- * Interface for updating an API key
+ * Interface for creating an API key for another user (admin only). Server-side
+ * calls may also set remaining and permissions.
+ */
+export type CreateApiKeyForUserInput = CreateApiKeyInput & {
+	userId: string;
+	organizationId: string;
+	remaining?: number;
+	permissions?: Record<string, string[]>;
+	metadata?: Record<string, unknown>;
+};
+
+/**
+ * Interface for updating an API key. Only fields browser clients may change.
  */
 export type UpdateApiKeyInput = {
 	keyId: string;
 	name?: string;
 	enabled?: boolean;
-	remaining?: number;
-	refillAmount?: number;
-	refillInterval?: number;
-	permissions?: Record<string, string[]>;
-	metadata?: any;
-	userId?: string;
+};
+
+const assertOrganizationMember = async (
+	userId: string,
+	organizationId: string,
+) => {
+	if (!(await getMemberRole(userId, organizationId))) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "Not a member of this organization",
+		});
+	}
 };
 
 /**
- * Create a new API key
+ * Create a new API key for the current user, bound to `organizationId`
+ * (their active organization).
  */
 export async function createApiKey(
 	input: CreateApiKeyInput,
-	headers?: Headers
+	userId: string,
+	organizationId: string,
+	headers: Headers,
 ) {
+	await assertOrganizationMember(userId, organizationId);
+
 	return auth.api.createApiKey({
-		body: input,
+		body: { ...input, metadata: { organizationId } },
 		headers,
+	});
+}
+
+/**
+ * Create a new API key for another user (admin only), bound to an organization
+ * the user belongs to.
+ */
+export async function createApiKeyForUser(input: CreateApiKeyForUserInput) {
+	await assertOrganizationMember(input.userId, input.organizationId);
+
+	const { organizationId, metadata, ...rest } = input;
+	return auth.api.createApiKey({
+		body: { ...rest, metadata: { ...metadata, organizationId } },
 	});
 }
 
