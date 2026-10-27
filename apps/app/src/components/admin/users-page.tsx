@@ -162,6 +162,8 @@ export function AdminUsersPage() {
 			onSuccess: () => {
 				toast.success("User deleted");
 				setDeletingUserId(null);
+				// Removed the only row of this page: step back instead of showing it empty
+				if (offset > 0 && users.length <= 1) goToOffset(Math.max(0, offset - limit));
 				invalidateUsers();
 			},
 			onError: (err: Error) => toast.error(errorMessage(err, "Delete failed")),
@@ -191,6 +193,9 @@ export function AdminUsersPage() {
 				toast.success(res.message);
 				setSelectedIds([]);
 				setIsBulkDeleteOpen(false);
+				if (offset > 0 && selectedIds.length >= users.length) {
+					goToOffset(Math.max(0, offset - limit));
+				}
 				invalidateUsers();
 			},
 			onError: (err: Error) =>

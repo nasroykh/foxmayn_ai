@@ -17,7 +17,7 @@ import {
 import { orpc } from "@/lib/orpc";
 import { useQuery } from "@tanstack/react-query";
 import { Suspense, lazy, useMemo } from "react";
-import { format, startOfDay, subDays } from "date-fns";
+import { format, subDays } from "date-fns";
 import { useMemberRole } from "@/hooks/use-member-role";
 
 // recharts is large; load it only when the dashboard renders the chart
@@ -54,7 +54,7 @@ function Dashboard() {
 
 	// Keyed by calendar day (not by a fresh Date) so the query is cached
 	const today = format(new Date(), "yyyy-MM-dd");
-	const todayStart = useMemo(() => startOfDay(new Date(`${today}T00:00:00`)), [today]);
+	const todayStart = useMemo(() => new Date(`${today}T00:00:00`), [today]);
 
 	// Owner/admin only on the API (FORBIDDEN for plain members)
 	const { data: usageStats, isLoading: statsLoading } = useQuery({

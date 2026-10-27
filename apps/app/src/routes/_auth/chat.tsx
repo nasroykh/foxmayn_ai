@@ -28,6 +28,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { Markdown } from "@/components/markdown";
 import { errorMessage } from "@/lib/validation";
+import { authClient } from "@/lib/auth";
 import {
 	IconPlus,
 	IconTrash,
@@ -41,7 +42,7 @@ import {
 
 export const Route = createFileRoute("/_auth/chat")({
 	staticData: { title: "Chat" },
-	component: ChatPage,
+	component: ChatRoute,
 });
 
 type Source = { documentId: string; chunkId: string; content: string };
@@ -71,6 +72,12 @@ function isAbort(err: unknown) {
 		(err instanceof DOMException && err.name === "AbortError") ||
 		(err instanceof Error && err.name === "AbortError")
 	);
+}
+
+/** Remounts the chat when the active organization changes, dropping its state. */
+function ChatRoute() {
+	const { data: activeOrg } = authClient.useActiveOrganization();
+	return <ChatPage key={activeOrg?.id ?? "none"} />;
 }
 
 function ChatPage() {
@@ -229,14 +236,29 @@ function ChatPage() {
 						: errorMessage(err, "Chat failed"),
 				);
 			}
-			if (!assistantContent) {
-				// Nothing was answered: roll back both bubbles and give the text back
+			// The API stores an exchange only after a complete answer, so a stopped
+			// or failed turn is not on the server: roll it back and give the text back.
+			setInput((current) => current || query);
+			if (assistantContent && !streamConvId) {
+				// New conversation never created: start clean, not a hidden fork
+				setLocalMessages(null);
+				setActiveConvId(null);
+				toast.info("Stopped. The partial answer was not saved.");
+			} else if (assistantContent) {
+				// Existing conversation: show what the server really has
+				queryClient.removeQueries({
+					queryKey: orpc.conversations.getConversationWithMessages.key({
+						input: { id: streamConvId ?? "" },
+					}),
+				});
+				setLocalMessages(null);
+				toast.info("Stopped. The partial answer was not saved.");
+			} else {
 				setLocalMessages((prev) =>
 					prev
 						? prev.filter((m) => m.id !== userMessage.id && m.id !== assistantId)
 						: prev,
 				);
-				setInput((current) => current || query);
 			}
 		} finally {
 			abortRef.current = null;

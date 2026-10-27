@@ -1,5 +1,5 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -47,11 +47,15 @@ function InvitePage() {
 	const { logout, switchOrganization } = useAuthActions();
 	const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+	const [accepted, setAccepted] = useState(false);
+
 	const invitationQuery = useQuery({
 		...orpc.organization.getInvitation.queryOptions({
 			input: { invitationId: inviteId },
 		}),
 		retry: false,
+		// After accepting, the invitation is no longer pending and refetching 400s
+		enabled: !accepted,
 	});
 	const invitation = invitationQuery.data;
 
@@ -71,6 +75,8 @@ function InvitePage() {
 				throw new Error(error?.message || "Failed to accept invitation");
 			}
 			// Use the id from the invitation, never a name match
+			// Stop the invitation query before the org switch refetches everything
+			setAccepted(true);
 			await switchOrganization(data.invitation.organizationId);
 		},
 		onSuccess: () => {
@@ -91,6 +97,25 @@ function InvitePage() {
 				toast.error(errorMessage(error, "Failed to reject invitation")),
 		}),
 	);
+
+	if (acceptMutation.isSuccess) {
+		return (
+			<InviteShell>
+				<CardHeader className="text-center">
+					<div className="flex justify-center mb-4">
+						<div className="rounded-full bg-primary/10 p-3">
+							<IconCircleCheck className="size-8 text-primary" />
+						</div>
+					</div>
+					<CardTitle>Welcome!</CardTitle>
+					<CardDescription>
+						You've successfully joined the organization. Redirecting to
+						dashboard...
+					</CardDescription>
+				</CardHeader>
+			</InviteShell>
+		);
+	}
 
 	if (invitationQuery.isLoading) {
 		return (
@@ -131,7 +156,7 @@ function InvitePage() {
 					<Button
 						onClick={async () => {
 							try {
-								await logout();
+								await logout(`/invite/${inviteId}`);
 							} catch (error) {
 								toast.error(errorMessage(error, "Logout failed"));
 							}
@@ -140,25 +165,6 @@ function InvitePage() {
 						Switch account
 					</Button>
 				</CardContent>
-			</InviteShell>
-		);
-	}
-
-	if (acceptMutation.isSuccess) {
-		return (
-			<InviteShell>
-				<CardHeader className="text-center">
-					<div className="flex justify-center mb-4">
-						<div className="rounded-full bg-primary/10 p-3">
-							<IconCircleCheck className="size-8 text-primary" />
-						</div>
-					</div>
-					<CardTitle>Welcome!</CardTitle>
-					<CardDescription>
-						You've successfully joined {invitation.organizationName}.
-						Redirecting to dashboard...
-					</CardDescription>
-				</CardHeader>
 			</InviteShell>
 		);
 	}

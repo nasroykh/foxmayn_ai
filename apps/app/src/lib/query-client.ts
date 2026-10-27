@@ -55,7 +55,9 @@ export const sessionQueryOptions = queryOptions({
 	queryKey: ["auth", "session"],
 	queryFn: async (): Promise<SessionData> => {
 		const res = await authClient.getSession();
-		return res.data && !res.error ? res.data : null;
+		// Throw on transport/server errors so they are not cached as "logged out"
+		if (res.error) throw new Error(res.error.message || "Failed to load session");
+		return res.data ?? null;
 	},
 	staleTime: Infinity,
 	gcTime: Infinity,

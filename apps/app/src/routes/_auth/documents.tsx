@@ -178,6 +178,10 @@ function DocumentsPage() {
 			onSuccess: () => {
 				toast.success("Document deleted");
 				setDeletingDocId(null);
+				// Removed the only row of this page: step back instead of showing it empty
+				if (offset > 0 && docList.length <= 1) {
+					setOffset(Math.max(0, offset - PAGE_SIZE));
+				}
 				void queryClient.invalidateQueries({
 					queryKey: orpc.documents.listDocuments.key(),
 				});

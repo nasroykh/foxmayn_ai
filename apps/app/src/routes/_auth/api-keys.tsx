@@ -87,7 +87,7 @@ const createKeySchema = z.object({
 		.optional(),
 	// days in the form, seconds on the wire
 	expiresInDays: optionalNumber(
-		z.number().int("Whole days only").min(1, "At least 1 day").max(3650),
+		z.number().int("Whole days only").min(1, "At least 1 day").max(365, "At most 365 days"),
 	),
 });
 

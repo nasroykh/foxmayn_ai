@@ -22,10 +22,14 @@ export function useAuthActions() {
 		router.history.replace(safeRedirect(redirectTo) ?? "/");
 	};
 
-	const logout = async () => {
+	const logout = async (redirectTo?: string) => {
 		await authClient.signOut();
 		await dropSessionState(() =>
-			router.navigate({ to: "/auth/login", replace: true }),
+			router.navigate({
+				to: "/auth/login",
+				search: redirectTo ? { redirect: redirectTo } : undefined,
+				replace: true,
+			}),
 		);
 	};
 
