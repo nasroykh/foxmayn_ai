@@ -40,6 +40,7 @@ export const ragProfile = pgTable(
 		isDefault: boolean("is_default").default(false).notNull(),
 
 		// Document Processing
+		// Keep equal to DEFAULT_EMBEDDING_MODEL in @repo/llm (a test checks it)
 		embeddingModel: text("embedding_model")
 			.default("openai/text-embedding-3-small")
 			.notNull(),
@@ -67,7 +68,8 @@ export const ragProfile = pgTable(
 		domain: text("domain"),
 		tone: text("tone").default("friendly").notNull(),
 		responseLength: text("response_length").default("balanced").notNull(),
-		language: text("language").default("English").notNull(),
+		// "auto" answers in the language of the question
+		language: text("language").default("auto").notNull(),
 		enableCitations: boolean("enable_citations").default(true).notNull(),
 		systemPrompt: text("system_prompt"),
 		customInstructions: jsonb("custom_instructions")

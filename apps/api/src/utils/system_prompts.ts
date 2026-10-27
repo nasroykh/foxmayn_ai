@@ -1,3 +1,5 @@
+export const AUTO_LANGUAGE = "auto";
+
 type SystemPromptParams = {
 	context: string;
 	assistantName?: string;
@@ -7,6 +9,7 @@ type SystemPromptParams = {
 	enableCitations?: boolean;
 	responseLength?: "concise" | "detailed" | "balanced" | (string & {});
 	customInstructions?: string[];
+	// "auto" (the default) answers in the language of the user's question
 	language?: string;
 	// Profile-level custom prompt, appended after the template
 	systemPrompt?: string;
@@ -21,7 +24,7 @@ export const GET_MAIN_SYSTEM_PROMPT = ({
 	enableCitations = false,
 	responseLength = "concise",
 	customInstructions = [],
-	language = "English",
+	language = AUTO_LANGUAGE,
 	systemPrompt,
 }: SystemPromptParams) =>
 	`You are ${assistantName}${companyName ? ` from ${companyName}` : ""}${
@@ -35,7 +38,11 @@ ${context.trim() || "(no relevant information was found)"}
 
 Tone: ${tone}
 Response style: ${responseLength}
-Language: ${language}
+Language: ${
+	language.trim().toLowerCase() === AUTO_LANGUAGE
+		? "the language of the user's latest message, whatever the language of the information above"
+		: language
+}
 
 Guidelines:
 - Answer based strictly on the information above — never invent or assume facts
@@ -90,7 +97,7 @@ export const buildSystemPrompt = (
 		domain: profile?.domain || undefined,
 		enableCitations: profile?.enableCitations ?? true,
 		responseLength: profile?.responseLength || "balanced",
-		language: profile?.language || "English",
+		language: profile?.language || AUTO_LANGUAGE,
 		customInstructions: profile?.customInstructions || [],
 		systemPrompt: profile?.systemPrompt || undefined,
 	});

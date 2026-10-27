@@ -41,3 +41,12 @@ test("stream and non-stream share one builder: same input, same prompt", () => {
 test("empty context is stated explicitly", () => {
 	assert.ok(GET_MAIN_SYSTEM_PROMPT({ context: "" }).includes("no relevant information"));
 });
+
+test("language auto answers in the question's language; a named language is kept", () => {
+	assert.match(buildSystemPrompt(null, "ctx"), /Language: the language of the user's latest message/);
+	assert.match(
+		buildSystemPrompt({ language: "Auto" }, "ctx"),
+		/Language: the language of the user's latest message/,
+	);
+	assert.match(buildSystemPrompt({ language: "French" }, "ctx"), /Language: French\n/);
+});

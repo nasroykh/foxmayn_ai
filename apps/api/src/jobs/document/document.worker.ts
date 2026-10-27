@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { db, document, documentChunk, aiUsageLog } from "@repo/db";
 import { upsertVectors, deleteVectorsByFilter, type Point } from "@repo/qdrant";
 import { eq, and, ne, lt, isNull } from "@repo/db/drizzle-orm";
-import { OpenRouterEmbed } from "@repo/llm/openrouter";
+import { DEFAULT_EMBEDDING_MODEL, OpenRouterEmbed } from "@repo/llm/openrouter";
 import { redisConnection } from "../connection";
 import { redis } from "../../config/redis";
 import { acquireDocumentLock } from "./document.lock";
@@ -46,7 +46,6 @@ import {
 const QUEUE_NAME = "document";
 // Chunks per embedding request, Postgres insert and Qdrant upsert
 const INDEX_BATCH_SIZE = 64;
-const DEFAULT_EMBEDDING_MODEL = "openai/text-embedding-3-small";
 // Delay before a job retries after finding its document locked
 const LOCK_RETRY_DELAY_MS = 5_000;
 
@@ -120,7 +119,7 @@ async function processIndexDocument(
 	const isRetry = job.attemptsMade > 0 || job.attemptsStarted > 1;
 	const maxAttempts = job.opts.attempts ?? 1;
 
-	let embeddingModelId = DEFAULT_EMBEDDING_MODEL;
+	let embeddingModelId: string = DEFAULT_EMBEDDING_MODEL;
 	let reservation: CreditReservation | null = null;
 	let settled = false;
 	// Tokens embedded (and paid to the provider) by earlier failed attempts + this one

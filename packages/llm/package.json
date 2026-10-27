@@ -23,7 +23,8 @@
 		"build": "rimraf dist && tsc",
 		"typecheck": "tsc --noEmit",
 		"lint": "eslint .",
-		"models:generate": "tsx src/scripts/generate_model_list.ts"
+		"models:generate": "tsx src/scripts/generate_model_list.ts",
+		"models:eval-multilingual": "tsx src/scripts/multilingual_eval.ts"
 	},
 	"license": "MIT",
 	"dependencies": {

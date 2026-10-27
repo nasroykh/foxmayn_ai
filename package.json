@@ -17,7 +17,8 @@
 		"db:migrate": "turbo run db:migrate --filter=@repo/db",
 		"db:push": "turbo run db:push --filter=@repo/db",
 		"db:studio": "turbo run db:studio --filter=@repo/db",
-		"models:generate": "turbo run models:generate --filter=@repo/llm"
+		"models:generate": "turbo run models:generate --filter=@repo/llm",
+		"models:eval-multilingual": "pnpm --filter @repo/llm models:eval-multilingual"
 	},
 	"devDependencies": {
 		"turbo": "^2.11.10"

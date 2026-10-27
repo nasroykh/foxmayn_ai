@@ -50,6 +50,13 @@ export type AIModelId = (typeof OPENROUTER_AI_MODELS)[number]["id"];
 export type EmbeddingModelId =
 	(typeof OPENROUTER_EMBEDDING_MODELS)[number]["id"];
 
+/**
+ * Embedding model of a profile that does not choose one. The `rag_profile`
+ * column default in @repo/db must stay equal (a test in the API checks it).
+ */
+export const DEFAULT_EMBEDDING_MODEL: EmbeddingModelId =
+	"openai/text-embedding-3-small";
+
 // ============================================================================
 // Usage tracking types
 // ============================================================================

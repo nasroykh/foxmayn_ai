@@ -15,6 +15,13 @@
       "when": 1793111785100,
       "tag": "0001_monthly_credit_cap",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793112332351,
+      "tag": "0002_profile_language_auto",
+      "breakpoints": true
     }
   ]
 }

@@ -78,6 +78,7 @@ const profileFormSchema = z
 		model: z.string().optional(),
 		embeddingModel: z.string().optional(),
 		systemPrompt: z.string().max(8000, "At most 8000 characters"),
+		language: z.string().trim().min(1, "Language is required").max(50),
 		chunkSize: z.coerce
 			.number("Enter a number")
 			.int("Whole number")
@@ -117,6 +118,7 @@ function toPayload(values: ProfileFormValues): CreateProfileInput {
 		embeddingModel: (values.embeddingModel ||
 			undefined) as CreateProfileInput["embeddingModel"],
 		systemPrompt: values.systemPrompt,
+		language: values.language,
 		chunkSize: values.chunkSize,
 		chunkOverlap: values.chunkOverlap,
 		topK: values.topK,
@@ -395,6 +397,7 @@ function ProfileFormDialog({
 			model: defaultValues?.model ?? undefined,
 			embeddingModel: defaultValues?.embeddingModel ?? undefined,
 			systemPrompt: defaultValues?.systemPrompt ?? "",
+			language: defaultValues?.language ?? "auto",
 			chunkSize: defaultValues?.chunkSize ?? 500,
 			chunkOverlap: defaultValues?.chunkOverlap ?? 50,
 			topK: defaultValues?.topK ?? 5,
@@ -565,6 +568,19 @@ function ProfileFormDialog({
 								max="2"
 							/>
 							{fieldError("temperature")}
+						</div>
+						<div className="col-span-2 space-y-2">
+							<Label htmlFor="profile-language">Answer language</Label>
+							<Input
+								id="profile-language"
+								{...register("language")}
+								placeholder="auto"
+							/>
+							<p className="text-xs text-muted-foreground">
+								&quot;auto&quot; answers in the language of each question. Or
+								name one language, e.g. Arabic.
+							</p>
+							{fieldError("language")}
 						</div>
 						<div className="col-span-2 space-y-2">
 							<Label htmlFor="profile-system-prompt">System Prompt</Label>

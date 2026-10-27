@@ -12,6 +12,7 @@ import {
 } from "@repo/db/drizzle-orm";
 import {
 	OpenRouterQuery,
+	DEFAULT_EMBEDDING_MODEL,
 	OpenRouterEmbed,
 	type AIUsage,
 } from "@repo/llm/openrouter";
@@ -55,7 +56,6 @@ import {
 import { estimateTokens } from "./chunking.service";
 
 const DEFAULT_CHAT_MODEL = "google/gemini-2.5-flash-lite";
-const DEFAULT_EMBEDDING_MODEL = "openai/text-embedding-3-small";
 const DEFAULT_MAX_TOKENS = 2048;
 // Per-message framing overhead of chat formats, in tokens
 const MESSAGE_OVERHEAD_TOKENS = 4;
