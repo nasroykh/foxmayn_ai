@@ -21,6 +21,8 @@ export interface IndexDocumentJobData {
 	embeddedTokens?: number;
 	// An earlier attempt already replaced the old index (partial output may exist)
 	indexReplaced?: boolean;
+	// Once indexed, delete the owner's older documents with the same source and profile
+	replaceSource?: boolean;
 }
 
 export type ReindexDocumentJobData = IndexDocumentJobData;

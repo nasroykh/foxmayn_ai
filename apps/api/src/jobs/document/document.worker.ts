@@ -2,11 +2,12 @@ import { Worker, Job, UnrecoverableError, DelayedError } from "bullmq";
 import { randomUUID } from "crypto";
 import { db, document, documentChunk, aiUsageLog } from "@repo/db";
 import { upsertVectors, deleteVectorsByFilter, type Point } from "@repo/qdrant";
-import { eq, and } from "@repo/db/drizzle-orm";
+import { eq, and, ne, lt, isNull } from "@repo/db/drizzle-orm";
 import { OpenRouterEmbed } from "@repo/llm/openrouter";
 import { redisConnection } from "../connection";
 import { redis } from "../../config/redis";
 import { acquireDocumentLock } from "./document.lock";
+import { addDeleteDocumentJob } from "./document.queue";
 import {
 	type IndexDocumentJobData,
 	type DeleteDocumentJobData,
@@ -48,6 +49,51 @@ const INDEX_BATCH_SIZE = 64;
 const DEFAULT_EMBEDDING_MODEL = "openai/text-embedding-3-small";
 // Delay before a job retries after finding its document locked
 const LOCK_RETRY_DELAY_MS = 5_000;
+
+/**
+ * Queue the deletion of the owner's older documents with the same source and
+ * profile (a null profile matches a null profile). Called once the new document
+ * is indexed and billed, so errors are logged and never fail the job.
+ */
+async function replaceOlderDocuments(
+	documentId: string,
+	doc: {
+		userId: string;
+		source: string | null;
+		profileId: string | null;
+		createdAt: Date;
+	},
+): Promise<void> {
+	if (!doc.source) return;
+	try {
+		const older = await db
+			.select({ id: document.id })
+			.from(document)
+			.where(
+				and(
+					eq(document.userId, doc.userId),
+					eq(document.source, doc.source),
+					doc.profileId
+						? eq(document.profileId, doc.profileId)
+						: isNull(document.profileId),
+					ne(document.id, documentId),
+					lt(document.createdAt, doc.createdAt),
+				),
+			);
+		for (const { id } of older) {
+			await addDeleteDocumentJob({ documentId: id, userId: doc.userId });
+		}
+		if (older.length > 0)
+			console.log(
+				`[Document Worker] Document ${documentId}: Replaced ${older.length} older document(s) with source ${doc.source}`,
+			);
+	} catch (err) {
+		console.error(
+			`[Document Worker] Failed to replace older documents for ${documentId}:`,
+			describeError(err),
+		);
+	}
+}
 
 /**
  * Index a document: chunk, embed, store chunks and vectors, bill.
@@ -200,6 +246,7 @@ async function processIndexDocument(
 				source: document.source,
 				metadata: document.metadata,
 				status: document.status,
+				createdAt: document.createdAt,
 			})
 			.from(document)
 			.where(eq(document.id, documentId));
@@ -225,6 +272,8 @@ async function processIndexDocument(
 				// Settlement and the "indexed" status commit together, so the work is
 				// done: a later step (progress update) failed after the commit
 				if (doc.status === "indexed") {
+					if (job.data.replaceSource)
+						await replaceOlderDocuments(documentId, doc);
 					return {
 						documentId,
 						chunkCount: 0,
@@ -396,6 +445,10 @@ async function processIndexDocument(
 		} else {
 			await markIndexed(db);
 		}
+
+		// Indexed and billed: now the older versions of this source can go
+		if (stillThere && job.data.replaceSource)
+			await replaceOlderDocuments(documentId, doc);
 
 		await job.updateProgress(100);
 

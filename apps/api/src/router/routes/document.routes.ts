@@ -7,6 +7,7 @@ import {
 	countDocuments,
 	deleteDocument,
 	indexDocument,
+	importDocument,
 	extractTextFromDocument,
 } from "../../services/rag.service";
 import { getDocumentJobStatus, getPendingDocumentJobs } from "../../jobs";
@@ -87,6 +88,69 @@ export const documentRoutes = {
 				jobId,
 				message: "File accepted for processing",
 				status: "processing",
+			};
+		}),
+
+	importDocument: creditsProcedure
+		.route({
+			method: "POST",
+			path: `${PREFIX}/documents/import`,
+			description:
+				"Create a document from raw text or an https URL. With replace, older documents with the same source are deleted once this one is indexed.",
+		})
+		.input(
+			z
+				.object({
+					text: z.string().optional(),
+					url: z.url().optional(),
+					title: z.string().optional(),
+					source: z.string().max(2048).optional(),
+					profileId: z.string().optional(),
+					metadata: z.record(z.string(), z.unknown()).optional(),
+					replace: z.boolean().default(false),
+				})
+				.refine((v) => (v.text !== undefined) !== (v.url !== undefined), {
+					message: "Provide exactly one of text or url",
+				})
+				.refine((v) => !v.replace || Boolean(v.source ?? v.url), {
+					message: "replace requires a source (or a url)",
+				}),
+		)
+		.output(
+			z.object({
+				documentId: z.string(),
+				jobId: z.string().optional(),
+				message: z.string(),
+			}),
+		)
+		.handler(async ({ input, context }) => {
+			const { text, url, title, source, profileId, metadata, replace } = input;
+
+			if (
+				metadata &&
+				JSON.stringify(metadata).length > MAX_METADATA_CHARS
+			) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: `metadata must be a JSON object of at most ${MAX_METADATA_CHARS} characters`,
+				});
+			}
+
+			const { documentId, jobId } = await importDocument({
+				text,
+				url,
+				title,
+				source,
+				profileId,
+				metadata,
+				replace,
+				userId: context.user.id,
+				organizationId: context.organizationId,
+			});
+
+			return {
+				documentId,
+				jobId,
+				message: "Document accepted for processing",
 			};
 		}),
 

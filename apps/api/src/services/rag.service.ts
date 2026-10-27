@@ -36,6 +36,7 @@ import {
 	zipDeclaredUncompressedSize,
 	ALLOWED_FILE_TYPES,
 } from "../utils/file_validation";
+import { fetchUrlAsFile } from "../utils/url_fetch";
 import { buildSystemPrompt } from "../utils/system_prompts";
 import { qdrant, ensureCollection, type VectorPayload } from "./qdrant.shared";
 import { buildChunkFilter } from "./qdrant.filter";
@@ -206,6 +207,70 @@ export const extractTextFromDocument = async (file: File): Promise<string> => {
 };
 
 /**
+ * Create the document row and queue its indexing. Shared by the file upload
+ * and the import path. The caller has already extracted `content`.
+ */
+const createAndQueueDocument = async (options: {
+	content: string;
+	title: string;
+	source?: string;
+	profileId?: string;
+	metadata?: Record<string, unknown>;
+	replaceSource?: boolean;
+	userId: string;
+	organizationId: string;
+}): Promise<{ documentId: string; jobId: string | undefined }> => {
+	const {
+		content,
+		title,
+		source,
+		profileId,
+		metadata,
+		replaceSource,
+		userId,
+		organizationId,
+	} = options;
+
+	// The profile id is stored as-is: it must belong to the caller
+	if (profileId) await loadProfile(profileId, userId);
+
+	if (!content.trim())
+		throw new ORPCError("BAD_REQUEST", {
+			message: "File is empty",
+		});
+
+	const documentId = randomUUID();
+
+	// Create document record with status "processing"
+	await db.insert(document).values({
+		id: documentId,
+		userId,
+		profileId,
+		title,
+		content,
+		source,
+		metadata,
+		status: "processing",
+	});
+
+	// Add job to queue - returns immediately. The worker reads the content from the row.
+	try {
+		const { jobId } = await addIndexDocumentJob({
+			documentId,
+			profileId,
+			organizationId,
+			userId,
+			replaceSource,
+		});
+		return { documentId, jobId };
+	} catch (err) {
+		// Without a job the document would stay "processing" forever
+		await db.delete(document).where(eq(document.id, documentId));
+		throw err;
+	}
+};
+
+/**
  * Index a document into the RAG system (ASYNC - via background job)
  *
  * This returns immediately with a jobId. The actual indexing
@@ -222,48 +287,67 @@ export const indexDocument = async (options: {
 	userId: string;
 	organizationId: string;
 }): Promise<{ documentId: string; jobId: string | undefined }> => {
-	const { file, title, source, profileId, metadata, userId, organizationId } =
-		options;
-
-	// The profile id is stored as-is: it must belong to the caller
-	if (profileId) await loadProfile(profileId, userId);
+	const { file, title, ...rest } = options;
 
 	const content = await extractTextFromDocument(file);
 
-	if (!content.trim())
-		throw new ORPCError("BAD_REQUEST", {
-			message: "File is empty",
-		});
-
-	const documentId = randomUUID();
-	const docTitle = title || file.name || "Untitled";
-
-	// Create document record with status "processing"
-	await db.insert(document).values({
-		id: documentId,
-		userId,
-		profileId,
-		title: docTitle,
+	return createAndQueueDocument({
+		...rest,
 		content,
-		source,
-		metadata,
-		status: "processing",
+		title: title || file.name || "Untitled",
 	});
+};
 
-	// Add job to queue - returns immediately. The worker reads the content from the row.
-	try {
-		const { jobId } = await addIndexDocumentJob({
-			documentId,
-			profileId,
-			organizationId,
-			userId,
-		});
-		return { documentId, jobId };
-	} catch (err) {
-		// Without a job the document would stay "processing" forever
-		await db.delete(document).where(eq(document.id, documentId));
-		throw err;
+const MAX_DERIVED_TITLE_CHARS = 120;
+
+/**
+ * Create a document from raw text or from a URL (ASYNC - via background job).
+ * With `replace`, older documents of the same owner, source and profile are
+ * deleted by the worker once this one is indexed, so the knowledge base is
+ * never empty in between.
+ * The caller guarantees exactly one of `text` and `url`, and a `source` when `replace` is set.
+ */
+export const importDocument = async (options: {
+	text?: string;
+	url?: string;
+	title?: string;
+	source?: string;
+	profileId?: string;
+	metadata?: Record<string, unknown>;
+	replace?: boolean;
+	userId: string;
+	organizationId: string;
+}): Promise<{ documentId: string; jobId: string | undefined }> => {
+	const { text, url, title, source, replace, ...rest } = options;
+
+	let content: string;
+	let defaultTitle: string;
+	if (url !== undefined) {
+		const file = await fetchUrlAsFile(url);
+		content = await extractTextFromDocument(file);
+		defaultTitle = file.name;
+	} else {
+		content = text ?? "";
+		if (!content.trim())
+			throw new ORPCError("BAD_REQUEST", { message: "Text is empty" });
+		if (content.length > MAX_EXTRACTED_CHARS)
+			throw new ORPCError("BAD_REQUEST", {
+				message: `Document text is too long (max ${MAX_EXTRACTED_CHARS.toLocaleString("en-US")} characters)`,
+			});
+		defaultTitle = content
+			.trim()
+			.split(/\r?\n/)[0]
+			.trim()
+			.slice(0, MAX_DERIVED_TITLE_CHARS);
 	}
+
+	return createAndQueueDocument({
+		...rest,
+		content,
+		title: title || defaultTitle || "Untitled",
+		source: source ?? url,
+		replaceSource: replace,
+	});
 };
 
 /**
