@@ -1,62 +1,54 @@
-# ============================================
-# Stage 1: Build - Build the application
-# ============================================
-FROM node:24-alpine AS build
+# syntax=docker/dockerfile:1
+# Build context: repository root.
+#   docker build -f apps/app/Dockerfile --target production .
 
-RUN apk add --no-cache libc6-compat
-RUN npm install -g pnpm@10.30.1 turbo@2.8.10
+ARG NODE_IMAGE=node:24.22.1-alpine3.24
+ARG CADDY_IMAGE=caddy:2.11.7-alpine
+ARG PNPM_VERSION=10.34.9
+
+# ============================================
+# Build: compile the frontend (type-checks against the API package types)
+# ============================================
+FROM ${NODE_IMAGE} AS build
+ARG PNPM_VERSION
+ENV TURBO_TELEMETRY_DISABLED=1 \
+    CI=true
+RUN apk add --no-cache libc6-compat && npm install -g pnpm@${PNPM_VERSION}
 
 WORKDIR /app
 
-# Copy source code
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml turbo.json ./
 COPY packages ./packages
 COPY apps/api ./apps/api
 COPY apps/app ./apps/app
 
-# Install dependencies using cached pnpm store
 RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile
 
-# Build workspace packages in dependency order
-RUN pnpm --filter @repo/db build
-RUN pnpm --filter @repo/llm build
-RUN pnpm --filter @repo/qdrant build
-RUN pnpm --filter api build
+# Vite bakes this into the bundle. Same-origin by default: Caddy proxies /api/*.
+ARG VITE_API_URL=/api/v1
+ENV VITE_API_URL=${VITE_API_URL}
 
-# Build arg for API URL — must be set at build time (Vite bakes it into the bundle)
-ARG VITE_API_URL=http://localhost:33450/api/v1
-ENV VITE_API_URL=$VITE_API_URL
-
-# Build the frontend application
-RUN pnpm --filter app build
+# Builds the packages and the API (for its types), then the frontend
+RUN pnpm exec turbo run build --filter=@repo/app...
 
 # ============================================
-# Stage 2: Production - Caddy serving static files
+# Production: Caddy serves the SPA and proxies /api/* to the API
 # ============================================
-FROM caddy:2-alpine AS production
+FROM ${CADDY_IMAGE} AS production
 
-# Copy Caddyfile
 COPY apps/app/Caddyfile /etc/caddy/Caddyfile
-
-# Copy built static files from build stage
 COPY --from=build /app/apps/app/dist /srv
 
-# Create non-root user
-RUN addgroup -g 1001 -S appuser && \
-    adduser -S appuser -u 1001 -G appuser && \
-    chown -R appuser:appuser /srv && \
-    chown -R appuser:appuser /config && \
-    chown -R appuser:appuser /data && \
-    chmod -R 755 /srv
+# Non-root user; Caddy only needs write access to /config and /data
+RUN addgroup -g 1001 -S appuser \
+    && adduser -S appuser -u 1001 -G appuser \
+    && chown -R appuser:appuser /config /data
 
-# Switch to non-root user
 USER appuser
-
 EXPOSE 33460
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:33460/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:33460/health || exit 1
 
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

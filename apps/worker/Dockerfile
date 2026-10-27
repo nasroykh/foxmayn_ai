@@ -1,73 +1,60 @@
+# syntax=docker/dockerfile:1
+# Build context: repository root.
+#   docker build -f apps/worker/Dockerfile --target production .
+
+ARG NODE_IMAGE=node:24.22.1-alpine3.24
+ARG PNPM_VERSION=10.34.9
 
 # ============================================
-# Stage 1: Build - Build shared packages and Worker
+# Build: install workspace dependencies, build packages, API and worker
 # ============================================
-FROM node:24-alpine AS build
-
-RUN apk add --no-cache libc6-compat
-RUN npm install -g pnpm@10.30.1 turbo@2.8.10
+FROM ${NODE_IMAGE} AS build
+ARG PNPM_VERSION
+ENV TURBO_TELEMETRY_DISABLED=1 \
+    CI=true
+RUN apk add --no-cache libc6-compat && npm install -g pnpm@${PNPM_VERSION}
 
 WORKDIR /app
 
-# Copy source code
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml turbo.json ./
 COPY packages ./packages
+# The worker imports its job processors from the API package
 COPY apps/api ./apps/api
 COPY apps/worker ./apps/worker
 
-# Install dependencies using cached pnpm store
 RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile
 
-# Build workspace packages in dependency order
-RUN pnpm --filter @repo/db build
-RUN pnpm --filter @repo/llm build
-RUN pnpm --filter @repo/qdrant build
+# Builds @repo/db, @repo/llm, @repo/qdrant, @repo/api, then the worker
+RUN pnpm exec turbo run build --filter=worker...
 
-# Build the API (worker imports job processors from it)
-RUN pnpm --filter api build
+RUN pnpm --filter worker --prod deploy --legacy /out/worker
 
-# Build the worker
-RUN pnpm --filter worker build
-
-# Prune dev dependencies for production
-RUN pnpm --filter worker --prod deploy --legacy /app/pruned
-
-# Inject built dist into the deployed workspace packages
-# pnpm deploy --legacy copies packages from install-time (before build)
-# so we need to copy the compiled dist into the deployed copies
-RUN cp -r /app/apps/api/dist /app/pruned/node_modules/@repo/api/dist && \
-    cp -r /app/packages/llm/dist /app/pruned/node_modules/@repo/llm/dist 2>/dev/null; \
-    cp -r /app/packages/qdrant/dist /app/pruned/node_modules/@repo/qdrant/dist 2>/dev/null; \
-    true
+# `pnpm deploy` copies workspace packages without their build output
+# (dist is gitignored); copy the API's compiled jobs in, then fail the build
+# if any workspace package is still missing its dist.
+RUN rm -rf /out/worker/node_modules/@repo/api/dist \
+    && cp -r /app/apps/api/dist /out/worker/node_modules/@repo/api/dist
+RUN test -f /out/worker/node_modules/@repo/api/dist/jobs/index.js \
+    && cd /out/worker/node_modules/@repo/api \
+    && node -e "for (const m of ['@repo/db','@repo/llm/openrouter','@repo/qdrant']) require.resolve(m)"
 
 # ============================================
-# Stage 2: Production - Minimal runtime image
+# Production: worker process
 # ============================================
-FROM node:24-alpine AS production
-
-# Install postgresql-client (pg_isready) and netcat (Redis wait)
-RUN apk add --no-cache postgresql-client netcat-openbsd
-
-# Create non-root user
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S workeruser -u 1001 -G nodejs
-
+FROM ${NODE_IMAGE} AS production
+ENV NODE_ENV=production
 WORKDIR /app
 
-# Copy pruned node_modules (now includes built workspace package dists)
-COPY --from=build --chown=workeruser:nodejs /app/pruned/node_modules ./node_modules
-COPY --from=build --chown=workeruser:nodejs /app/pruned/package.json ./package.json
+COPY --from=build --chown=node:node /out/worker/node_modules ./node_modules
+COPY --from=build --chown=node:node /out/worker/package.json ./package.json
+COPY --from=build --chown=node:node /app/apps/worker/dist ./dist
 
-# Copy worker dist
-COPY --from=build --chown=workeruser:nodejs /app/apps/worker/dist ./dist
+USER node
 
-# Copy entrypoint script
-COPY --chown=workeruser:nodejs apps/worker/docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+# The worker touches /tmp/worker-heartbeat every 15s while its queues and Redis
+# respond (apps/worker/src/index.ts); unhealthy if the file is older than 60s.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD ["node", "-e", "try{process.exit(Date.now()-require('fs').statSync(process.env.WORKER_HEARTBEAT_FILE||'/tmp/worker-heartbeat').mtimeMs<60000?0:1)}catch{process.exit(1)}"]
 
-# Switch to non-root user
-USER workeruser
-
-# Use entrypoint to wait for dependencies before starting
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["node", "dist/index.js"]

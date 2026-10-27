@@ -25,7 +25,6 @@ pnpm-debug.log*
 *.db-journal
 *.sqlite
 *.sqlite3
-drizzle/
 
 # IDE
 .vscode/

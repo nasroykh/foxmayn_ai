@@ -2,18 +2,17 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { env } from "./config/env";
 
-// Use DB_URL if available, otherwise construct from individual variables
-const connectionString =
-	env.DB_URL ||
-	`postgresql://${env.DB_USER}:${env.DB_PASSWORD}@${env.DB_HOST}:${
-		env.DB_PORT
-	}/${env.DB_NAME}?sslmode=${env.DB_SSL_MODE || "disable"}`;
-
 const pool = new Pool({
-	connectionString,
+	connectionString: env.DB_URL,
 	max: 20,
 	idleTimeoutMillis: 30000,
 	connectionTimeoutMillis: 5000,
+});
+
+// Without a listener, an error on an idle client (Postgres restart, network
+// drop) is an unhandled 'error' event and kills the process.
+pool.on("error", (error) => {
+	console.error("❌ Unexpected PostgreSQL pool error:", error);
 });
 
 export const db = drizzle(pool);

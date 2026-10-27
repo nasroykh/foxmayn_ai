@@ -48,13 +48,15 @@ export interface Point<
 }
 
 /**
- * Creates a Qdrant client instance with configuration from environment or options
+ * Creates a Qdrant client instance with configuration from environment or options.
+ * The API key defaults to QDRANT_API_KEY when `config.apiKey` is not given.
  */
 export const createQdrantClient = (config: QdrantConfig): QdrantClient => {
 	if (!config.url) throw new Error("QDRANT_URL is not set");
 
 	return new QdrantClient({
 		url: config.url,
+		apiKey: config.apiKey ?? env.QDRANT_API_KEY,
 		checkCompatibility: false,
 	});
 };

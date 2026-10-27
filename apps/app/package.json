@@ -7,7 +7,8 @@
 		"dev": "vite",
 		"build": "tsc -b && vite build",
 		"lint": "eslint .",
-		"start": "vite preview"
+		"start": "vite preview",
+		"typecheck": "tsc -b"
 	},
 	"dependencies": {
 		"@base-ui/react": "^1.9.0",
@@ -38,6 +39,7 @@
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
 		"@orpc/server": "^1.16.1",
+		"@repo/eslint-config": "workspace:*",
 		"@repo/tsconfig": "workspace:*",
 		"@tanstack/router-plugin": "^1.168.48",
 		"@types/node": "^24.19.2",

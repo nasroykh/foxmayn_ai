@@ -6,15 +6,44 @@ import {
 } from "./data/openrouter_models";
 type Reasoning = { effort: "xhigh" | "high" | "medium" | "low" | "minimal" | "none" | null | undefined };
 
-if (!env.OPENROUTER_API_KEY) {
-	throw new Error("OPENROUTER_API_KEY is not set");
-}
+// Whole-request ceiling, including the streamed body. Long enough for slow
+// reasoning models, short enough that a hung upstream frees the worker slot.
+const REQUEST_TIMEOUT_MS = 180_000;
 
-const openrouter = new OpenRouter({
-	apiKey: env.OPENROUTER_API_KEY,
-	appTitle: "Foxmayn AI",
-	httpReferer: env.APP_URL || "https://foxmayn.ai",
-});
+let client: OpenRouter | undefined;
+
+/**
+ * Lazily builds the OpenRouter client so that importing this module never
+ * throws (the API/worker can boot and report a clear error on first use).
+ */
+function getClient(): OpenRouter {
+	if (client) return client;
+
+	const apiKey = env.OPENROUTER_API_KEY?.trim();
+	if (!apiKey) {
+		throw new Error(
+			"OPENROUTER_API_KEY is not set. Set it in .env to use chat and document embedding.",
+		);
+	}
+
+	client = new OpenRouter({
+		apiKey,
+		appTitle: "Foxmayn AI",
+		httpReferer: env.APP_URL || "https://foxmayn.ai",
+		timeoutMs: REQUEST_TIMEOUT_MS,
+		retryConfig: {
+			strategy: "backoff",
+			backoff: {
+				initialInterval: 500,
+				maxInterval: 5_000,
+				exponent: 2,
+				maxElapsedTime: 20_000,
+			},
+			retryConnectionErrors: true,
+		},
+	});
+	return client;
+}
 
 export type AIModelId = (typeof OPENROUTER_AI_MODELS)[number]["id"];
 export type EmbeddingModelId =
@@ -119,11 +148,11 @@ export function OpenRouterQuery(
 		throw new Error("Top P must be between 0 and 1");
 	}
 
-	const callResult = openrouter.callModel({
+	const callResult = getClient().callModel({
 		input: messages,
 		model: settings.model || DEFAULT_AI_SETTINGS.model,
-		temperature: settings.temperature || DEFAULT_AI_SETTINGS.temperature,
-		topP: settings.topP || DEFAULT_AI_SETTINGS.topP,
+		temperature: settings.temperature ?? DEFAULT_AI_SETTINGS.temperature,
+		topP: settings.topP ?? DEFAULT_AI_SETTINGS.topP,
 		maxOutputTokens: settings.maxTokens || DEFAULT_AI_SETTINGS.maxTokens,
 		reasoning: {
 			enabled: settings.reasoning
@@ -206,7 +235,7 @@ export const OpenRouterEmbed = async (
 
 		if (!dimensions) throw new Error("Invalid model");
 
-		const response = await openrouter.embeddings.generate({
+		const response = await getClient().embeddings.generate({
 			requestBody: {
 				model,
 				input: chunks,

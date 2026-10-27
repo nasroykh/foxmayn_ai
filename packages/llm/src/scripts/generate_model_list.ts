@@ -1,55 +1,25 @@
+/**
+ * Refreshes prices and context lengths in src/data/openrouter_models.ts.
+ *
+ * Single source of truth: the model ids (and embedding dimensions) are read
+ * from the committed data file itself. To add a model, append an entry with
+ * placeholder prices (0) to that file and run `pnpm --filter @repo/llm models:generate`.
+ * To remove one, delete its entry.
+ *
+ * Exits non-zero (and writes nothing) if OpenRouter cannot be reached or any
+ * listed model is missing from its catalogue, so a bad run cannot zero-price
+ * a model.
+ */
 import fs from "fs";
 import path from "path";
-
-const TARGET_MODEL_IDS = [
-	"anthropic/claude-opus-4.5",
-	"anthropic/claude-haiku-4.5",
-	"anthropic/claude-sonnet-4.5",
-	"google/gemini-3-flash-preview",
-	"google/gemini-3-pro-preview",
-	"google/gemini-2.5-flash",
-	"google/gemini-2.5-pro",
-	"google/gemini-2.5-flash-lite",
-	"google/gemma-3-12b-it",
-	"google/gemma-3-27b-it",
-	"openai/gpt-5.2-chat",
-	"openai/gpt-5.2",
-	"openai/gpt-5.1",
-	"openai/gpt-5.1-chat",
-	"openai/gpt-5",
-	"openai/gpt-5-mini",
-	"openai/gpt-5-nano",
-	"openai/gpt-oss-20b",
-	"openai/gpt-oss-120b",
-	"x-ai/grok-4.1-fast",
-	"x-ai/grok-4-fast",
-	"deepseek/deepseek-v3.2",
-	"deepseek/deepseek-chat-v3.1",
-	"moonshotai/kimi-k2-0905",
-	"z-ai/glm-4.7",
-	"z-ai/glm-4.6",
-	"z-ai/glm-4.5-air",
-	"minimax/minimax-m2.1",
-	"minimax/minimax-m2",
-];
-
-const TARGET_EMBEDDING_MODELS = [
-	{ id: "openai/text-embedding-3-small", dimensions: 1536 },
-	{ id: "openai/text-embedding-3-large", dimensions: 3072 },
-	{ id: "google/gemini-embedding-001", dimensions: 3072 },
-	{ id: "qwen/qwen3-embedding-8b", dimensions: 4096 },
-	{ id: "qwen/qwen3-embedding-4b", dimensions: 2560 },
-	{ id: "baai/bge-m3", dimensions: 1024 },
-];
-
-interface OpenRouterModelCost {
-	prompt: string;
-	completion: string;
-}
+import {
+	OPENROUTER_AI_MODELS,
+	OPENROUTER_EMBEDDING_MODELS,
+} from "../data/openrouter_models";
 
 interface OpenRouterModel {
 	id: string;
-	pricing: OpenRouterModelCost;
+	pricing: { prompt: string; completion: string };
 	context_length: number;
 }
 
@@ -57,112 +27,83 @@ interface OpenRouterResponse {
 	data: OpenRouterModel[];
 }
 
-const main = async () => {
-	try {
-		// Fetch chat models
-		const chatResponse = await fetch("https://openrouter.ai/api/v1/models");
-		if (!chatResponse.ok) {
-			throw new Error(`Chat API call failed: ${chatResponse.statusText}`);
-		}
-		const chatParsed: OpenRouterResponse =
-			(await chatResponse.json()) as OpenRouterResponse;
-		const chatModels = chatParsed.data;
-
-		// Fetch embedding models
-		// Although OpenRouter docs say /models returns all, a specific endpoint might exist or we can filter.
-		// User requested separate calls.
-		const embeddingResponse = await fetch(
-			"https://openrouter.ai/api/v1/embeddings/models"
-		);
-		if (!embeddingResponse.ok) {
-			throw new Error(
-				`Embedding API call failed: ${embeddingResponse.statusText}`
-			);
-		}
-		const embeddingParsed: OpenRouterResponse =
-			(await embeddingResponse.json()) as OpenRouterResponse;
-		const embeddingModels = embeddingParsed.data;
-
-		const resultModels = TARGET_MODEL_IDS.map((targetId) => {
-			const found = chatModels.find((m) => m.id === targetId);
-			if (!found) {
-				console.warn(
-					`// Warning: Model ID '${targetId}' not found in chat data.`
-				);
-				return {
-					id: targetId,
-					inputPrice: 0,
-					outputPrice: 0,
-					contextLength: 0,
-				};
-			}
-
-			return {
-				id: found.id,
-				inputPrice: parseFloat(found.pricing.prompt) * 1000000,
-				outputPrice: parseFloat(found.pricing.completion) * 1000000,
-				contextLength: found.context_length,
-			};
-		});
-
-		const resultEmbeddingModels = TARGET_EMBEDDING_MODELS.map((target) => {
-			const found = embeddingModels.find((m) => m.id === target.id);
-			if (!found) {
-				console.warn(
-					`// Warning: Model ID '${target.id}' not found in embedding data.`
-				);
-				return {
-					...target,
-					inputPrice: 0,
-					outputPrice: 0,
-					contextLength: 0,
-				};
-			}
-
-			return {
-				...target,
-				inputPrice: parseFloat(found.pricing.prompt) * 1000000,
-				outputPrice: parseFloat(found.pricing.completion) * 1000000,
-				contextLength: found.context_length,
-			};
-		});
-
-		const outputString =
-			`export const OPENROUTER_AI_MODELS = [\n` +
-			resultModels
-				.map(
-					(m) =>
-						`\t{ id: "${m.id}", inputPrice: ${Number(
-							m.inputPrice.toFixed(6)
-						)}, outputPrice: ${Number(
-							m.outputPrice.toFixed(6)
-						)}, contextLength: ${m.contextLength} },`
-				)
-				.join("\n") +
-			`\n] as const;\n\n` +
-			`export const OPENROUTER_EMBEDDING_MODELS = [\n` +
-			resultEmbeddingModels
-				.map(
-					(m) =>
-						`\t{ id: "${m.id}", dimensions: ${
-							m.dimensions
-						}, inputPrice: ${Number(
-							m.inputPrice.toFixed(6)
-						)}, outputPrice: ${Number(
-							m.outputPrice.toFixed(6)
-						)}, contextLength: ${m.contextLength} },`
-				)
-				.join("\n") +
-			`\n] as const;`;
-
-		const filePath = path.resolve(
-			__filename,
-			"../../data/openrouter_models.ts"
-		);
-		fs.writeFileSync(filePath, outputString, "utf-8");
-	} catch (error) {
-		console.error("Error generating models:", error);
+async function fetchModels(url: string): Promise<OpenRouterModel[]> {
+	const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+	if (!response.ok) {
+		throw new Error(`GET ${url} failed: ${response.status} ${response.statusText}`);
 	}
+	const parsed = (await response.json()) as OpenRouterResponse;
+	if (!Array.isArray(parsed.data) || parsed.data.length === 0) {
+		throw new Error(`GET ${url} returned no models`);
+	}
+	return parsed.data;
+}
+
+// OpenRouter prices are USD per token; the data file stores USD per 1M tokens.
+const perMillion = (price: string): number => {
+	const value = parseFloat(price) * 1_000_000;
+	if (!Number.isFinite(value) || value < 0) {
+		throw new Error(`Invalid price "${price}"`);
+	}
+	return Number(value.toFixed(6));
 };
 
-main();
+async function main() {
+	const [chatModels, embeddingModels] = await Promise.all([
+		fetchModels("https://openrouter.ai/api/v1/models"),
+		fetchModels("https://openrouter.ai/api/v1/embeddings/models"),
+	]);
+
+	const missing: string[] = [];
+
+	const chatLines = OPENROUTER_AI_MODELS.map(({ id }) => {
+		const found = chatModels.find((m) => m.id === id);
+		if (!found) {
+			missing.push(id);
+			return "";
+		}
+		return `\t{ id: "${id}", inputPrice: ${perMillion(found.pricing.prompt)}, outputPrice: ${perMillion(found.pricing.completion)}, contextLength: ${found.context_length} },`;
+	});
+
+	const embeddingLines = OPENROUTER_EMBEDDING_MODELS.map(
+		({ id, dimensions }) => {
+			const found = embeddingModels.find((m) => m.id === id);
+			if (!found) {
+				missing.push(id);
+				return "";
+			}
+			return `\t{ id: "${id}", dimensions: ${dimensions}, inputPrice: ${perMillion(found.pricing.prompt)}, outputPrice: ${perMillion(found.pricing.completion)}, contextLength: ${found.context_length} },`;
+		},
+	);
+
+	if (missing.length > 0) {
+		throw new Error(
+			`Not found on OpenRouter (remove or rename in src/data/openrouter_models.ts): ${missing.join(", ")}`,
+		);
+	}
+
+	const output =
+		"// prettier-ignore\n\n" +
+		"export const OPENROUTER_AI_MODELS = [\n" +
+		chatLines.join("\n") +
+		"\n] as const;\n\n" +
+		"// prettier-ignore\n\n" +
+		"export const OPENROUTER_EMBEDDING_MODELS = [\n" +
+		embeddingLines.join("\n") +
+		"\n] as const;\n";
+
+	// Resolves to src/ whether run through tsx (src/scripts) or from dist/scripts.
+	const filePath = path.resolve(
+		__dirname,
+		"../../src/data/openrouter_models.ts",
+	);
+	fs.writeFileSync(filePath, output, "utf-8");
+	console.log(
+		`Updated ${chatLines.length} chat and ${embeddingLines.length} embedding models in ${filePath}`,
+	);
+}
+
+main().catch((error) => {
+	console.error("Error generating models:", error);
+	process.exit(1);
+});
