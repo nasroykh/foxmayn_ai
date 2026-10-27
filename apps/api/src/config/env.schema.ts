@@ -1,10 +1,18 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
-// Values copied verbatim from .env.example must never reach production
-const KNOWN_EXAMPLE_SECRETS = new Set([
-	"0Tu0Vx9su71KeT8Dbkm7MyekMLGf7mrc",
-	"azertyuiop",
+// SHA-256 of values that an old public .env.example shipped (auth secret,
+// admin password). They must never reach production. Hashes, so the leaked
+// values are not repeated in the code.
+const KNOWN_EXAMPLE_SECRET_HASHES = new Set([
+	"e370bb2e7a1dd75db2e35ffc816af7707b2a735f5eb19992b248f3456d68e531",
+	"aa3d2fe4f6d301dbd6b8fb2d2fddfb7aeebf3bec53ffff4b39a0967afa88c609",
 ]);
+
+export const isKnownExampleSecret = (
+	value: string,
+	hashes: ReadonlySet<string> = KNOWN_EXAMPLE_SECRET_HASHES,
+): boolean => hashes.has(createHash("sha256").update(value).digest("hex"));
 
 const PLACEHOLDER_PATTERN = /change[_-]?me/i;
 
@@ -19,7 +27,7 @@ export const findPlaceholderEnvKeys = (
 		.filter(
 			([, value]) =>
 				typeof value === "string" &&
-				(PLACEHOLDER_PATTERN.test(value) || KNOWN_EXAMPLE_SECRETS.has(value)),
+				(PLACEHOLDER_PATTERN.test(value) || isKnownExampleSecret(value)),
 		)
 		.map(([key]) => key);
 

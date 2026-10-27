@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { envSchema, findPlaceholderEnvKeys } from "./env.schema";
+import { createHash } from "node:crypto";
+import {
+	envSchema,
+	findPlaceholderEnvKeys,
+	isKnownExampleSecret,
+} from "./env.schema";
 
 const validEnv = {
 	NODE_ENV: "production",
@@ -57,12 +62,12 @@ test("production rejects CHANGE_ME placeholders", () => {
 	assert.deepEqual(paths?.sort(), ["BETTER_AUTH_SECRET", "DB_URL"]);
 });
 
-test("production rejects the .env.example auth secret", () => {
-	const result = envSchema.safeParse({
-		...validEnv,
-		BETTER_AUTH_SECRET: "0Tu0Vx9su71KeT8Dbkm7MyekMLGf7mrc",
-	});
-	assert.equal(result.success, false);
+test("known example secrets are matched by hash", () => {
+	const hashes = new Set([
+		createHash("sha256").update("leaked-example-value").digest("hex"),
+	]);
+	assert.equal(isKnownExampleSecret("leaked-example-value", hashes), true);
+	assert.equal(isKnownExampleSecret("another-value", hashes), false);
 });
 
 test("development tolerates placeholders", () => {
