@@ -55,6 +55,13 @@ import {
 } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
+import {
 	IconPlus,
 	IconTrash,
 	IconCopy,
@@ -69,6 +76,9 @@ export const Route = createFileRoute("/_auth/api-keys")({
 });
 
 const SECONDS_PER_DAY = 86_400;
+
+// Select value for a key with full access (no knowledge base)
+const FULL_ACCESS = "full";
 
 // Number inputs hand back strings; an empty box means "not set".
 const optionalNumber = (schema: z.ZodNumber) =>
@@ -86,6 +96,7 @@ const createKeySchema = z.object({
 		.regex(/^[A-Za-z0-9_-]*$/, "Letters, numbers, _ and - only")
 		.optional(),
 	// days in the form, seconds on the wire
+	knowledgeBase: z.string(),
 	expiresInDays: optionalNumber(
 		z.number().int("Whole days only").min(1, "At least 1 day").max(365, "At most 365 days"),
 	),
@@ -95,6 +106,20 @@ type CreateKeyInput = z.input<typeof createKeySchema>;
 type CreateKeyValues = z.output<typeof createKeySchema>;
 
 type ApiKeyRow = RouterOutputs["apikeys"]["listApiKeys"]["apiKeys"][number];
+
+/** Knowledge base (profile id) a key is limited to; metadata may arrive as JSON text. */
+const keyProfileId = (key: ApiKeyRow): string | null => {
+	let metadata: unknown = key.metadata;
+	if (typeof metadata === "string") {
+		try {
+			metadata = JSON.parse(metadata);
+		} catch {
+			return null;
+		}
+	}
+	const profileId = (metadata as { profileId?: unknown } | null)?.profileId;
+	return typeof profileId === "string" && profileId ? profileId : null;
+};
 
 function ApiKeysPage() {
 	const queryClient = useQueryClient();
@@ -106,6 +131,12 @@ function ApiKeysPage() {
 	const { data: keys, isLoading } = useQuery(
 		orpc.apikeys.listApiKeys.queryOptions({}),
 	);
+	const { data: profilesData } = useQuery(
+		orpc.profiles.listProfiles.queryOptions({ input: { limit: 50 } }),
+	);
+	const profiles = profilesData?.profiles ?? [];
+	const profileName = (id: string) =>
+		profiles.find((p) => p.id === id)?.name ?? "Deleted profile";
 
 	const createMutation = useMutation(
 		orpc.apikeys.createApiKey.mutationOptions({
@@ -164,6 +195,7 @@ function ApiKeysPage() {
 		defaultValues: {
 			name: "",
 			prefix: "",
+			knowledgeBase: FULL_ACCESS,
 			expiresInDays: "",
 		},
 	});
@@ -221,6 +253,7 @@ function ApiKeysPage() {
 									<TableRow>
 										<TableHead>Name</TableHead>
 										<TableHead>Prefix</TableHead>
+										<TableHead>Access</TableHead>
 										<TableHead>Status</TableHead>
 																				<TableHead>Expires</TableHead>
 										<TableHead>Created</TableHead>
@@ -231,7 +264,7 @@ function ApiKeysPage() {
 									{isLoading ? (
 										Array.from({ length: 3 }).map((_, i) => (
 											<TableRow key={i}>
-												{Array.from({ length: 6 }).map((_, j) => (
+												{Array.from({ length: 7 }).map((_, j) => (
 													<TableCell key={j}>
 														<Skeleton className="h-4 w-full" />
 													</TableCell>
@@ -241,7 +274,7 @@ function ApiKeysPage() {
 									) : keyList.length === 0 ? (
 										<TableRow>
 											<TableCell
-												colSpan={6}
+												colSpan={7}
 												className="h-24 text-center text-muted-foreground"
 											>
 												No API keys yet. Create one to get started.
@@ -255,6 +288,14 @@ function ApiKeysPage() {
 												</TableCell>
 												<TableCell className="font-mono text-xs">
 													{key.start || key.prefix || "—"}
+												</TableCell>
+												<TableCell className="text-sm text-muted-foreground">
+													{(() => {
+														const profileId = keyProfileId(key);
+														return profileId
+															? `Chat: ${profileName(profileId)}`
+															: "Full";
+													})()}
 												</TableCell>
 												<TableCell>
 													<button
@@ -331,6 +372,10 @@ function ApiKeysPage() {
 								createMutation.mutate({
 									name: v.name,
 									prefix: v.prefix || undefined,
+									profileId:
+										v.knowledgeBase === FULL_ACCESS
+											? undefined
+											: v.knowledgeBase,
 									expiresIn: v.expiresInDays
 										? v.expiresInDays * SECONDS_PER_DAY
 										: undefined,
@@ -360,6 +405,48 @@ function ApiKeysPage() {
 										<FormControl>
 											<Input {...field} placeholder="myapp_" />
 										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={form.control}
+								name="knowledgeBase"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Access</FormLabel>
+										<Select
+											value={field.value}
+											onValueChange={(value) =>
+												field.onChange(value ?? FULL_ACCESS)
+											}
+											items={[
+												{ label: "Full access", value: FULL_ACCESS },
+												...profiles.map((p) => ({
+													label: `Chat only: ${p.name}`,
+													value: p.id,
+												})),
+											]}
+										>
+											<FormControl>
+												<SelectTrigger className="w-full" aria-label="Access">
+													<SelectValue />
+												</SelectTrigger>
+											</FormControl>
+											<SelectContent>
+												<SelectItem value={FULL_ACCESS}>Full access</SelectItem>
+												{profiles.map((p) => (
+													<SelectItem key={p.id} value={p.id}>
+														Chat only: {p.name}
+													</SelectItem>
+												))}
+											</SelectContent>
+										</Select>
+										<FormDescription>
+											A chat-only key can only ask questions to one knowledge
+											base (profile). Use it on a server that answers your
+											visitors.
+										</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}

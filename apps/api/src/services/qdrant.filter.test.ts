@@ -26,6 +26,15 @@ test("buildChunkFilter adds documentId and source after userId", () => {
 	);
 });
 
+test("buildChunkFilter limits to a knowledge base's documents", () => {
+	assert.deepEqual(buildChunkFilter({ userId: "u1", documentIds: ["d1", "d2"] }), {
+		must: [
+			{ key: "userId", match: { value: "u1" } },
+			{ key: "documentId", match: { any: ["d1", "d2"] } },
+		],
+	});
+});
+
 test("buildChunkFilter refuses an empty userId", () => {
 	assert.throws(() => buildChunkFilter({ userId: "" }));
 });

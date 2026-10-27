@@ -9,15 +9,19 @@ import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
 export const buildChunkFilter = (options: {
 	userId: string;
 	documentId?: string;
+	/** Limit to these documents (a knowledge base). An empty list matches nothing. */
+	documentIds?: string[];
 	source?: string;
 }): Schemas["Filter"] => {
-	const { userId, documentId, source } = options;
+	const { userId, documentId, documentIds, source } = options;
 	if (!userId) throw new Error("userId is required to scope Qdrant filters");
 
-	const must: Array<{ key: string; match: { value: string } }> = [
-		{ key: "userId", match: { value: userId } },
-	];
+	const must: Array<
+		| { key: string; match: { value: string } }
+		| { key: string; match: { any: string[] } }
+	> = [{ key: "userId", match: { value: userId } }];
 	if (documentId) must.push({ key: "documentId", match: { value: documentId } });
+	if (documentIds) must.push({ key: "documentId", match: { any: documentIds } });
 	if (source) must.push({ key: "source", match: { value: source } });
 
 	return { must };

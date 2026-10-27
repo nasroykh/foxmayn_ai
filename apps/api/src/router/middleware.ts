@@ -9,21 +9,20 @@ import {
 	hasAdminRole,
 	isOrgManager,
 	isUserBanned,
-	parseApiKeyOrganizationId,
+	parseApiKeyScope,
+	type ApiKeyScope,
 } from "./access";
 import { toORPCError } from "./errors";
 
-/** Organization an API key is bound to (stored in its metadata at creation). */
-const getApiKeyOrganizationId = async (
-	apiKeyId: string,
-): Promise<string | null> => {
+/** Organization and knowledge base an API key is bound to (stored in its metadata at creation). */
+const getApiKeyScope = async (apiKeyId: string): Promise<ApiKeyScope> => {
 	const [row] = await db
 		.select({ metadata: apikey.metadata })
 		.from(apikey)
 		.where(eq(apikey.id, apiKeyId))
 		.limit(1);
 
-	return parseApiKeyOrganizationId(row?.metadata);
+	return parseApiKeyScope(row?.metadata);
 };
 
 // Every procedure goes through this, so better-auth APIErrors thrown by the
@@ -60,6 +59,8 @@ const authMiddleware = root.middleware(async ({ context, next }) => {
 	// With enableSessionForAPIKeys, better-auth answers the session from the
 	// key header and the mock session id is the API key id.
 	const isApiKeySession = Boolean(context.headers.get(API_KEY_HEADER));
+	const apiKeyId = isApiKeySession ? sessionData.session.id : null;
+	const apiKeyScope = apiKeyId ? await getApiKeyScope(apiKeyId) : null;
 
 	// Adds session and user to the context
 	return next({
@@ -67,14 +68,35 @@ const authMiddleware = root.middleware(async ({ context, next }) => {
 			session: sessionData.session,
 			user: sessionData.user,
 			isApiKeySession,
-			apiKeyId: isApiKeySession ? sessionData.session.id : null,
+			apiKeyId,
+			apiKeyOrganizationId: apiKeyScope?.organizationId ?? null,
+			// Set for chat-only keys limited to one knowledge base (RAG profile)
+			apiKeyProfileId: apiKeyScope?.profileId ?? null,
 		},
 	});
 });
 
+/**
+ * A key bound to one knowledge base may only chat with it. Every procedure
+ * rejects it unless built from the knowledge-base-aware chain (chatProcedure),
+ * so a new route is safe by default.
+ */
+const rejectKnowledgeBaseKeys = os
+	.$context<{ apiKeyProfileId: string | null }>()
+	.middleware(async ({ context, next }) => {
+		if (context.apiKeyProfileId) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "This API key can only be used to chat with its knowledge base",
+			});
+		}
+		return next();
+	});
+
 export const publicProcedure = base;
 
-export const authProcedure = base.use(authMiddleware);
+const authenticated = base.use(authMiddleware);
+
+export const authProcedure = authenticated.use(rejectKnowledgeBaseKeys);
 
 /**
  * Like authProcedure but only for browser sessions: API keys are rejected so a
@@ -107,11 +129,11 @@ export const adminProcedure = sessionProcedure.use(async ({ context, next }) => 
  * Browser sessions use `session.activeOrganizationId`; API keys use the
  * organization stored in the key's metadata.
  */
-export const orgProcedure = authProcedure.use(async ({ context, next }) => {
+const withOrganization = authenticated.use(async ({ context, next }) => {
 	let orgId: string | null | undefined;
 
 	if (context.apiKeyId) {
-		orgId = await getApiKeyOrganizationId(context.apiKeyId);
+		orgId = context.apiKeyOrganizationId;
 		if (!orgId) {
 			throw new ORPCError("BAD_REQUEST", {
 				message: "This API key is not bound to an organization.",
@@ -144,6 +166,8 @@ export const orgProcedure = authProcedure.use(async ({ context, next }) => {
 	});
 });
 
+export const orgProcedure = withOrganization.use(rejectKnowledgeBaseKeys);
+
 /**
  * Organization owners and admins only (credits history, usage statistics).
  */
@@ -160,25 +184,37 @@ export const orgManagerProcedure = orgProcedure.use(
 );
 
 /**
- * Requires an active organization AND sufficient credits.
- * Use this for AI-consuming endpoints (chat, embedding, indexing).
- *
- * This is a fast-fail guard — it prevents wasted work for clearly broke orgs.
- * The hard enforcement is reserveCredits(), an atomic conditional debit that
- * fails regardless of what this (non-atomic) check returned.
+ * Fast-fail guard for AI-consuming endpoints: it prevents wasted work for
+ * clearly broke orgs. The hard enforcement is reserveCredits(), an atomic
+ * conditional debit that fails regardless of what this (non-atomic) check returned.
  */
-export const creditsProcedure = orgProcedure.use(async ({ context, next }) => {
-	const hasCredits = await hasEnoughCredits(
-		context.organizationId,
-		0.001, // ~$0.001 minimum — enough for at least a small embedding call
-	);
+const requireCredits = os
+	.$context<{ organizationId: string }>()
+	.middleware(async ({ context, next }) => {
+		const hasCredits = await hasEnoughCredits(
+			context.organizationId,
+			0.001, // ~$0.001 minimum — enough for at least a small embedding call
+		);
 
-	if (!hasCredits) {
-		throw new ORPCError("FORBIDDEN", {
-			message:
-				"Insufficient credits. Please top up your organization's balance.",
-		});
-	}
+		if (!hasCredits) {
+			throw new ORPCError("FORBIDDEN", {
+				message:
+					"Insufficient credits. Please top up your organization's balance.",
+			});
+		}
 
-	return next({ context });
-});
+		return next();
+	});
+
+/**
+ * Requires an active organization AND sufficient credits.
+ * Use this for AI-consuming endpoints (embedding, indexing).
+ */
+export const creditsProcedure = orgProcedure.use(requireCredits);
+
+/**
+ * creditsProcedure that also accepts keys bound to one knowledge base. Only the
+ * chat routes use it, and they must pass `apiKeyProfileId` through
+ * `resolveKnowledgeBase` so such a key never reaches another profile.
+ */
+export const chatProcedure = withOrganization.use(requireCredits);

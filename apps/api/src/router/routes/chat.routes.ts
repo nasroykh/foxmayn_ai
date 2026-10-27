@@ -5,6 +5,7 @@ import {
 	queryRAGStream,
 	searchChunks,
 	getDocument,
+	isDocumentInProfile,
 	type ChatMessage,
 } from "../../services/rag.service";
 import {
@@ -20,7 +21,7 @@ import {
 	HISTORY_MAX_MESSAGES,
 	selectHistory,
 } from "../../utils/history";
-import { creditsProcedure, publicProcedure } from "../middleware";
+import { chatProcedure, publicProcedure } from "../middleware";
 import { env } from "../../config/env";
 import {
 	OPENROUTER_AI_MODELS,
@@ -75,15 +76,37 @@ const queryBodySchema = z
 	);
 
 /**
- * Rejects a documentId filter that does not belong to the caller.
+ * Knowledge base (profile) for a request. A key bound to one knowledge base
+ * always uses it and cannot name another; other callers choose freely (and
+ * their profile ownership is checked when it is loaded).
+ */
+function resolveKnowledgeBase(
+	requestedProfileId: string | undefined,
+	apiKeyProfileId: string | null,
+): string | undefined {
+	if (!apiKeyProfileId) return requestedProfileId;
+	if (requestedProfileId && requestedProfileId !== apiKeyProfileId) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "This API key is limited to another knowledge base",
+		});
+	}
+	return apiKeyProfileId;
+}
+
+/**
+ * Rejects a documentId filter that does not belong to the caller, or (for a
+ * key bound to one knowledge base) to that knowledge base.
  */
 async function assertOwnsDocument(
 	documentId: string | undefined,
 	userId: string,
+	apiKeyProfileId: string | null,
 ): Promise<void> {
 	if (!documentId) return;
-	const doc = await getDocument(documentId, userId);
-	if (!doc) {
+	const found = apiKeyProfileId
+		? await isDocumentInProfile(documentId, apiKeyProfileId, userId)
+		: Boolean(await getDocument(documentId, userId));
+	if (!found) {
 		throw new ORPCError("NOT_FOUND", {
 			message: "Document not found",
 		});
@@ -100,6 +123,8 @@ async function resolveChatHistory(input: {
 	conversationId?: string;
 	profileId?: string;
 	userId: string;
+	/** Set for keys bound to one knowledge base: only its conversations can be continued. */
+	apiKeyProfileId: string | null;
 }): Promise<{
 	messages: ChatMessage[];
 	// Existing conversation id, null for client-managed mode and new conversations
@@ -121,7 +146,10 @@ async function resolveChatHistory(input: {
 	// Mode 2: Server-managed, continuing an existing conversation
 	if (input.conversationId) {
 		const conv = await getConversation(input.conversationId, input.userId);
-		if (!conv) {
+		if (
+			!conv ||
+			(input.apiKeyProfileId && conv.profileId !== input.apiKeyProfileId)
+		) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Conversation not found",
 			});
@@ -187,7 +215,7 @@ async function persistExchange(input: {
 }
 
 export const chatRoutes = {
-	query: creditsProcedure
+	query: chatProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/query`,
@@ -198,14 +226,23 @@ export const chatRoutes = {
 		.handler(async ({ input, context }) => {
 			const { query, messages, conversationId, options } = input;
 
-			await assertOwnsDocument(options?.documentId, context.user.id);
+			const profileId = resolveKnowledgeBase(
+				options?.profileId,
+				context.apiKeyProfileId,
+			);
+			await assertOwnsDocument(
+				options?.documentId,
+				context.user.id,
+				context.apiKeyProfileId,
+			);
 
 			// Resolve history mode
 			const history = await resolveChatHistory({
 				messages,
 				conversationId,
-				profileId: options?.profileId,
+				profileId,
 				userId: context.user.id,
+				apiKeyProfileId: context.apiKeyProfileId,
 			});
 
 			const result = await queryRAG(query, {
@@ -239,7 +276,7 @@ export const chatRoutes = {
 			};
 		}),
 
-	search: creditsProcedure
+	search: chatProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/search`,
@@ -254,12 +291,19 @@ export const chatRoutes = {
 		.handler(async ({ input, context }) => {
 			const { query, options } = input;
 
-			await assertOwnsDocument(options?.documentId, context.user.id);
+			await assertOwnsDocument(
+				options?.documentId,
+				context.user.id,
+				context.apiKeyProfileId,
+			);
 
 			const results = await searchChunks(query, {
 				limit: options?.limit,
 				scoreThreshold: options?.scoreThreshold,
-				profileId: options?.profileId,
+				profileId: resolveKnowledgeBase(
+					options?.profileId,
+					context.apiKeyProfileId,
+				),
 				filter: {
 					documentId: options?.documentId,
 					source: options?.source,
@@ -271,7 +315,7 @@ export const chatRoutes = {
 			return { results };
 		}),
 
-	queryStream: creditsProcedure
+	queryStream: chatProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/query/stream`,
@@ -282,14 +326,23 @@ export const chatRoutes = {
 		.handler(async function* ({ input, context }) {
 			const { query, messages, conversationId, options } = input;
 
-			await assertOwnsDocument(options?.documentId, context.user.id);
+			const profileId = resolveKnowledgeBase(
+				options?.profileId,
+				context.apiKeyProfileId,
+			);
+			await assertOwnsDocument(
+				options?.documentId,
+				context.user.id,
+				context.apiKeyProfileId,
+			);
 
 			// Resolve history mode
 			const history = await resolveChatHistory({
 				messages,
 				conversationId,
-				profileId: options?.profileId,
+				profileId,
 				userId: context.user.id,
+				apiKeyProfileId: context.apiKeyProfileId,
 			});
 
 			// Existing conversation: announce its id first

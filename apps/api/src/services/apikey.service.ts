@@ -1,11 +1,15 @@
 import { ORPCError } from "@orpc/server";
 import { auth } from "../config/auth";
 import { getMemberRole } from "./organization.service";
+import { getProfile } from "./profile.service";
 
 /**
  * API keys belong to an organization: the organization id is stored in the key
  * metadata at creation, and orgProcedure resolves the organization from it for
  * API-key sessions (re-checking that the key owner is still a member).
+ *
+ * A key may also be bound to one knowledge base (`profileId` in the metadata).
+ * Such a key can only call the chat routes, and only with that profile.
  */
 
 /**
@@ -15,6 +19,8 @@ export type CreateApiKeyInput = {
 	name?: string;
 	expiresIn?: number;
 	prefix?: string;
+	/** Knowledge base (RAG profile of the key owner) the key is limited to. */
+	profileId?: string;
 };
 
 /**
@@ -38,6 +44,16 @@ export type UpdateApiKeyInput = {
 	enabled?: boolean;
 };
 
+const assertOwnsProfile = async (userId: string, profileId: string) => {
+	if (!(await getProfile(profileId, userId))) {
+		throw new ORPCError("NOT_FOUND", { message: "Profile not found" });
+	}
+};
+
+/** Metadata the key is bound by; never taken from free-form input. */
+const scopeMetadata = (organizationId: string, profileId?: string) =>
+	profileId ? { organizationId, profileId } : { organizationId };
+
 const assertOrganizationMember = async (
 	userId: string,
 	organizationId: string,
@@ -60,9 +76,11 @@ export async function createApiKey(
 	headers: Headers,
 ) {
 	await assertOrganizationMember(userId, organizationId);
+	const { profileId, ...rest } = input;
+	if (profileId) await assertOwnsProfile(userId, profileId);
 
 	return auth.api.createApiKey({
-		body: { ...input, metadata: { organizationId } },
+		body: { ...rest, metadata: scopeMetadata(organizationId, profileId) },
 		headers,
 	});
 }
@@ -74,9 +92,19 @@ export async function createApiKey(
 export async function createApiKeyForUser(input: CreateApiKeyForUserInput) {
 	await assertOrganizationMember(input.userId, input.organizationId);
 
-	const { organizationId, metadata, ...rest } = input;
+	const { organizationId, profileId, metadata, ...rest } = input;
+	if (profileId) await assertOwnsProfile(input.userId, profileId);
+	// The binding keys are always ours: free-form metadata cannot set them
+	const {
+		organizationId: _org,
+		profileId: _profile,
+		...extra
+	} = metadata ?? {};
 	return auth.api.createApiKey({
-		body: { ...rest, metadata: { ...metadata, organizationId } },
+		body: {
+			...rest,
+			metadata: { ...extra, ...scopeMetadata(organizationId, profileId) },
+		},
 	});
 }
 

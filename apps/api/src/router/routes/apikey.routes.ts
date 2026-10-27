@@ -34,6 +34,13 @@ export const apiKeyRoutes = {
 					.string()
 					.min(1)
 					.describe("Organization the key is bound to (the user must be a member)"),
+				profileId: z
+					.string()
+					.min(1)
+					.optional()
+					.describe(
+						"Limit the key to chat with this knowledge base of the user (RAG profile). Such a key cannot call any other endpoint.",
+					),
 				name: z
 					.string()
 					.optional()
@@ -82,6 +89,13 @@ export const apiKeyRoutes = {
 					.string()
 					.optional()
 					.describe("Custom prefix for the generated key"),
+				profileId: z
+					.string()
+					.min(1)
+					.optional()
+					.describe(
+						"Limit the key to chat with this knowledge base (RAG profile). Such a key cannot call any other endpoint.",
+					),
 			})
 		)
 		.handler(async ({ input, context }) => {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { db, document, documentChunk } from "@repo/db";
+import { db, document } from "@repo/db";
 import { searchVectors } from "@repo/qdrant";
 import {
 	eq,
@@ -419,22 +419,25 @@ const searchWithProfile = async (
 	// Throws BAD_REQUEST for a model that is not in the supported list
 	const collectionName = await ensureCollection(embeddingModelId);
 
-	// Early exit: if no chunks are indexed with this model yet, skip the embedding API call.
+	// Documents searchable with this model. A profile is a knowledge base: only
+	// its documents are searched (those without a profile follow the default one).
 	// Documents indexed with another embedding model live in another collection.
-	const [chunkCount] = await db
-		.select({ count: count() })
-		.from(documentChunk)
-		.innerJoin(document, eq(documentChunk.documentId, document.id))
+	const searchable = await db
+		.select({ id: document.id })
+		.from(document)
 		.where(
 			and(
-				eq(document.userId, userId),
+				profile
+					? profileDocumentsFilter(profile, userId)
+					: eq(document.userId, userId),
 				eq(document.embeddingModel, embeddingModelId),
 				filter?.documentId
 					? eq(document.id, filter.documentId)
 					: eq(document.status, "indexed"),
 			),
 		);
-	if ((chunkCount?.count ?? 0) === 0) return [];
+	// Early exit: nothing indexed here yet, skip the embedding API call
+	if (searchable.length === 0) return [];
 
 	const { embeddings, usage: embedUsage } = await OpenRouterEmbed(
 		embeddingModelId,
@@ -456,6 +459,7 @@ const searchWithProfile = async (
 	const qdrantFilter = buildChunkFilter({
 		userId,
 		documentId: filter?.documentId,
+		documentIds: profile ? searchable.map((d) => d.id) : undefined,
 		source: filter?.source,
 	});
 
@@ -485,6 +489,22 @@ export const searchChunks = async (
 ): Promise<SearchResult[]> => {
 	const profile = await loadProfile(options.profileId, options.userId);
 	return searchWithProfile(query, profile, options);
+};
+
+/** True when the document belongs to the knowledge base (profile) of `userId`. */
+export const isDocumentInProfile = async (
+	documentId: string,
+	profileId: string,
+	userId: string,
+): Promise<boolean> => {
+	const profile = await getProfile(profileId, userId);
+	if (!profile) return false;
+	const [row] = await db
+		.select({ id: document.id })
+		.from(document)
+		.where(and(eq(document.id, documentId), profileDocumentsFilter(profile, userId)))
+		.limit(1);
+	return Boolean(row);
 };
 
 // ============================================================================

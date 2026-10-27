@@ -38,24 +38,36 @@ export const isUserBanned = (
 	return new Date(user.banExpires).getTime() > now;
 };
 
+/** What an API key is bound to, from its metadata. */
+export type ApiKeyScope = {
+	organizationId: string | null;
+	/** Knowledge base (RAG profile) a chat-only key is limited to. */
+	profileId: string | null;
+};
+
+const nonEmptyString = (value: unknown): string | null =>
+	typeof value === "string" && value ? value : null;
+
 /**
- * Read the organization id stored in an API key's metadata. The column holds
- * JSON text, and legacy rows can be double-stringified.
+ * Read the organization and knowledge base stored in an API key's metadata.
+ * The column holds JSON text, and legacy rows can be double-stringified.
  */
-export const parseApiKeyOrganizationId = (raw: unknown): string | null => {
+export const parseApiKeyScope = (raw: unknown): ApiKeyScope => {
+	const none: ApiKeyScope = { organizationId: null, profileId: null };
 	let value: unknown = raw;
 	for (let i = 0; i < 2 && typeof value === "string"; i++) {
 		try {
 			value = JSON.parse(value);
 		} catch {
-			return null;
+			return none;
 		}
 	}
-	if (!value || typeof value !== "object") return null;
-	const organizationId = (value as { organizationId?: unknown }).organizationId;
-	return typeof organizationId === "string" && organizationId
-		? organizationId
-		: null;
+	if (!value || typeof value !== "object") return none;
+	const metadata = value as { organizationId?: unknown; profileId?: unknown };
+	return {
+		organizationId: nonEmptyString(metadata.organizationId),
+		profileId: nonEmptyString(metadata.profileId),
+	};
 };
 
 export type TtlCache<V> = {

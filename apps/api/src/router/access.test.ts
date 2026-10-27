@@ -7,7 +7,7 @@ import {
 	touchesPrivilegedUserFields,
 	isOrgManager,
 	isUserBanned,
-	parseApiKeyOrganizationId,
+	parseApiKeyScope,
 } from "./access";
 
 test("hasRole handles comma-separated and missing roles", () => {
@@ -40,17 +40,25 @@ test("isUserBanned respects banExpires", () => {
 	);
 });
 
-test("parseApiKeyOrganizationId reads plain and double-stringified metadata", () => {
-	assert.equal(parseApiKeyOrganizationId({ organizationId: "o1" }), "o1");
-	assert.equal(parseApiKeyOrganizationId('{"organizationId":"o2"}'), "o2");
-	assert.equal(
-		parseApiKeyOrganizationId(JSON.stringify(JSON.stringify({ organizationId: "o3" }))),
-		"o3",
-	);
-	assert.equal(parseApiKeyOrganizationId(null), null);
-	assert.equal(parseApiKeyOrganizationId("not json"), null);
-	assert.equal(parseApiKeyOrganizationId("{}"), null);
-	assert.equal(parseApiKeyOrganizationId({ organizationId: 5 }), null);
+test("parseApiKeyScope reads plain and double-stringified metadata", () => {
+	const org = (raw: unknown) => parseApiKeyScope(raw).organizationId;
+	assert.equal(org({ organizationId: "o1" }), "o1");
+	assert.equal(org('{"organizationId":"o2"}'), "o2");
+	assert.equal(org(JSON.stringify(JSON.stringify({ organizationId: "o3" }))), "o3");
+	assert.equal(org(null), null);
+	assert.equal(org("not json"), null);
+	assert.equal(org("{}"), null);
+	assert.equal(org({ organizationId: 5 }), null);
+});
+
+test("parseApiKeyScope reads the knowledge base of a chat-only key", () => {
+	assert.deepEqual(parseApiKeyScope({ organizationId: "o1", profileId: "p1" }), {
+		organizationId: "o1",
+		profileId: "p1",
+	});
+	assert.equal(parseApiKeyScope({ organizationId: "o1" }).profileId, null);
+	assert.equal(parseApiKeyScope({ organizationId: "o1", profileId: "" }).profileId, null);
+	assert.equal(parseApiKeyScope({ organizationId: "o1", profileId: 7 }).profileId, null);
 });
 
 test("ttl cache expires entries", () => {
