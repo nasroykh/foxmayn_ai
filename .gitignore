@@ -44,3 +44,7 @@ coverage/
 # Misc
 *.local
 *.log
+
+# Local agent skills (not part of the product)
+.agents/
+skills-lock.json
