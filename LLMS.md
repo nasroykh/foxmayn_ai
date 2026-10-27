@@ -180,4 +180,4 @@ make logs-api    # 3. Monitor migrations
 - **Build Images**: `docker-compose build`
 - **Tag & Push**: Push to Docker registry
 - **Deploy**: Use Docker Compose on VPS or container orchestration (ECS, Cloud Run, etc.)
-- **See**: [DOCKER_SETUP.md](./DOCKER_SETUP.md) for detailed deployment guide
+- **See**: [DOCKER_SETUP.md](./DOCKER.md) for detailed deployment guide
