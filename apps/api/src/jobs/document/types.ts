@@ -19,6 +19,8 @@ export interface IndexDocumentJobData {
 	profileId?: string;
 	// Embedding tokens already paid for by failed attempts (billed on terminal failure)
 	embeddedTokens?: number;
+	// An earlier attempt already replaced the old index (partial output may exist)
+	indexReplaced?: boolean;
 }
 
 export type ReindexDocumentJobData = IndexDocumentJobData;

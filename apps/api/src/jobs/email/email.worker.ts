@@ -21,8 +21,8 @@ async function processSendEmail(
 
 	console.log(`[Email Worker] Sending email to: ${maskEmails(to)}`);
 
-	let emailHtml = html;
-	let emailText = text;
+	const emailHtml = html;
+	const emailText = text;
 
 	// If using a template, render it
 	if (template) {

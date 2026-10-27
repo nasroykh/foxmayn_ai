@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { authProcedure } from "../middleware";
+import { adminProcedure, authProcedure, sessionProcedure } from "../middleware";
 import { env } from "../../config/env";
 import {
 	createOrganization,
@@ -13,6 +13,7 @@ import {
 	removeMember,
 	getInvitation,
 	rejectInvitation,
+	adminListOrganizations,
 } from "../../services/organization.service";
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
@@ -52,6 +53,12 @@ const removeMemberSchema = z.object({
 	organizationId: z.string(),
 });
 
+const adminListOrgsSchema = z.object({
+	search: z.string().max(100).optional(),
+	limit: z.coerce.number().int().min(1).max(100).default(20),
+	offset: z.coerce.number().int().min(0).default(0),
+});
+
 const invitationIdSchema = z.object({
 	invitationId: z.string(),
 });
@@ -64,7 +71,7 @@ export const organizationRoutes = {
 	// -------------------------------------------------------------------------
 	// Create Organization
 	// -------------------------------------------------------------------------
-	create: authProcedure
+	create: sessionProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/organizations`,
@@ -78,7 +85,7 @@ export const organizationRoutes = {
 	// -------------------------------------------------------------------------
 	// Update Organization
 	// -------------------------------------------------------------------------
-	update: authProcedure
+	update: sessionProcedure
 		.route({
 			method: "PATCH",
 			path: `${PREFIX}/organizations`,
@@ -131,7 +138,7 @@ export const organizationRoutes = {
 	// -------------------------------------------------------------------------
 	// Invite Member
 	// -------------------------------------------------------------------------
-	inviteMember: authProcedure
+	inviteMember: sessionProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/organizations/members/invite`,
@@ -145,7 +152,7 @@ export const organizationRoutes = {
 	// -------------------------------------------------------------------------
 	// Update Member Role
 	// -------------------------------------------------------------------------
-	updateMemberRole: authProcedure
+	updateMemberRole: sessionProcedure
 		.route({
 			method: "PATCH",
 			path: `${PREFIX}/organizations/members/role`,
@@ -159,7 +166,7 @@ export const organizationRoutes = {
 	// -------------------------------------------------------------------------
 	// Remove Member
 	// -------------------------------------------------------------------------
-	removeMember: authProcedure
+	removeMember: sessionProcedure
 		.route({
 			method: "DELETE",
 			path: `${PREFIX}/organizations/members`,
@@ -187,7 +194,7 @@ export const organizationRoutes = {
 	// -------------------------------------------------------------------------
 	// Reject Invitation
 	// -------------------------------------------------------------------------
-	rejectInvitation: authProcedure
+	rejectInvitation: sessionProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/organizations/invitations/reject`,
@@ -196,5 +203,19 @@ export const organizationRoutes = {
 		.input(invitationIdSchema)
 		.handler(async ({ input, context }) => {
 			return rejectInvitation(input.invitationId, context.headers);
+		}),
+
+	// -------------------------------------------------------------------------
+	// List All Organizations (admin)
+	// -------------------------------------------------------------------------
+	adminList: adminProcedure
+		.route({
+			method: "GET",
+			path: `${PREFIX}/admin/organizations`,
+			description: "List all organizations with credits balance (Admin only)",
+		})
+		.input(adminListOrgsSchema)
+		.handler(async ({ input }) => {
+			return adminListOrganizations(input);
 		}),
 };

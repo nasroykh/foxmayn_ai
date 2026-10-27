@@ -15,6 +15,13 @@ export const hasRole = (
 export const hasAdminRole = (role: string | null | undefined): boolean =>
 	hasRole(role, ["admin"]);
 
+/** User fields that decide access: an admin must not change them on their own account. */
+const PRIVILEGED_USER_FIELDS = ["role", "banned", "banReason", "banExpires"];
+
+export const touchesPrivilegedUserFields = (
+	data: Record<string, unknown>,
+): boolean => PRIVILEGED_USER_FIELDS.some((field) => field in data);
+
 /** Organization roles allowed to read credits and usage of the whole org. */
 export const ORG_MANAGER_ROLES = ["owner", "admin"] as const;
 
@@ -55,6 +62,8 @@ export type TtlCache<V> = {
 	get(key: string): V | undefined;
 	set(key: string, value: V): void;
 	delete(key: string): void;
+	/** Remove every entry whose key matches. */
+	deleteWhere(predicate: (key: string) => boolean): void;
 	clear(): void;
 };
 
@@ -90,6 +99,9 @@ export const createTtlCache = <V>(
 		},
 		delete(key) {
 			entries.delete(key);
+		},
+		deleteWhere(predicate) {
+			for (const key of entries.keys()) if (predicate(key)) entries.delete(key);
 		},
 		clear() {
 			entries.clear();

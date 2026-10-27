@@ -1,10 +1,12 @@
-import { Worker, Job, UnrecoverableError } from "bullmq";
+import { Worker, Job, UnrecoverableError, DelayedError } from "bullmq";
 import { randomUUID } from "crypto";
 import { db, document, documentChunk, aiUsageLog } from "@repo/db";
 import { upsertVectors, deleteVectorsByFilter, type Point } from "@repo/qdrant";
 import { eq, and } from "@repo/db/drizzle-orm";
 import { OpenRouterEmbed } from "@repo/llm/openrouter";
 import { redisConnection } from "../connection";
+import { redis } from "../../config/redis";
+import { acquireDocumentLock } from "./document.lock";
 import {
 	type IndexDocumentJobData,
 	type DeleteDocumentJobData,
@@ -25,8 +27,9 @@ import {
 	settleReservation,
 	findTransactionByReference,
 	type CreditReservation,
+	type DbTransaction,
 } from "../../services/credits.service";
-import { recordUsage } from "../../services/usage.service";
+import { invalidateUsageStats } from "../../services/usage.service";
 import { calculateCost, CREDIT_EPSILON } from "../../utils/cost";
 import {
 	DEFAULT_CHUNK_SIZE,
@@ -38,16 +41,22 @@ const QUEUE_NAME = "document";
 // Chunks per embedding request, Postgres insert and Qdrant upsert
 const INDEX_BATCH_SIZE = 64;
 const DEFAULT_EMBEDDING_MODEL = "openai/text-embedding-3-small";
+// Delay before a job retries after finding its document locked
+const LOCK_RETRY_DELAY_MS = 5_000;
 
 /**
  * Index a document: chunk, embed, store chunks and vectors, bill.
  * Shared by the index and re-index jobs.
  *
- * - Idempotent: existing chunks and vectors of the document are removed first,
- *   so a retry or a crash recovery never duplicates them.
+ * - Idempotent: existing chunks and vectors of the document are removed (after
+ *   the reservation succeeded), so a retry or a crash recovery never duplicates
+ *   them. If the reservation is refused the old index is kept and the document
+ *   is marked failed with the reason in metadata.error.
  * - Billing: the real chunk token counts are reserved up front. The reservation
  *   is keyed by job id, so a retry reuses it. It is settled on the tokens actually
- *   embedded, on success or on terminal failure.
+ *   embedded, on success or on terminal failure. The settlement, its "already
+ *   settled" marker (the usage log row) and the indexed status are one transaction.
+ * - The caller (processJob) holds a per-document lock.
  */
 async function processIndexDocument(
 	job: Job<IndexDocumentJobData>,
@@ -78,40 +87,95 @@ async function processIndexDocument(
 		};
 	};
 
-	const settle = async (tokens: number, context: Record<string, unknown>) => {
-		settled = true;
+	/**
+	 * Settle the reservation on the tokens embedded. The usage log row is the
+	 * "already settled" marker and is written in the same transaction as the
+	 * refund/charge (and the final status update), so a retry can neither settle
+	 * twice nor skip billing.
+	 */
+	const settle = async (
+		tokens: number,
+		context: Record<string, unknown>,
+		finalize?: (tx: DbTransaction) => Promise<void>,
+	) => {
 		const actualCost = calculateCost(embeddingModelId, tokens, 0);
+		const noReservation = {
+			orgId: organizationId,
+			userId,
+			amount: 0,
+			transactionId: "",
+		};
 		try {
 			await settleReservation(
-				reservation ?? {
-					orgId: organizationId,
-					userId,
-					amount: 0,
-					transactionId: "",
-				},
+				reservation ?? noReservation,
 				actualCost,
 				`embedding ${documentId}`,
 				usageId,
+				async (tx) => {
+					// Nothing reserved and nothing embedded: no marker needed
+					if (reservation || tokens > 0) {
+						const inserted = await tx
+							.insert(aiUsageLog)
+							.values({
+								id: usageId,
+								organizationId,
+								userId,
+								operationType: "embedding",
+								model: embeddingModelId,
+								inputTokens: tokens,
+								outputTokens: 0,
+								totalTokens: tokens,
+								costCredits: actualCost.toFixed(8),
+								metadata: {
+									documentId,
+									context: "document_indexing",
+									...context,
+								},
+							})
+							.onConflictDoNothing()
+							.returning({ id: aiUsageLog.id });
+						// Marker already present: an earlier attempt settled
+						if (inserted.length === 0) return false;
+					}
+					await finalize?.(tx);
+					return true;
+				},
 			);
+			settled = true;
+			await invalidateUsageStats(organizationId);
 		} catch (err) {
-			// Never fail the job over billing; log everything needed to reconcile
+			// Rolled back as a whole: nothing was settled, the marker is absent
 			console.error(
 				`[Document Worker] SETTLEMENT FAILED for ${documentId} (org ${organizationId}, reserved ${reservation?.amount ?? 0}, actual ${actualCost}):`,
 				err,
 			);
+			throw err;
 		}
-		if (tokens > 0) {
-			await recordUsage({
-				id: usageId,
-				organizationId,
-				userId,
-				operationType: "embedding",
-				model: embeddingModelId,
-				inputTokens: tokens,
-				outputTokens: 0,
-				costCredits: actualCost,
-				metadata: { documentId, context: "document_indexing", ...context },
-			});
+	};
+
+	// True once the old chunks and vectors were (or may have been) replaced
+	let indexReplaced = job.data.indexReplaced ?? false;
+
+	/** Keep the old index, mark the document failed with the reason in metadata.error. */
+	const markIndexingRefused = async (reason: string) => {
+		try {
+			const [current] = await db
+				.select({ metadata: document.metadata })
+				.from(document)
+				.where(eq(document.id, documentId));
+			if (!current) return;
+			await db
+				.update(document)
+				.set({
+					status: "failed",
+					metadata: { ...(current.metadata ?? {}), error: reason },
+				})
+				.where(eq(document.id, documentId));
+		} catch (markErr) {
+			console.error(
+				`[Document Worker] Failed to record refusal for ${documentId}:`,
+				markErr,
+			);
 		}
 	};
 
@@ -126,6 +190,7 @@ async function processIndexDocument(
 				content: document.content,
 				source: document.source,
 				metadata: document.metadata,
+				status: document.status,
 			})
 			.from(document)
 			.where(eq(document.id, documentId));
@@ -147,7 +212,18 @@ async function processIndexDocument(
 				.select({ id: aiUsageLog.id })
 				.from(aiUsageLog)
 				.where(eq(aiUsageLog.id, usageId));
-			if (log) settled = true;
+			if (log) {
+				// Settlement and the "indexed" status commit together, so the work is
+				// done: a later step (progress update) failed after the commit
+				if (doc.status === "indexed") {
+					return {
+						documentId,
+						chunkCount: 0,
+						processingTimeMs: Date.now() - startTime,
+					};
+				}
+				settled = true;
+			}
 		}
 
 		const profileId = job.data.profileId ?? doc.profileId;
@@ -156,22 +232,6 @@ async function processIndexDocument(
 			(await getDefaultProfile(userId));
 		embeddingModelId = profile?.embeddingModel ?? DEFAULT_EMBEDDING_MODEL;
 		const collectionName = await ensureCollection(embeddingModelId);
-
-		// Record the model first so searches only see the document through its own collection
-		await db
-			.update(document)
-			.set({
-				status: "processing",
-				embeddingModel: embeddingModelId,
-				chunkCount: 0,
-			})
-			.where(eq(document.id, documentId));
-
-		// Idempotent start: drop whatever an earlier attempt or model left behind
-		await deleteDocumentVectors(documentId);
-		await db
-			.delete(documentChunk)
-			.where(eq(documentChunk.documentId, documentId));
 
 		await job.updateProgress(5);
 
@@ -204,13 +264,35 @@ async function processIndexDocument(
 						referenceId: reserveRef,
 					});
 				} catch (err) {
-					// Retrying cannot add credits
-					throw new UnrecoverableError(
-						err instanceof Error ? err.message : "Insufficient credits",
-					);
+					// Retrying cannot add credits. The old index (chunks, vectors, model)
+					// is still untouched: keep it and record why this job gave up.
+					const reason =
+						err instanceof Error ? err.message : "Insufficient credits";
+					await markIndexingRefused(reason);
+					throw new UnrecoverableError(reason);
 				}
 			}
 		}
+
+		// Step 2b: Paid for, now it is safe to replace the old index. Record the model
+		// first so searches only see the document through its own collection.
+		const { error: _previousError, ...cleanMetadata } = doc.metadata ?? {};
+		await db
+			.update(document)
+			.set({
+				status: "processing",
+				embeddingModel: embeddingModelId,
+				chunkCount: 0,
+				metadata: cleanMetadata,
+			})
+			.where(eq(document.id, documentId));
+		indexReplaced = true;
+
+		// Idempotent start: drop whatever an earlier attempt or model left behind
+		await deleteDocumentVectors(documentId);
+		await db
+			.delete(documentChunk)
+			.where(eq(documentChunk.documentId, documentId));
 
 		// Step 3: Embed, then store chunks and vectors, batch by batch
 		const totalBatches = Math.ceil(chunks.length / INDEX_BATCH_SIZE);
@@ -245,7 +327,7 @@ async function processIndexDocument(
 						chunkIndex: chunk.index,
 						userId,
 						source: doc.source ?? undefined,
-						metadata: doc.metadata ?? undefined,
+						metadata: cleanMetadata,
 					},
 				});
 				return {
@@ -278,17 +360,23 @@ async function processIndexDocument(
 		}
 
 		// Step 5: Settle on the tokens actually embedded (including failed attempts)
+		// and mark the document indexed in the same transaction as the settlement
+		// marker. A failure here rolls both back and the retry settles once.
+		const markIndexed = async (conn: Pick<typeof db, "update">) => {
+			await conn
+				.update(document)
+				.set({ status: "indexed", chunkCount: chunks.length })
+				.where(eq(document.id, documentId));
+		};
 		if (!settled) {
-			await settle(paidBefore + attemptTokens, {
-				chunkCount: chunks.length,
-			});
+			await settle(
+				paidBefore + attemptTokens,
+				{ chunkCount: chunks.length },
+				markIndexed,
+			);
+		} else {
+			await markIndexed(db);
 		}
-
-		// Step 6: Mark indexed
-		await db
-			.update(document)
-			.set({ status: "indexed", chunkCount: chunks.length })
-			.where(eq(document.id, documentId));
 
 		await job.updateProgress(100);
 
@@ -316,7 +404,7 @@ async function processIndexDocument(
 		if (!terminal) {
 			// Keep the reservation for the retry and remember what was already paid for
 			await job
-				.updateData({ ...job.data, embeddedTokens: tokensPaid })
+				.updateData({ ...job.data, embeddedTokens: tokensPaid, indexReplaced })
 				.catch((err) =>
 					console.error(
 						`[Document Worker] Failed to persist embedded tokens for ${documentId}:`,
@@ -342,6 +430,16 @@ async function processIndexDocument(
 					err,
 				),
 			);
+		}
+
+		// Never replaced the old index (e.g. credits refused): keep it
+		if (!indexReplaced) {
+			await markIndexingRefused(
+				error instanceof UnrecoverableError
+					? error.message
+					: "Indexing failed before the previous index was replaced",
+			);
+			throw error;
 		}
 
 		// Remove partial output, then mark failed
@@ -417,16 +515,33 @@ async function processJob(
 	job: Job<
 		IndexDocumentJobData | DeleteDocumentJobData | ReindexDocumentJobData
 	>,
+	token?: string,
 ) {
-	switch (job.name) {
-		case DocumentJobNames.INDEX:
-			return processIndexDocument(job as Job<IndexDocumentJobData>);
-		case DocumentJobNames.DELETE:
-			return processDeleteDocument(job as Job<DeleteDocumentJobData>);
-		case DocumentJobNames.REINDEX:
-			return processReindexDocument(job as Job<ReindexDocumentJobData>);
-		default:
-			throw new Error(`Unknown job name: ${job.name}`);
+	// One job at a time per document: concurrent index/reindex/delete jobs would
+	// interleave their delete and insert steps.
+	const lock = await acquireDocumentLock(job.data.documentId, redis);
+	if (!lock) {
+		// Re-delay without using up an attempt (the holder may run for minutes)
+		console.log(
+			`[Document Worker] Document ${job.data.documentId} is locked by another job, retrying job ${job.id} later`,
+		);
+		await job.moveToDelayed(Date.now() + LOCK_RETRY_DELAY_MS, token);
+		throw new DelayedError();
+	}
+
+	try {
+		switch (job.name) {
+			case DocumentJobNames.INDEX:
+				return await processIndexDocument(job as Job<IndexDocumentJobData>);
+			case DocumentJobNames.DELETE:
+				return await processDeleteDocument(job as Job<DeleteDocumentJobData>);
+			case DocumentJobNames.REINDEX:
+				return await processReindexDocument(job as Job<ReindexDocumentJobData>);
+			default:
+				throw new Error(`Unknown job name: ${job.name}`);
+		}
+	} finally {
+		await lock.release();
 	}
 }
 

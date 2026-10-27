@@ -4,9 +4,12 @@ import { auth } from "../config/auth";
 import { env } from "../config/env";
 import { db, user } from "@repo/db";
 import { hasAdminRole } from "../router/access";
+import { rejectApiKeyHeader } from "./api-key-guard";
 import { eq } from "@repo/db/drizzle-orm";
 
 export const registerAuth = (app: Hono) => {
+	// API keys work on oRPC routes only (see api-key-guard.ts)
+	app.use(`/auth/*`, rejectApiKeyHeader);
 	app.on(["POST", "GET"], `/auth/*`, (c) => {
 		return auth.handler(c.req.raw);
 	});

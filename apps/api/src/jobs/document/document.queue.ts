@@ -50,7 +50,9 @@ export async function addDeleteDocumentJob(
 ) {
 	const job = await documentQueue.add(DocumentJobNames.DELETE, data, {
 		...options,
-		jobId: `delete-${data.documentId}`,
+		// Unique per call: a fixed id would be deduplicated against a failed delete
+		// job (kept for 7 days) and silently do nothing
+		jobId: `delete-${data.documentId}-${randomUUID()}`,
 		// Deletion should be higher priority
 		priority: 1,
 	});

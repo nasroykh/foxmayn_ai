@@ -13,8 +13,6 @@ import {
 } from "./access";
 import { toORPCError } from "./errors";
 
-export { hasAdminRole } from "./access";
-
 /** Organization an API key is bound to (stored in its metadata at creation). */
 const getApiKeyOrganizationId = async (
 	apiKeyId: string,
@@ -166,8 +164,8 @@ export const orgManagerProcedure = orgProcedure.use(
  * Use this for AI-consuming endpoints (chat, embedding, indexing).
  *
  * This is a fast-fail guard — it prevents wasted work for clearly broke orgs.
- * The hard enforcement happens inside logUsageAndDeduct(), which throws if
- * the atomic deduction fails regardless of what this check returned.
+ * The hard enforcement is reserveCredits(), an atomic conditional debit that
+ * fails regardless of what this (non-atomic) check returned.
  */
 export const creditsProcedure = orgProcedure.use(async ({ context, next }) => {
 	const hasCredits = await hasEnoughCredits(

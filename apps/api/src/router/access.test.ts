@@ -4,6 +4,7 @@ import {
 	createTtlCache,
 	hasAdminRole,
 	hasRole,
+	touchesPrivilegedUserFields,
 	isOrgManager,
 	isUserBanned,
 	parseApiKeyOrganizationId,
@@ -64,7 +65,7 @@ test("ttl cache expires entries", () => {
 });
 
 test("ttl cache evicts the oldest entry at capacity and supports delete", () => {
-	let t = 0;
+	const t = 0;
 	const cache = createTtlCache<number>(1000, 2, () => t);
 	cache.set("a", 1);
 	cache.set("b", 2);
@@ -76,4 +77,22 @@ test("ttl cache evicts the oldest entry at capacity and supports delete", () => 
 	assert.equal(cache.get("b"), undefined);
 	cache.clear();
 	assert.equal(cache.get("c"), undefined);
+});
+
+test("touchesPrivilegedUserFields flags role and ban fields only", () => {
+	assert.equal(touchesPrivilegedUserFields({ name: "x", email: "a@b.c" }), false);
+	assert.equal(touchesPrivilegedUserFields({ role: "user" }), true);
+	assert.equal(touchesPrivilegedUserFields({ banned: false }), true);
+	assert.equal(touchesPrivilegedUserFields({ banExpires: null }), true);
+});
+
+test("TtlCache.deleteWhere removes matching keys only", () => {
+	const cache = createTtlCache<string>(1000);
+	cache.set("u1:org-a", "admin");
+	cache.set("u2:org-a", "member");
+	cache.set("u1:org-b", "owner");
+	cache.deleteWhere((key) => key.endsWith(":org-a"));
+	assert.equal(cache.get("u1:org-a"), undefined);
+	assert.equal(cache.get("u2:org-a"), undefined);
+	assert.equal(cache.get("u1:org-b"), "owner");
 });

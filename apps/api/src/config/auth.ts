@@ -77,8 +77,11 @@ export const auth = betterAuth({
 	},
 	advanced: {
 		ipAddress: {
-			// Behind Cloudflare and the reverse proxy the socket address is the proxy
-			ipAddressHeaders: ["cf-connecting-ip", "x-forwarded-for"],
+			// Caddy (apps/app/Caddyfile) overwrites X-Real-IP with the client IP it
+			// resolved from trusted proxies. X-Forwarded-For and cf-connecting-ip are
+			// spoofable or multi-valued here. Without Caddy (local dev) the header is
+			// absent: better-auth uses 127.0.0.1 in development and no IP in production.
+			ipAddressHeaders: ["x-real-ip"],
 		},
 	},
 	trustedOrigins: [env.APP_URL],

@@ -8,7 +8,11 @@ import {
 	deleteProfile,
 	getDefaultProfile,
 } from "../../services/profile.service";
-import { reindexProfileDocuments } from "../../services/rag.service";
+import {
+	countProfileDocuments,
+	reindexProfileDocuments,
+} from "../../services/rag.service";
+import { getBalance } from "../../services/credits.service";
 import { authProcedure, orgProcedure } from "../middleware";
 import { env } from "../../config/env";
 import { ragProfileInsertSchema, ragProfileUpdateSchema } from "@repo/db/types";
@@ -147,16 +151,30 @@ export const profileRoutes = {
 				throw new ORPCError("BAD_REQUEST", { message: OVERLAP_MESSAGE });
 			}
 
-			const profile = await updateProfile(input.id, input.data, userId);
-			if (!profile) {
-				throw new ORPCError("NOT_FOUND", { message: "Profile not found" });
-			}
-
 			// Vectors of different embedding models are not comparable: re-index the
 			// profile's documents with the new model (billed to the active organization)
 			const modelChanged =
 				input.data.embeddingModel !== undefined &&
 				input.data.embeddingModel !== existing.embeddingModel;
+
+			// Re-indexing replaces the old index only after credits are reserved. Refuse
+			// up front when the organization cannot pay, so the change is not accepted
+			// and then fails on every document.
+			if (modelChanged) {
+				const documentCount = await countProfileDocuments(existing, userId);
+				if (documentCount > 0 && (await getBalance(context.organizationId)) <= 0) {
+					throw new ORPCError("FORBIDDEN", {
+						message:
+							"Changing the embedding model re-indexes your documents and needs credits. Top up your organization first.",
+					});
+				}
+			}
+
+			const profile = await updateProfile(input.id, input.data, userId);
+			if (!profile) {
+				throw new ORPCError("NOT_FOUND", { message: "Profile not found" });
+			}
+
 			const { count: reindexingDocuments } = modelChanged
 				? await reindexProfileDocuments(profile, userId, context.organizationId)
 				: { count: 0 };

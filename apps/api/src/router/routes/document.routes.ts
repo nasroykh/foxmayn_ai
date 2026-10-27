@@ -17,6 +17,9 @@ import {
 	TIKTOKEN_MODELS,
 } from "../../services/chunking.service";
 
+// Metadata is copied into every vector payload
+const MAX_METADATA_CHARS = 8_000;
+
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
 export const documentRoutes = {
@@ -48,13 +51,25 @@ export const documentRoutes = {
 
 			let parsedMetadata: Record<string, unknown> | undefined;
 			if (metadata) {
+				let parsed: unknown;
 				try {
-					parsedMetadata = JSON.parse(metadata);
+					parsed = JSON.parse(metadata);
 				} catch {
 					throw new ORPCError("BAD_REQUEST", {
 						message: "Invalid metadata JSON",
 					});
 				}
+				if (
+					typeof parsed !== "object" ||
+					parsed === null ||
+					Array.isArray(parsed) ||
+					JSON.stringify(parsed).length > MAX_METADATA_CHARS
+				) {
+					throw new ORPCError("BAD_REQUEST", {
+						message: `metadata must be a JSON object of at most ${MAX_METADATA_CHARS} characters`,
+					});
+				}
+				parsedMetadata = parsed as Record<string, unknown>;
 			}
 
 			const { documentId, jobId } = await indexDocument({

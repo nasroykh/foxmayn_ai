@@ -38,6 +38,9 @@ export async function hasEnoughCredits(
 // Credit columns are numeric(18,8)
 const toNumeric = (amount: number) => amount.toFixed(8);
 
+/** Transaction handle passed to `db.transaction` callbacks. */
+export type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 export interface CreditReservation {
 	orgId: string;
 	userId: string;
@@ -61,6 +64,21 @@ export async function deductCredits(input: {
 	userId: string;
 	allowNegative?: boolean;
 }): Promise<{ newBalance: number; transactionId: string } | null> {
+	return db.transaction((tx) => deductCreditsIn(tx, input));
+}
+
+/** `deductCredits` inside a caller-owned transaction. */
+async function deductCreditsIn(
+	tx: DbTransaction,
+	input: {
+		orgId: string;
+		amount: number;
+		description: string;
+		referenceId?: string;
+		userId: string;
+		allowNegative?: boolean;
+	},
+): Promise<{ newBalance: number; transactionId: string } | null> {
 	const { orgId, amount, description, referenceId, userId, allowNegative } =
 		input;
 
@@ -71,43 +89,41 @@ export async function deductCredits(input: {
 
 	const fixed = toNumeric(amount);
 
-	return db.transaction(async (tx) => {
-		// Atomic: UPDATE ... SET balance = balance - amount [WHERE balance >= amount]
-		const [updated] = await tx
-			.update(organization)
-			.set({
-				creditsBalance: sql`${organization.creditsBalance} - ${fixed}::numeric`,
-			})
-			.where(
-				allowNegative
-					? eq(organization.id, orgId)
-					: and(
-							eq(organization.id, orgId),
-							sql`${organization.creditsBalance} >= ${fixed}::numeric`,
-						),
-			)
-			.returning({ creditsBalance: organization.creditsBalance });
+	// Atomic: UPDATE ... SET balance = balance - amount [WHERE balance >= amount]
+	const [updated] = await tx
+		.update(organization)
+		.set({
+			creditsBalance: sql`${organization.creditsBalance} - ${fixed}::numeric`,
+		})
+		.where(
+			allowNegative
+				? eq(organization.id, orgId)
+				: and(
+						eq(organization.id, orgId),
+						sql`${organization.creditsBalance} >= ${fixed}::numeric`,
+					),
+		)
+		.returning({ creditsBalance: organization.creditsBalance });
 
-		if (!updated) {
-			// Insufficient balance (or unknown org) — nothing changed
-			return null;
-		}
+	if (!updated) {
+		// Insufficient balance (or unknown org) — nothing changed
+		return null;
+	}
 
-		// Record the transaction in the same atomic unit
-		const txId = randomUUID();
-		await tx.insert(creditTransaction).values({
-			id: txId,
-			organizationId: orgId,
-			type: "usage",
-			amount: `-${fixed}`, // Negative for deductions
-			balanceAfter: updated.creditsBalance ?? "0",
-			description,
-			referenceId: referenceId ?? null,
-			createdBy: userId,
-		});
-
-		return { newBalance: Number(updated.creditsBalance), transactionId: txId };
+	// Record the transaction in the same atomic unit
+	const txId = randomUUID();
+	await tx.insert(creditTransaction).values({
+		id: txId,
+		organizationId: orgId,
+		type: "usage",
+		amount: `-${fixed}`, // Negative for deductions
+		balanceAfter: updated.creditsBalance ?? "0",
+		description,
+		referenceId: referenceId ?? null,
+		createdBy: userId,
 	});
+
+	return { newBalance: Number(updated.creditsBalance), transactionId: txId };
 }
 
 /**
@@ -121,6 +137,21 @@ export async function addCredits(input: {
 	referenceId?: string;
 	userId: string;
 }): Promise<{ newBalance: number; transactionId: string }> {
+	return db.transaction((tx) => addCreditsIn(tx, input));
+}
+
+/** `addCredits` inside a caller-owned transaction. */
+async function addCreditsIn(
+	tx: DbTransaction,
+	input: {
+		orgId: string;
+		amount: number;
+		type: "topup" | "refund" | "adjustment";
+		description: string;
+		referenceId?: string;
+		userId: string;
+	},
+): Promise<{ newBalance: number; transactionId: string }> {
 	const { orgId, amount, type, description, referenceId, userId } = input;
 
 	if (!(amount > 0))
@@ -130,34 +161,32 @@ export async function addCredits(input: {
 
 	const fixed = toNumeric(amount);
 
-	return db.transaction(async (tx) => {
-		const [updated] = await tx
-			.update(organization)
-			.set({
-				creditsBalance: sql`${organization.creditsBalance} + ${fixed}::numeric`,
-			})
-			.where(eq(organization.id, orgId))
-			.returning({ creditsBalance: organization.creditsBalance });
+	const [updated] = await tx
+		.update(organization)
+		.set({
+			creditsBalance: sql`${organization.creditsBalance} + ${fixed}::numeric`,
+		})
+		.where(eq(organization.id, orgId))
+		.returning({ creditsBalance: organization.creditsBalance });
 
-		if (!updated)
-			throw new ORPCError("NOT_FOUND", {
-				message: `Organization not found: ${orgId}`,
-			});
-
-		const txId = randomUUID();
-		await tx.insert(creditTransaction).values({
-			id: txId,
-			organizationId: orgId,
-			type,
-			amount: fixed, // Positive for additions
-			balanceAfter: updated.creditsBalance ?? "0",
-			description,
-			referenceId: referenceId ?? null,
-			createdBy: userId,
+	if (!updated)
+		throw new ORPCError("NOT_FOUND", {
+			message: `Organization not found: ${orgId}`,
 		});
 
-		return { newBalance: Number(updated.creditsBalance), transactionId: txId };
+	const txId = randomUUID();
+	await tx.insert(creditTransaction).values({
+		id: txId,
+		organizationId: orgId,
+		type,
+		amount: fixed, // Positive for additions
+		balanceAfter: updated.creditsBalance ?? "0",
+		description,
+		referenceId: referenceId ?? null,
+		createdBy: userId,
 	});
+
+	return { newBalance: Number(updated.creditsBalance), transactionId: txId };
 }
 
 // ============================================================================
@@ -203,29 +232,40 @@ export async function settleReservation(
 	actualCost: number,
 	label: string,
 	referenceId?: string,
-): Promise<void> {
+	/**
+	 * Runs first inside the settlement transaction. Return false to skip the
+	 * settlement (it was already done). Writing the "already settled" marker
+	 * here makes marker and settlement commit or roll back together.
+	 */
+	beforeSettle?: (tx: DbTransaction) => Promise<boolean>,
+): Promise<boolean> {
 	const settlement = computeSettlement(reservation.amount, actualCost);
 	const ref = referenceId ?? reservation.transactionId;
 
-	if (settlement.kind === "refund") {
-		await addCredits({
-			orgId: reservation.orgId,
-			userId: reservation.userId,
-			amount: settlement.amount,
-			type: "adjustment",
-			description: `${label} settlement refund`,
-			referenceId: ref,
-		});
-	} else if (settlement.kind === "charge") {
-		await deductCredits({
-			orgId: reservation.orgId,
-			userId: reservation.userId,
-			amount: settlement.amount,
-			description: `${label} settlement charge`,
-			referenceId: ref,
-			allowNegative: true,
-		});
-	}
+	return db.transaction(async (tx) => {
+		if (beforeSettle && !(await beforeSettle(tx))) return false;
+
+		if (settlement.kind === "refund") {
+			await addCreditsIn(tx, {
+				orgId: reservation.orgId,
+				userId: reservation.userId,
+				amount: settlement.amount,
+				type: "adjustment",
+				description: `${label} settlement refund`,
+				referenceId: ref,
+			});
+		} else if (settlement.kind === "charge") {
+			await deductCreditsIn(tx, {
+				orgId: reservation.orgId,
+				userId: reservation.userId,
+				amount: settlement.amount,
+				description: `${label} settlement charge`,
+				referenceId: ref,
+				allowNegative: true,
+			});
+		}
+		return true;
+	});
 }
 
 /**

@@ -60,6 +60,8 @@
 			max_size 12MB
 		}
 		reverse_proxy api:33450 {
+			# Overwrites any client-supplied value; the API rate limiter reads only this
+			header_up X-Real-IP {client_ip}
 			flush_interval -1
 			transport http {
 				dial_timeout 5s

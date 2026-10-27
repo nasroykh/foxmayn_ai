@@ -35,7 +35,7 @@ export const sendOTPEmail = async (to: string, otp: string) => {
 			`Error queueing OTP email for ${maskEmail(to)}:`,
 			error instanceof Error ? error.message : error,
 		);
-		throw new Error("Failed to send OTP email");
+		throw new Error("Failed to send OTP email", { cause: error });
 	}
 };
 
@@ -61,6 +61,6 @@ export const sendInvitationEmail = async (
 			`Error queueing invitation email for ${maskEmail(to)}:`,
 			error instanceof Error ? error.message : error,
 		);
-		throw new Error("Failed to send invitation email");
+		throw new Error("Failed to send invitation email", { cause: error });
 	}
 };

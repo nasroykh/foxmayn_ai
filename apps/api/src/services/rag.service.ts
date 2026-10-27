@@ -28,6 +28,7 @@ import {
 	MAX_DOCX_UNCOMPRESSED_BYTES,
 	MAX_EXTRACTED_CHARS,
 	MAX_FILE_SIZE,
+	zipInflatesWithin,
 	isAllowedFileType,
 	matchesFileSignature,
 	zipDeclaredUncompressedSize,
@@ -170,7 +171,13 @@ export const extractTextFromDocument = async (file: File): Promise<string> => {
 				break;
 			case DOCX_MIME: {
 				const declared = zipDeclaredUncompressedSize(bytes);
-				if (declared === null || declared > MAX_DOCX_UNCOMPRESSED_BYTES)
+				// Declared sizes are cheap to check but attacker controlled: also inflate
+				// with a hard cap before JSZip (inside mammoth) inflates without one
+				if (
+					declared === null ||
+					declared > MAX_DOCX_UNCOMPRESSED_BYTES ||
+					!zipInflatesWithin(bytes, MAX_DOCX_UNCOMPRESSED_BYTES)
+				)
 					throw new ORPCError("BAD_REQUEST", {
 						message: "DOCX file is invalid or too large once unpacked",
 					});
@@ -269,6 +276,30 @@ export const deleteDocument = async (
 	return { jobId };
 };
 
+/** Documents that follow a profile (those without a profile follow the default). */
+const profileDocumentsFilter = (
+	profile: { id: string; isDefault: boolean },
+	userId: string,
+) =>
+	and(
+		eq(document.userId, userId),
+		profile.isDefault
+			? or(eq(document.profileId, profile.id), isNull(document.profileId))
+			: eq(document.profileId, profile.id),
+	);
+
+/** Number of documents a re-index of this profile would process. */
+export const countProfileDocuments = async (
+	profile: { id: string; isDefault: boolean },
+	userId: string,
+): Promise<number> => {
+	const [row] = await db
+		.select({ count: count() })
+		.from(document)
+		.where(profileDocumentsFilter(profile, userId));
+	return row?.count ?? 0;
+};
+
 /**
  * Re-index every document of a profile (after its embedding model changed).
  * Documents without a profile belong to the user's default profile.
@@ -279,14 +310,10 @@ export const reindexProfileDocuments = async (
 	userId: string,
 	organizationId: string,
 ): Promise<{ count: number }> => {
-	const ownedByProfile = profile.isDefault
-		? or(eq(document.profileId, profile.id), isNull(document.profileId))
-		: eq(document.profileId, profile.id);
-
 	const docs = await db
 		.select({ id: document.id })
 		.from(document)
-		.where(and(eq(document.userId, userId), ownedByProfile));
+		.where(profileDocumentsFilter(profile, userId));
 
 	if (docs.length === 0) return { count: 0 };
 
@@ -559,13 +586,21 @@ const settleChat = async (input: {
 	const { prepared, options, providerCalled, usage, context } = input;
 	const { modelId, reservation, usageId } = prepared;
 
-	const { cost, usageKnown } = providerCalled
-		? resolveChatCost({
+	let cost = 0;
+	let usageKnown = false;
+	if (providerCalled) {
+		try {
+			({ cost, usageKnown } = resolveChatCost({
 				modelId,
 				usage,
 				reservedAmount: reservation.amount,
-			})
-		: { cost: 0, usageKnown: false };
+			}));
+		} catch (err) {
+			// E.g. the model left the pricing list mid-request: charge the reservation
+			console.error(`[Usage] Could not price chat ${modelId}:`, err);
+			cost = reservation.amount;
+		}
+	}
 
 	try {
 		await settleReservation(reservation, cost, `chat ${modelId}`, usageId);

@@ -50,7 +50,7 @@ const statsVersionKey = (orgId: string) => `usage_stats_ver:${orgId}`;
  * (part of every stats cache key). Best-effort: a Redis failure must never
  * fail a request that was already billed.
  */
-async function invalidateUsageStats(orgId: string): Promise<void> {
+export async function invalidateUsageStats(orgId: string): Promise<void> {
 	await redis
 		.incr(statsVersionKey(orgId))
 		.catch((err) =>
