@@ -4,6 +4,7 @@ import {
 	OPENROUTER_AI_MODELS,
 	OPENROUTER_EMBEDDING_MODELS,
 } from "./data/openrouter_models";
+import { describeError } from "./redact";
 type Reasoning = { effort: "xhigh" | "high" | "medium" | "low" | "minimal" | "none" | null | undefined };
 
 // Whole-request ceiling, including the streamed body. Long enough for slow
@@ -179,7 +180,7 @@ export function OpenRouterQuery(
 			} catch (error) {
 				console.error(
 					"[OpenRouter] Failed to retrieve usage data after stream — token counts will be zero and billing may be inaccurate:",
-					error,
+					describeError(error),
 				);
 				return { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 			}
@@ -205,7 +206,7 @@ export function OpenRouterQuery(
 				},
 			};
 		} catch (error) {
-			console.error(error);
+			console.error("[OpenRouter] Query failed:", describeError(error));
 			throw error;
 		}
 	})();
@@ -275,7 +276,7 @@ export const OpenRouterEmbed = async (
 			},
 		};
 	} catch (error) {
-		console.error("Batch embedding error:", error);
+		console.error("[OpenRouter] Batch embedding error:", describeError(error));
 		throw error;
 	}
 };

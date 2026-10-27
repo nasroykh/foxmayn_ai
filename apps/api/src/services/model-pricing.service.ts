@@ -1,3 +1,4 @@
+import { describeError } from "../config/redact";
 import Redis from "ioredis";
 import {
 	OPENROUTER_AI_MODELS,
@@ -115,7 +116,7 @@ async function refreshModelPricing(redis: Redis): Promise<void> {
 	} catch (err) {
 		console.error(
 			"[Pricing] Failed to refresh from OpenRouter — retaining current cached/static prices:",
-			err,
+			describeError(err),
 		);
 	}
 }
@@ -156,7 +157,7 @@ export async function initModelPricing(redis: Redis): Promise<void> {
 	} catch (err) {
 		console.warn(
 			"[Pricing] Could not load from Redis cache — will fetch from API:",
-			err,
+			describeError(err),
 		);
 	}
 

@@ -1,3 +1,4 @@
+import { describeError } from "../config/redact";
 import { Hono } from "hono";
 
 import { auth } from "../config/auth";
@@ -69,6 +70,6 @@ export const initSuperAdmin = async () => {
 			.catch(() => []);
 		if (created) return;
 
-		console.error("Failed to initialize super admin:", error);
+		console.error("Failed to initialize super admin:", describeError(error));
 	}
 };

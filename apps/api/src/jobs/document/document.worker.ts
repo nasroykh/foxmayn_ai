@@ -31,6 +31,11 @@ import {
 } from "../../services/credits.service";
 import { invalidateUsageStats } from "../../services/usage.service";
 import { calculateCost, CREDIT_EPSILON } from "../../utils/cost";
+import { describeError } from "../../config/redact";
+import {
+	isPermanentProviderError,
+	PROVIDER_REFUSED_INDEXING_REASON,
+} from "../../utils/provider-error";
 import {
 	DEFAULT_CHUNK_SIZE,
 	DEFAULT_CHUNK_OVERLAP,
@@ -147,7 +152,7 @@ async function processIndexDocument(
 			// Rolled back as a whole: nothing was settled, the marker is absent
 			console.error(
 				`[Document Worker] SETTLEMENT FAILED for ${documentId} (org ${organizationId}, reserved ${reservation?.amount ?? 0}, actual ${actualCost}):`,
-				err,
+				describeError(err),
 			);
 			throw err;
 		}
@@ -157,7 +162,10 @@ async function processIndexDocument(
 	let indexReplaced = job.data.indexReplaced ?? false;
 
 	/** Keep the old index, mark the document failed with the reason in metadata.error. */
-	const markIndexingRefused = async (reason: string) => {
+	const markIndexingRefused = async (
+		reason: string,
+		extra: { chunkCount?: number } = {},
+	) => {
 		try {
 			const [current] = await db
 				.select({ metadata: document.metadata })
@@ -168,13 +176,14 @@ async function processIndexDocument(
 				.update(document)
 				.set({
 					status: "failed",
+					...extra,
 					metadata: { ...(current.metadata ?? {}), error: reason },
 				})
 				.where(eq(document.id, documentId));
 		} catch (markErr) {
 			console.error(
 				`[Document Worker] Failed to record refusal for ${documentId}:`,
-				markErr,
+				describeError(markErr),
 			);
 		}
 	};
@@ -299,10 +308,20 @@ async function processIndexDocument(
 		for (let i = 0; i < chunks.length; i += INDEX_BATCH_SIZE) {
 			const batch = chunks.slice(i, i + INDEX_BATCH_SIZE);
 
-			const { embeddings, usage } = await OpenRouterEmbed(
-				embeddingModelId,
-				batch.map((c) => c.content),
-			);
+			let embedded: Awaited<ReturnType<typeof OpenRouterEmbed>>;
+			try {
+				embedded = await OpenRouterEmbed(
+					embeddingModelId,
+					batch.map((c) => c.content),
+				);
+			} catch (err) {
+				// Bad key, unknown model, no provider credit: a retry cannot succeed
+				if (isPermanentProviderError(err)) {
+					throw new UnrecoverableError(PROVIDER_REFUSED_INDEXING_REASON);
+				}
+				throw err;
+			}
+			const { embeddings, usage } = embedded;
 			if (embeddings.length !== batch.length) {
 				throw new Error(
 					`Embedding count mismatch: expected ${batch.length}, got ${embeddings.length}`,
@@ -398,7 +417,7 @@ async function processIndexDocument(
 
 		console.error(
 			`[Document Worker] Document ${documentId}: Indexing failed (attempt ${job.attemptsMade + 1}/${maxAttempts})`,
-			error,
+			describeError(error),
 		);
 
 		if (!terminal) {
@@ -408,7 +427,7 @@ async function processIndexDocument(
 				.catch((err) =>
 					console.error(
 						`[Document Worker] Failed to persist embedded tokens for ${documentId}:`,
-						err,
+						describeError(err),
 					),
 				);
 			throw error;
@@ -421,13 +440,13 @@ async function processIndexDocument(
 			} catch (err) {
 				console.error(
 					`[Document Worker] Failed to look up reservation for ${documentId}:`,
-					err,
+					describeError(err),
 				);
 			}
 			await settle(tokensPaid, { failed: true }).catch((err) =>
 				console.error(
 					`[Document Worker] Failed to settle failed job ${documentId}:`,
-					err,
+					describeError(err),
 				),
 			);
 		}
@@ -446,21 +465,23 @@ async function processIndexDocument(
 		await deleteDocumentVectors(documentId).catch((cleanupErr) =>
 			console.error(
 				`[Document Worker] Failed to clean up Qdrant vectors for ${documentId}:`,
-				cleanupErr,
+				describeError(cleanupErr),
 			),
 		);
 		try {
 			await db
 				.delete(documentChunk)
 				.where(eq(documentChunk.documentId, documentId));
-			await db
-				.update(document)
-				.set({ status: "failed", chunkCount: 0 })
-				.where(eq(document.id, documentId));
+			await markIndexingRefused(
+				error instanceof UnrecoverableError
+					? error.message
+					: "Indexing failed. Try again or contact support.",
+				{ chunkCount: 0 },
+			);
 		} catch (markErr) {
 			console.error(
 				`[Document Worker] Failed to mark ${documentId} as failed:`,
-				markErr,
+				describeError(markErr),
 			);
 		}
 
@@ -565,12 +586,12 @@ export function createDocumentWorker() {
 	worker.on("failed", (job, err) => {
 		console.error(
 			`[Document Worker] Job ${job?.id} (${job?.name}) failed:`,
-			err.message,
+			describeError(err),
 		);
 	});
 
 	worker.on("error", (err) => {
-		console.error("[Document Worker] Worker error:", err);
+		console.error("[Document Worker] Worker error:", describeError(err));
 	});
 
 	worker.on("stalled", (jobId) => {

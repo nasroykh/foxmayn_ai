@@ -2,6 +2,7 @@ import { serve, type ServerType } from "@hono/node-server";
 import { Hono } from "hono";
 import { initDB, disconnectDB } from "@repo/db";
 import { env } from "./config/env";
+import { describeError } from "./config/redact";
 import { redis } from "./config/redis";
 import { closeQueues } from "./jobs";
 import { registerPlugins } from "./plugins/index";
@@ -19,7 +20,7 @@ registerHealth(app);
 
 // One stray rejection (e.g. a failed background send) must not kill the API
 process.on("unhandledRejection", (reason) => {
-	console.error("[unhandledRejection]", reason);
+	console.error("[unhandledRejection]", describeError(reason));
 });
 
 let server: ServerType | undefined;
@@ -53,7 +54,7 @@ const shutdown = async (signal: string) => {
 	]);
 	for (const result of results) {
 		if (result.status === "rejected") {
-			console.error("Error during shutdown:", result.reason);
+			console.error("Error during shutdown:", describeError(result.reason));
 		}
 	}
 
@@ -87,7 +88,7 @@ const start = async () => {
 			},
 		);
 	} catch (error) {
-		console.error("❌ Error during server startup:", error);
+		console.error("❌ Error during server startup:", describeError(error));
 		process.exit(1);
 	}
 };

@@ -16,6 +16,8 @@ import {
 	type AIUsage,
 } from "@repo/llm/openrouter";
 import { ORPCError } from "@orpc/server";
+import { describeError } from "../config/redact";
+import { toChatProviderError } from "../utils/provider-error";
 import { getProfile, getDefaultProfile } from "./profile.service";
 import {
 	addIndexDocumentJob,
@@ -189,7 +191,7 @@ export const extractTextFromDocument = async (file: File): Promise<string> => {
 		}
 	} catch (err) {
 		if (err instanceof ORPCError) throw err;
-		console.error("[RAG] Failed to parse upload:", err);
+		console.error("[RAG] Failed to parse upload:", describeError(err));
 		throw new ORPCError("BAD_REQUEST", {
 			message: "Could not read the file. It may be corrupt.",
 		});
@@ -571,7 +573,7 @@ const prepareChat = async (
 /**
  * Turn the reservation into the real cost and log it. Always runs (from a
  * `finally`), so errors and client disconnects are billed too:
- * - provider never called: full refund
+ * - provider rejected the request or never answered: full refund
  * - usage reported: actual cost (a shortfall is collected even below zero balance)
  * - usage missing after a call: the reserved estimate is charged
  * Never throws; billing problems are logged for reconciliation.
@@ -597,7 +599,7 @@ const settleChat = async (input: {
 			}));
 		} catch (err) {
 			// E.g. the model left the pricing list mid-request: charge the reservation
-			console.error(`[Usage] Could not price chat ${modelId}:`, err);
+			console.error(`[Usage] Could not price chat ${modelId}:`, describeError(err));
 			cost = reservation.amount;
 		}
 	}
@@ -607,7 +609,7 @@ const settleChat = async (input: {
 	} catch (err) {
 		console.error(
 			`[Usage] SETTLEMENT FAILED (org ${options.organizationId}, usage ${usageId}, reserved ${reservation.amount}, actual ${cost}):`,
-			err,
+			describeError(err),
 		);
 	}
 
@@ -659,25 +661,30 @@ export const queryRAG = async (
 ): Promise<QueryResult> => {
 	const prepared = await prepareChat(query, options);
 
+	// True once the provider accepted the request; a rejected call is refunded
 	let providerCalled = false;
 	let usage: AIUsage | null = null;
 	try {
-		const pending = OpenRouterQuery(
-			{
-				model: prepared.modelId,
-				temperature: prepared.temperature,
-				topP: prepared.topP,
-				maxTokens: prepared.maxTokens,
-				reasoning: prepared.reasoning,
-				stream: false,
-			},
-			prepared.messages,
-			prepared.systemPrompt,
-			query,
-		);
+		let result: { text: string; usage: AIUsage };
+		try {
+			result = await OpenRouterQuery(
+				{
+					model: prepared.modelId,
+					temperature: prepared.temperature,
+					topP: prepared.topP,
+					maxTokens: prepared.maxTokens,
+					reasoning: prepared.reasoning,
+					stream: false,
+				},
+				prepared.messages,
+				prepared.systemPrompt,
+				query,
+			);
+		} catch (err) {
+			console.error("[RAG] Provider call failed:", describeError(err));
+			throw toChatProviderError(err);
+		}
 		providerCalled = true;
-
-		const result = await pending;
 		usage = result.usage;
 
 		return {
@@ -721,26 +728,35 @@ export async function* queryRAGStream(
 	try {
 		yield { type: "sources", data: prepared.sources };
 
-		const call = OpenRouterQuery(
-			{
-				model: prepared.modelId,
-				temperature: prepared.temperature,
-				topP: prepared.topP,
-				maxTokens: prepared.maxTokens,
-				reasoning: prepared.reasoning,
-				stream: true,
-			},
-			prepared.messages,
-			prepared.systemPrompt,
-			query,
-		);
-		providerCalled = true;
-		getUsage = call.getUsage;
+		try {
+			const call = OpenRouterQuery(
+				{
+					model: prepared.modelId,
+					temperature: prepared.temperature,
+					topP: prepared.topP,
+					maxTokens: prepared.maxTokens,
+					reasoning: prepared.reasoning,
+					stream: true,
+				},
+				prepared.messages,
+				prepared.systemPrompt,
+				query,
+			);
+			getUsage = call.getUsage;
 
-		for await (const delta of call.stream) {
-			if (delta) {
-				yield { type: "token", data: delta };
+			for await (const delta of call.stream) {
+				// First chunk: the provider accepted the request
+				providerCalled = true;
+				if (delta) {
+					yield { type: "token", data: delta };
+				}
 			}
+			// Finished without any chunk (empty answer): still accepted
+			providerCalled = true;
+		} catch (err) {
+			// Consumer abort/close arrives as generator return, not a throw
+			console.error("[RAG] Provider stream failed:", describeError(err));
+			throw toChatProviderError(err);
 		}
 	} finally {
 		if (providerCalled) usage = await fetchStreamUsage(getUsage);

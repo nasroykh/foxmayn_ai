@@ -1,3 +1,4 @@
+import { describeError } from "../../config/redact";
 import { randomUUID } from "node:crypto";
 
 /** Minimal Redis surface the lock needs (lets tests use an in-memory fake). */
@@ -56,7 +57,7 @@ export async function acquireDocumentLock(
 		client
 			.eval(RENEW_SCRIPT, 1, key, token, String(ttlMs))
 			.catch((err) =>
-				console.error(`[Document Lock] Failed to renew ${documentId}:`, err),
+				console.error(`[Document Lock] Failed to renew ${documentId}:`, describeError(err)),
 			);
 	}, renewMs);
 	timer.unref();
@@ -67,7 +68,7 @@ export async function acquireDocumentLock(
 			await client
 				.eval(RELEASE_SCRIPT, 1, key, token)
 				.catch((err) =>
-					console.error(`[Document Lock] Failed to release ${documentId}:`, err),
+					console.error(`[Document Lock] Failed to release ${documentId}:`, describeError(err)),
 				);
 		},
 	};

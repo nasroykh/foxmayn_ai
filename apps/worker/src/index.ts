@@ -16,6 +16,11 @@ import {
 	closeQueues,
 } from "@repo/api/jobs";
 
+// Log the stack or message only: SDK error objects can carry request
+// headers (API keys) as properties.
+const describe = (error: unknown) =>
+	error instanceof Error ? (error.stack ?? error.message) : String(error);
+
 type ManagedWorker = ReturnType<
 	typeof createDocumentWorker | typeof createEmailWorker
 >;
@@ -80,7 +85,7 @@ async function start() {
 		await heartbeat();
 		heartbeatTimer = setInterval(heartbeat, HEARTBEAT_INTERVAL_MS);
 	} catch (error) {
-		console.error("❌ Failed to start workers:", error);
+		console.error("❌ Failed to start workers:", describe(error));
 		process.exit(1);
 	}
 }
@@ -112,7 +117,7 @@ async function gracefulShutdown(signal: string) {
 		console.log("✅ Graceful shutdown complete");
 		process.exit(0);
 	} catch (error) {
-		console.error("❌ Error during shutdown:", error);
+		console.error("❌ Error during shutdown:", describe(error));
 		process.exit(1);
 	}
 }
@@ -122,7 +127,7 @@ process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 
 // State is undefined after an uncaught exception: exit now and let Docker restart us.
 process.on("uncaughtException", (error) => {
-	console.error("❌ Uncaught exception:", error);
+	console.error("❌ Uncaught exception:", describe(error));
 	process.exit(1);
 });
 

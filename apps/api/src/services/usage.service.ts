@@ -1,3 +1,4 @@
+import { describeError } from "../config/redact";
 import { randomUUID } from "node:crypto";
 import { db, aiUsageLog } from "@repo/db";
 import { eq, and, desc, sql, gte, lte } from "@repo/db/drizzle-orm";
@@ -54,7 +55,7 @@ export async function invalidateUsageStats(orgId: string): Promise<void> {
 	await redis
 		.incr(statsVersionKey(orgId))
 		.catch((err) =>
-			console.error("[Usage] Failed to invalidate usage stats cache:", err),
+			console.error("[Usage] Failed to invalidate usage stats cache:", describeError(err)),
 		);
 }
 
@@ -89,7 +90,7 @@ export async function recordUsage(input: {
 		})
 		.onConflictDoNothing()
 		.catch((err) =>
-			console.error("[Usage] Failed to insert usage log:", err),
+			console.error("[Usage] Failed to insert usage log:", describeError(err)),
 		);
 
 	await invalidateUsageStats(input.organizationId);
@@ -194,7 +195,7 @@ export async function getUsageStats(
 		const cached = await redis.get(cacheKey);
 		if (cached) return JSON.parse(cached) as UsageStatsResult;
 	} catch (err) {
-		console.error("[Usage] Stats cache read failed:", err);
+		console.error("[Usage] Stats cache read failed:", describeError(err));
 	}
 
 	const conditions = [eq(aiUsageLog.organizationId, orgId)];
@@ -261,7 +262,7 @@ export async function getUsageStats(
 	if (cacheKey) {
 		await redis
 			.setex(cacheKey, STATS_CACHE_TTL, JSON.stringify(result))
-			.catch((err) => console.error("[Usage] Stats cache write failed:", err));
+			.catch((err) => console.error("[Usage] Stats cache write failed:", describeError(err)));
 	}
 	return result;
 }

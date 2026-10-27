@@ -7,7 +7,7 @@ import {
 } from "./types";
 import { transporter } from "../../config/nodemailer";
 import { env } from "../../config/env";
-import { maskEmails } from "../../config/redact";
+import { maskEmails, describeError } from "../../config/redact";
 
 const QUEUE_NAME = "email";
 
@@ -84,7 +84,7 @@ export function createEmailWorker() {
 	});
 
 	worker.on("error", (err) => {
-		console.error("[Email Worker] Worker error:", err);
+		console.error("[Email Worker] Worker error:", describeError(err));
 	});
 
 	console.log("[Email Worker] Worker started");
