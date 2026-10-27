@@ -28,7 +28,11 @@ export const toORPCError = (error: unknown): unknown => {
 	const apiError = error as {
 		statusCode?: number;
 		message?: string;
-		body?: { message?: string; code?: string };
+		body?: {
+			message?: string;
+			code?: string;
+			details?: { tryAgainIn?: number };
+		};
 	};
 	const status =
 		apiError.statusCode && apiError.statusCode >= 400 && apiError.statusCode < 600
@@ -38,10 +42,19 @@ export const toORPCError = (error: unknown): unknown => {
 		CODE_BY_STATUS[status] ??
 		(status < 500 ? "BAD_REQUEST" : "INTERNAL_SERVER_ERROR");
 
+	// API key rate limit: milliseconds until the window frees up
+	const tryAgainIn = apiError.body?.details?.tryAgainIn;
+	const retryAfterSeconds =
+		typeof tryAgainIn === "number" && tryAgainIn > 0
+			? Math.ceil(tryAgainIn / 1000)
+			: undefined;
+
 	return new ORPCError(code, {
 		status,
 		message: apiError.body?.message || apiError.message || undefined,
-		data: apiError.body?.code ? { code: apiError.body.code } : undefined,
+		data: apiError.body?.code
+			? { code: apiError.body.code, ...(retryAfterSeconds && { retryAfterSeconds }) }
+			: undefined,
 		cause: error,
 	});
 };

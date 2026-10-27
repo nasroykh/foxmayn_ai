@@ -39,3 +39,16 @@ test("leaves ORPCError and plain errors untouched", () => {
 	assert.equal(toORPCError(plain), plain);
 	assert.equal(toORPCError("string"), "string");
 });
+
+test("an API key rate limit carries the wait in seconds", () => {
+	const mapped = toORPCError(
+		new APIError("TOO_MANY_REQUESTS", {
+			message: "Rate limit exceeded.",
+			code: "RATE_LIMITED",
+			details: { tryAgainIn: 12_345 },
+		}),
+	);
+	assert.ok(mapped instanceof ORPCError);
+	assert.equal(mapped.status, 429);
+	assert.deepEqual(mapped.data, { code: "RATE_LIMITED", retryAfterSeconds: 13 });
+});
