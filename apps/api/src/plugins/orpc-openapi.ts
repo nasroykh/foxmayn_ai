@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import { onError } from "@orpc/server";
+import { logRpcError } from "./error-log";
 
 import { router } from "../router/index";
 import { OpenAPIHandler } from "@orpc/openapi/fetch";
@@ -7,9 +8,7 @@ import { OpenAPIHandler } from "@orpc/openapi/fetch";
 export const registerORPCOpenAPI = (app: Hono) => {
 	const handler = new OpenAPIHandler(router, {
 		interceptors: [
-			onError((error) => {
-				console.log(error);
-			}),
+			onError(logRpcError),
 		],
 	});
 

@@ -1,11 +1,13 @@
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
-import { authClient } from "@/lib/auth";
-import type { SessionData } from "@/main";
+import type { QueryClient } from "@tanstack/react-query";
+import { sessionQueryOptions } from "@/lib/query-client";
+import type { SessionData } from "@/lib/auth";
 
 type RouterContext = {
-	session: SessionData | undefined;
+	queryClient: QueryClient;
+	session: SessionData;
 };
 
 const RootLayout = () => {
@@ -18,11 +20,18 @@ const RootLayout = () => {
 };
 
 export const Route = createRootRouteWithContext<RouterContext>()({
-	beforeLoad: async () => {
-		const res = await authClient.getSession();
-		return {
-			session: res.data && !res.error ? res.data : null,
-		};
+	beforeLoad: async ({ context }) => {
+		// Cached: only hits the network on first load and after login, logout or
+		// org switch cleared the cache.
+		try {
+			const session = await context.queryClient.ensureQueryData(
+				sessionQueryOptions,
+			);
+			return { session };
+		} catch {
+			context.queryClient.removeQueries({ queryKey: sessionQueryOptions.queryKey });
+			return { session: null };
+		}
 	},
 	component: RootLayout,
 });

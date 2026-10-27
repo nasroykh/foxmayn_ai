@@ -12,6 +12,9 @@ export const emailQueue = new Queue<SendEmailJobData>(QUEUE_NAME, {
 	connection: redisConnection,
 	defaultJobOptions: {
 		...defaultJobOptions,
+		// Job data holds OTP codes and invitation links: do not keep it around
+		removeOnComplete: { age: 3600, count: 1000 },
+		removeOnFail: { age: 24 * 3600 },
 		// Emails should retry more aggressively
 		attempts: 5,
 		backoff: {

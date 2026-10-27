@@ -1,61 +1,55 @@
-# Dependencies
+# One build context (repo root) serves all three Dockerfiles.
+
+# Dependencies and build output (rebuilt inside the image)
 node_modules
 **/node_modules
 .pnpm-store
-
-# Build outputs
 dist
 **/dist
-.turbo
-**/.turbo
 build
 **/build
-
-# Development files
-.git
-.gitignore
-**/.env
-**/.env.*
-!**/.env.example
-*.log
-npm-debug.log*
-pnpm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# IDE
-.vscode
-.idea
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Testing
+.turbo
+**/.turbo
+**/*.tsbuildinfo
 coverage
 **/.nyc_output
-**/__tests__
+
+# Secrets and local environment (never bake into an image)
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+
+# VCS, CI, editors, agent tooling
+.git
+.gitignore
+.github
+.gitlab-ci.yml
+.vscode
+.idea
+.DS_Store
+*.swp
+*~
+.claude
+**/.claude
+.cursor
+**/.cursor
+.agent
+.agents
+skills-lock.json
+
+# Tests and docs are not needed to build
 **/*.test.ts
 **/*.test.tsx
 **/*.spec.ts
 **/*.spec.tsx
-
-# Documentation
 *.md
-!README.MD
-docs
-**/.claude
-**/.cursor
-**/.agent
-.agents
+**/*.md
 
-# CI/CD
-.github
-.gitlab-ci.yml
-.travis.yml
-
-# Misc
-*.zip
-*.tar.gz
+# Logs and misc
+*.log
 tmp
 temp
+*.zip
+*.tar.gz

@@ -1,4 +1,36 @@
+import { db, member, organization } from "@repo/db";
+import { and, asc, count, eq, ilike, or, sql } from "@repo/db/drizzle-orm";
 import { auth } from "../config/auth";
+import { createTtlCache } from "../router/access";
+
+// A removed member keeps access for up to this long
+const MEMBERSHIP_CACHE_TTL_MS = 15_000;
+const membershipCache = createTtlCache<string>(MEMBERSHIP_CACHE_TTL_MS);
+
+/**
+ * Role of `userId` in `organizationId`, or null when they are not a member.
+ * Only positive results are cached so new members get access immediately.
+ */
+export async function getMemberRole(
+	userId: string,
+	organizationId: string,
+): Promise<string | null> {
+	const cacheKey = `${userId}:${organizationId}`;
+	const cached = membershipCache.get(cacheKey);
+	if (cached) return cached;
+
+	const [row] = await db
+		.select({ role: member.role })
+		.from(member)
+		.where(
+			and(eq(member.userId, userId), eq(member.organizationId, organizationId)),
+		)
+		.limit(1);
+
+	if (!row) return null;
+	membershipCache.set(cacheKey, row.role);
+	return row.role;
+}
 
 // =============================================================================
 // Types
@@ -16,10 +48,6 @@ export type UpdateOrganizationInput = {
 	slug?: string;
 	logo?: string;
 	metadata?: Record<string, unknown>;
-};
-
-export type SetActiveOrganizationInput = {
-	organizationId: string;
 };
 
 export type InviteMemberInput = {
@@ -57,6 +85,9 @@ export async function createOrganization(
 			slug: input.slug,
 			logo: input.logo,
 			metadata: input.metadata,
+			// Switching org changes the session cookie, which this wrapper cannot
+			// forward. The client switches with authClient.organization.setActive.
+			keepCurrentActiveOrganization: true,
 		},
 		headers,
 	});
@@ -68,16 +99,6 @@ export async function updateOrganization(
 ) {
 	return auth.api.updateOrganization({
 		body: { data: input },
-		headers,
-	});
-}
-
-export async function setActiveOrganization(
-	organizationId: string,
-	headers: Headers,
-) {
-	return auth.api.setActiveOrganization({
-		body: { organizationId },
 		headers,
 	});
 }
@@ -111,21 +132,34 @@ export async function inviteMember(input: InviteMemberInput, headers: Headers) {
 	});
 }
 
+/** Drop cached roles of an organization (this replica only; entries last 15s). */
+const forgetOrganizationRoles = (organizationId: string) => {
+	membershipCache.deleteWhere((key) => key.endsWith(`:${organizationId}`));
+};
+
 export async function updateMemberRole(
 	input: UpdateMemberRoleInput,
 	headers: Headers,
 ) {
-	return auth.api.updateMemberRole({
-		body: input,
-		headers,
-	});
+	try {
+		return await auth.api.updateMemberRole({
+			body: input,
+			headers,
+		});
+	} finally {
+		forgetOrganizationRoles(input.organizationId);
+	}
 }
 
 export async function removeMember(input: RemoveMemberInput, headers: Headers) {
-	return auth.api.removeMember({
-		body: input,
-		headers,
-	});
+	try {
+		return await auth.api.removeMember({
+			body: input,
+			headers,
+		});
+	} finally {
+		forgetOrganizationRoles(input.organizationId);
+	}
 }
 
 // =============================================================================
@@ -139,16 +173,59 @@ export async function getInvitation(invitationId: string, headers: Headers) {
 	});
 }
 
-export async function acceptInvitation(invitationId: string, headers: Headers) {
-	return auth.api.acceptInvitation({
-		body: { invitationId },
-		headers,
-	});
-}
-
 export async function rejectInvitation(invitationId: string, headers: Headers) {
 	return auth.api.rejectInvitation({
 		body: { invitationId },
 		headers,
 	});
+}
+
+// ============================================================================
+// Admin
+// ============================================================================
+
+/** Escape LIKE wildcards so a search term is matched literally. */
+const escapeLike = (value: string) => value.replace(/[\\%_]/g, "\\$&");
+
+/**
+ * Every organization, for platform admins (credits top-up picker).
+ * Paginated, optionally filtered by name or slug (case-insensitive substring).
+ */
+export async function adminListOrganizations(options: {
+	limit: number;
+	offset: number;
+	search?: string;
+}) {
+	const term = options.search?.trim();
+	const where = term
+		? or(
+				ilike(organization.name, `%${escapeLike(term)}%`),
+				ilike(organization.slug, `%${escapeLike(term)}%`),
+			)
+		: undefined;
+
+	const [organizations, [total]] = await Promise.all([
+		db
+			.select({
+				id: organization.id,
+				name: organization.name,
+				slug: organization.slug,
+				creditsBalance: organization.creditsBalance,
+				memberCount: sql<number>`(select count(*)::int from ${member} where ${member.organizationId} = ${organization.id})`,
+			})
+			.from(organization)
+			.where(where)
+			.orderBy(asc(organization.name), asc(organization.id))
+			.limit(options.limit)
+			.offset(options.offset),
+		db.select({ count: count() }).from(organization).where(where),
+	]);
+
+	return {
+		organizations: organizations.map((org) => ({
+			...org,
+			creditsBalance: Number(org.creditsBalance),
+		})),
+		total: total?.count ?? 0,
+	};
 }

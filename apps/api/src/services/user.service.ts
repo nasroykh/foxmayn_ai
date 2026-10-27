@@ -1,4 +1,6 @@
 import { auth } from "../config/auth";
+import { db, apikey } from "@repo/db";
+import { eq } from "@repo/db/drizzle-orm";
 
 // =============================================================================
 // Types
@@ -54,21 +56,6 @@ export type UserIdInput = {
 
 export type SessionTokenInput = {
 	sessionToken: string;
-};
-
-export type LoginUserInput = {
-	email: string;
-	password: string;
-};
-
-export const loginUser = async (input: LoginUserInput, headers: Headers) => {
-	return auth.api.signInEmail({
-		body: {
-			email: input.email,
-			password: input.password,
-		},
-		headers,
-	});
 };
 
 // =============================================================================
@@ -173,10 +160,11 @@ export async function setUserPassword(
 // =============================================================================
 
 /**
- * Ban a user (Admin only)
+ * Ban a user (Admin only). Banning revokes browser sessions but not API keys,
+ * so the user's keys are disabled too. They stay disabled after an unban.
  */
 export async function banUser(input: BanUserInput, headers: Headers) {
-	return auth.api.banUser({
+	const result = await auth.api.banUser({
 		body: {
 			userId: input.userId,
 			banReason: input.banReason,
@@ -184,6 +172,13 @@ export async function banUser(input: BanUserInput, headers: Headers) {
 		},
 		headers,
 	});
+
+	await db
+		.update(apikey)
+		.set({ enabled: false })
+		.where(eq(apikey.referenceId, input.userId));
+
+	return result;
 }
 
 /**
@@ -229,29 +224,6 @@ export async function revokeUserSession(
 export async function revokeUserSessions(userId: string, headers: Headers) {
 	return auth.api.revokeUserSessions({
 		body: { userId },
-		headers,
-	});
-}
-
-// =============================================================================
-// Impersonation
-// =============================================================================
-
-/**
- * Impersonate a user (Admin only)
- */
-export async function impersonateUser(userId: string, headers: Headers) {
-	return auth.api.impersonateUser({
-		body: { userId },
-		headers,
-	});
-}
-
-/**
- * Stop impersonating a user
- */
-export async function stopImpersonating(headers: Headers) {
-	return auth.api.stopImpersonating({
 		headers,
 	});
 }

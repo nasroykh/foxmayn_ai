@@ -1,15 +1,24 @@
 import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
 import TurndownService from "turndown";
-import xlsx from "xlsx";
+import { ORPCError } from "@orpc/server";
+import { MAX_PDF_PAGES } from "./file_validation";
 
 export const parsePDF = async (pdfBuffer: Buffer) => {
 	const parser = new PDFParse({ data: pdfBuffer });
 
-	const result = await parser.getText();
-
-	parser.destroy();
-	return result.pages.map((page) => page.text).join("\n\n");
+	try {
+		// Only parse up to the page cap, then refuse documents that exceed it
+		const result = await parser.getText({ first: MAX_PDF_PAGES });
+		if (result.total > MAX_PDF_PAGES) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: `PDF has too many pages (max ${MAX_PDF_PAGES})`,
+			});
+		}
+		return result.pages.map((page) => page.text).join("\n\n");
+	} finally {
+		await parser.destroy();
+	}
 };
 
 export const parseDocx = async (docxBuffer: Buffer) => {
@@ -27,18 +36,4 @@ export const parseHTML = (html: string) => {
 	});
 
 	return turndownService.turndown(html);
-};
-
-export const parseXlsx = (xlsxBuffer: Buffer) => {
-	const workbook = xlsx.read(xlsxBuffer, { type: "buffer" });
-	let fullText = "";
-
-	for (let i = 0; i < workbook.SheetNames.length; i++) {
-		const sheetName = workbook.SheetNames[i];
-		const sheet = workbook.Sheets[sheetName];
-		const csv = xlsx.utils.sheet_to_csv(sheet, { blankrows: false });
-		fullText += `### Sheet: ${sheetName}\n${csv}\n\n`;
-	}
-
-	return fullText.trim();
 };

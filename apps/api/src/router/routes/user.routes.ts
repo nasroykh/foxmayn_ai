@@ -4,7 +4,8 @@ import { ORPCError } from "@orpc/server";
 import { db, user } from "@repo/db";
 import { eq } from "@repo/db/drizzle-orm";
 
-import { adminProcedure, authProcedure, publicProcedure } from "../middleware";
+import { adminProcedure, authProcedure } from "../middleware";
+import { touchesPrivilegedUserFields } from "../access";
 import { env } from "../../config/env";
 import {
 	createUser,
@@ -18,9 +19,6 @@ import {
 	listUserSessions,
 	revokeUserSession,
 	revokeUserSessions,
-	impersonateUser,
-	stopImpersonating,
-	loginUser,
 } from "../../services/user.service";
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
@@ -103,28 +101,21 @@ const sessionTokenSchema = z.object({
 	sessionToken: z.string(),
 });
 
+/** An admin cannot delete, ban or change the role of their own account. */
+const forbidSelf = (actorId: string, targetIds: string | string[]) => {
+	const ids = Array.isArray(targetIds) ? targetIds : [targetIds];
+	if (ids.includes(actorId)) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "You cannot do this to your own account",
+		});
+	}
+};
+
 // =============================================================================
 // User CRUD Routes
 // =============================================================================
 
 export const userRoutes = {
-	loginUser: publicProcedure
-		.route({
-			method: "POST",
-			path: `${PREFIX}/auth/login`,
-			description: "Login a user",
-		})
-		.input(
-			z.object({
-				email: z.email(),
-				password: z.string().min(8),
-			}),
-		)
-		.handler(async ({ input, context }) => {
-			const user = await loginUser(input, context.headers);
-			return user;
-		}),
-
 	me: authProcedure
 		.route({
 			method: "GET",
@@ -215,6 +206,9 @@ export const userRoutes = {
 		})
 		.input(updateUserSchema)
 		.handler(async ({ input, context }) => {
+			if (touchesPrivilegedUserFields(input.data)) {
+				forbidSelf(context.user.id, input.userId);
+			}
 			const user = await updateUser(input, context.headers);
 			return user;
 		}),
@@ -230,6 +224,7 @@ export const userRoutes = {
 		})
 		.input(userIdSchema)
 		.handler(async ({ input, context }) => {
+			forbidSelf(context.user.id, input.userId);
 			await removeUser(input.userId, context.headers);
 			return { message: "User deleted successfully" };
 		}),
@@ -245,6 +240,7 @@ export const userRoutes = {
 		})
 		.input(setUserRoleSchema)
 		.handler(async ({ input, context }) => {
+			forbidSelf(context.user.id, input.userId);
 			const result = await setUserRole(input, context.headers);
 			return result;
 		}),
@@ -275,6 +271,7 @@ export const userRoutes = {
 		})
 		.input(banUserSchema)
 		.handler(async ({ input, context }) => {
+			forbidSelf(context.user.id, input.userId);
 			await banUser(input, context.headers);
 			return { message: "User banned successfully" };
 		}),
@@ -340,35 +337,6 @@ export const userRoutes = {
 		}),
 
 	// -------------------------------------------------------------------------
-	// Impersonate User
-	// -------------------------------------------------------------------------
-	impersonateUser: adminProcedure
-		.route({
-			method: "POST",
-			path: `${PREFIX}/admin/users/{userId}/impersonate`,
-			description: "Impersonate a user (Admin only)",
-		})
-		.input(userIdSchema)
-		.handler(async ({ input, context }) => {
-			const result = await impersonateUser(input.userId, context.headers);
-			return result;
-		}),
-
-	// -------------------------------------------------------------------------
-	// Stop Impersonating
-	// -------------------------------------------------------------------------
-	stopImpersonating: adminProcedure
-		.route({
-			method: "POST",
-			path: `${PREFIX}/admin/impersonation/stop`,
-			description: "Stop impersonating a user",
-		})
-		.handler(async ({ context }) => {
-			await stopImpersonating(context.headers);
-			return { message: "Stopped impersonating" };
-		}),
-
-	// -------------------------------------------------------------------------
 	// Bulk Delete Users
 	// -------------------------------------------------------------------------
 	bulkDeleteUsers: adminProcedure
@@ -379,6 +347,7 @@ export const userRoutes = {
 		})
 		.input(bulkDeleteUsersSchema)
 		.handler(async ({ input, context }) => {
+			forbidSelf(context.user.id, input.userIds);
 			const results = await Promise.allSettled(
 				input.userIds.map((userId) => removeUser(userId, context.headers)),
 			);
@@ -405,6 +374,7 @@ export const userRoutes = {
 		})
 		.input(bulkSetUserRoleSchema)
 		.handler(async ({ input, context }) => {
+			forbidSelf(context.user.id, input.userIds);
 			const results = await Promise.allSettled(
 				input.userIds.map((userId) =>
 					setUserRole({ userId, role: input.role }, context.headers),
@@ -433,6 +403,7 @@ export const userRoutes = {
 		})
 		.input(bulkBanUsersSchema)
 		.handler(async ({ input, context }) => {
+			forbidSelf(context.user.id, input.userIds);
 			const results = await Promise.allSettled(
 				input.userIds.map((userId) =>
 					banUser(

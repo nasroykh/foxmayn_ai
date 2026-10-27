@@ -4,21 +4,58 @@ import {
 	OPENROUTER_AI_MODELS,
 	OPENROUTER_EMBEDDING_MODELS,
 } from "./data/openrouter_models";
-import type { Reasoning } from "openai/resources";
+import { describeError } from "./redact";
+type Reasoning = { effort: "xhigh" | "high" | "medium" | "low" | "minimal" | "none" | null | undefined };
 
-if (!env.OPENROUTER_API_KEY) {
-	throw new Error("OPENROUTER_API_KEY is not set");
+// Whole-request ceiling, including the streamed body. Long enough for slow
+// reasoning models, short enough that a hung upstream frees the worker slot.
+const REQUEST_TIMEOUT_MS = 180_000;
+
+let client: OpenRouter | undefined;
+
+/**
+ * Lazily builds the OpenRouter client so that importing this module never
+ * throws (the API/worker can boot and report a clear error on first use).
+ */
+function getClient(): OpenRouter {
+	if (client) return client;
+
+	const apiKey = env.OPENROUTER_API_KEY?.trim();
+	if (!apiKey) {
+		throw new Error(
+			"OPENROUTER_API_KEY is not set. Set it in .env to use chat and document embedding.",
+		);
+	}
+
+	client = new OpenRouter({
+		apiKey,
+		appTitle: "Foxmayn AI",
+		httpReferer: env.APP_URL || "https://foxmayn.ai",
+		timeoutMs: REQUEST_TIMEOUT_MS,
+		retryConfig: {
+			strategy: "backoff",
+			backoff: {
+				initialInterval: 500,
+				maxInterval: 5_000,
+				exponent: 2,
+				maxElapsedTime: 20_000,
+			},
+			retryConnectionErrors: true,
+		},
+	});
+	return client;
 }
-
-const openrouter = new OpenRouter({
-	apiKey: env.OPENROUTER_API_KEY,
-	xTitle: "Foxmayn AI",
-	httpReferer: env.APP_URL || "https://foxmayn.ai",
-});
 
 export type AIModelId = (typeof OPENROUTER_AI_MODELS)[number]["id"];
 export type EmbeddingModelId =
 	(typeof OPENROUTER_EMBEDDING_MODELS)[number]["id"];
+
+/**
+ * Embedding model of a profile that does not choose one. The `rag_profile`
+ * column default in @repo/db must stay equal (a test in the API checks it).
+ */
+export const DEFAULT_EMBEDDING_MODEL: EmbeddingModelId =
+	"openai/text-embedding-3-small";
 
 // ============================================================================
 // Usage tracking types
@@ -119,11 +156,11 @@ export function OpenRouterQuery(
 		throw new Error("Top P must be between 0 and 1");
 	}
 
-	const callResult = openrouter.callModel({
+	const callResult = getClient().callModel({
 		input: messages,
 		model: settings.model || DEFAULT_AI_SETTINGS.model,
-		temperature: settings.temperature || DEFAULT_AI_SETTINGS.temperature,
-		topP: settings.topP || DEFAULT_AI_SETTINGS.topP,
+		temperature: settings.temperature ?? DEFAULT_AI_SETTINGS.temperature,
+		topP: settings.topP ?? DEFAULT_AI_SETTINGS.topP,
 		maxOutputTokens: settings.maxTokens || DEFAULT_AI_SETTINGS.maxTokens,
 		reasoning: {
 			enabled: settings.reasoning
@@ -150,7 +187,7 @@ export function OpenRouterQuery(
 			} catch (error) {
 				console.error(
 					"[OpenRouter] Failed to retrieve usage data after stream — token counts will be zero and billing may be inaccurate:",
-					error,
+					describeError(error),
 				);
 				return { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 			}
@@ -176,7 +213,7 @@ export function OpenRouterQuery(
 				},
 			};
 		} catch (error) {
-			console.error(error);
+			console.error("[OpenRouter] Query failed:", describeError(error));
 			throw error;
 		}
 	})();
@@ -206,7 +243,7 @@ export const OpenRouterEmbed = async (
 
 		if (!dimensions) throw new Error("Invalid model");
 
-		const response = await openrouter.embeddings.generate({
+		const response = await getClient().embeddings.generate({
 			requestBody: {
 				model,
 				input: chunks,
@@ -234,19 +271,17 @@ export const OpenRouterEmbed = async (
 			return item.embedding;
 		});
 
-		// Extract usage from response
-		const usage = (response as Record<string, unknown>).usage as
-			| { prompt_tokens?: number; total_tokens?: number }
-			| undefined;
+		// The SDK maps the wire's snake_case usage to camelCase
+		const usage = response.usage;
 
 		return {
 			embeddings,
 			usage: {
-				totalTokens: usage?.total_tokens ?? usage?.prompt_tokens ?? 0,
+				totalTokens: usage?.totalTokens ?? usage?.promptTokens ?? 0,
 			},
 		};
 	} catch (error) {
-		console.error("Batch embedding error:", error);
+		console.error("[OpenRouter] Batch embedding error:", describeError(error));
 		throw error;
 	}
 };

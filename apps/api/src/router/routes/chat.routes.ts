@@ -5,15 +5,23 @@ import {
 	queryRAGStream,
 	searchChunks,
 	getDocument,
+	isDocumentInProfile,
 	type ChatMessage,
 } from "../../services/rag.service";
 import {
 	createConversation,
 	getConversation,
-	listMessages,
+	listRecentMessages,
 	createMessage,
 } from "../../services/conversation.service";
-import { creditsProcedure, publicProcedure } from "../middleware";
+import { estimateTokens } from "../../services/chunking.service";
+import {
+	CLIENT_MESSAGES_MAX_CHARS,
+	CLIENT_MESSAGES_MAX_COUNT,
+	HISTORY_MAX_MESSAGES,
+	selectHistory,
+} from "../../utils/history";
+import { chatProcedure, publicProcedure } from "../middleware";
 import { env } from "../../config/env";
 import {
 	OPENROUTER_AI_MODELS,
@@ -22,9 +30,9 @@ import {
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
-// Shared message schema
+// Shared message schema. Clients cannot send `system` messages: that role is the server's.
 const messageSchema = z.object({
-	role: z.enum(["user", "assistant", "system"]),
+	role: z.enum(["user", "assistant"]),
 	content: z.string(),
 });
 
@@ -45,28 +53,60 @@ const queryOptionsSchema = z
 // 2. Server-managed history: provide `conversationId` (or nothing for new conversation)
 const queryBodySchema = z
 	.object({
-		query: z.string().min(1).max(10000),
-		// Client-managed mode: caller handles their own history
-		messages: z.array(messageSchema).optional(),
+		query: z.string().trim().min(1).max(10000),
+		// Client-managed mode: caller handles their own history.
+		// Any array (even empty) selects this mode.
+		messages: z
+			.array(messageSchema)
+			.max(CLIENT_MESSAGES_MAX_COUNT)
+			.refine(
+				(msgs) =>
+					msgs.reduce((sum, m) => sum + m.content.length, 0) <=
+					CLIENT_MESSAGES_MAX_CHARS,
+				`Messages are too long (max ${CLIENT_MESSAGES_MAX_CHARS} characters in total)`,
+			)
+			.optional(),
 		// Server-managed mode: we handle history storage
 		conversationId: z.string().optional(),
 		options: queryOptionsSchema,
 	})
 	.refine(
-		(data) => !(data.messages && data.conversationId),
+		(data) => !(data.messages !== undefined && data.conversationId),
 		"Cannot provide both 'messages' and 'conversationId'. Choose one mode.",
 	);
 
 /**
- * Rejects a documentId filter that does not belong to the caller.
+ * Knowledge base (profile) for a request. A key bound to one knowledge base
+ * always uses it and cannot name another; other callers choose freely (and
+ * their profile ownership is checked when it is loaded).
+ */
+function resolveKnowledgeBase(
+	requestedProfileId: string | undefined,
+	apiKeyProfileId: string | null,
+): string | undefined {
+	if (!apiKeyProfileId) return requestedProfileId;
+	if (requestedProfileId && requestedProfileId !== apiKeyProfileId) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "This API key is limited to another knowledge base",
+		});
+	}
+	return apiKeyProfileId;
+}
+
+/**
+ * Rejects a documentId filter that does not belong to the caller, or (for a
+ * key bound to one knowledge base) to that knowledge base.
  */
 async function assertOwnsDocument(
 	documentId: string | undefined,
 	userId: string,
+	apiKeyProfileId: string | null,
 ): Promise<void> {
 	if (!documentId) return;
-	const doc = await getDocument(documentId, userId);
-	if (!doc) {
+	const found = apiKeyProfileId
+		? await isDocumentInProfile(documentId, apiKeyProfileId, userId)
+		: Boolean(await getDocument(documentId, userId));
+	if (!found) {
 		throw new ORPCError("NOT_FOUND", {
 			message: "Document not found",
 		});
@@ -75,91 +115,115 @@ async function assertOwnsDocument(
 
 /**
  * Resolves chat history based on the provided mode.
- * Returns messages array and conversationId (created if needed).
+ * A new server-managed conversation is NOT created here: it is created only
+ * once an answer exists (see `persistExchange`), so failed requests leave nothing behind.
  */
 async function resolveChatHistory(input: {
-	messages?: Array<{ role: "user" | "assistant" | "system"; content: string }>;
+	messages?: ChatMessage[];
 	conversationId?: string;
 	profileId?: string;
 	userId: string;
+	/**
+	 * Set for keys bound to one knowledge base: such a key only continues the
+	 * conversations it created itself, never the owner's own chats.
+	 */
+	apiKeyProfileId: string | null;
+	apiKeyId: string | null;
 }): Promise<{
 	messages: ChatMessage[];
+	// Existing conversation id, null for client-managed mode and new conversations
 	conversationId: string | null;
+	// Profile to use: the request's, else the conversation's
+	profileId: string | undefined;
 	isServerManaged: boolean;
 }> {
-	// Mode 1: Client-managed - caller provides their own messages
-	if (input.messages?.length) {
+	// Mode 1: Client-managed - caller provides their own messages (possibly none)
+	if (input.messages !== undefined) {
 		return {
 			messages: input.messages,
 			conversationId: null,
+			profileId: input.profileId,
 			isServerManaged: false,
 		};
 	}
 
-	// Mode 2: Server-managed - we handle storage
+	// Mode 2: Server-managed, continuing an existing conversation
 	if (input.conversationId) {
-		// Continuing an existing conversation
 		const conv = await getConversation(input.conversationId, input.userId);
-		if (!conv) {
+		const createdByThisKey =
+			conv?.profileId === input.apiKeyProfileId &&
+			(conv?.metadata as { apiKeyId?: unknown } | null)?.apiKeyId ===
+				input.apiKeyId;
+		if (!conv || (input.apiKeyProfileId && !createdByThisKey)) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Conversation not found",
 			});
 		}
 
-		// Fetch existing messages
-		const existingMessages = await listMessages(input.conversationId, 50, 0);
-		const messages: ChatMessage[] = existingMessages.map((m) => ({
-			role: m.role as ChatMessage["role"],
-			content: m.content,
-		}));
+		// Newest turns, capped by count and tokens, replayed oldest first
+		const recent = await listRecentMessages(
+			input.conversationId,
+			HISTORY_MAX_MESSAGES,
+		);
 
 		return {
-			messages,
+			messages: selectHistory(recent, { countTokens: estimateTokens }),
 			conversationId: input.conversationId,
+			profileId: input.profileId ?? conv.profileId ?? undefined,
 			isServerManaged: true,
 		};
 	}
 
-	// Mode 2: New conversation (no conversationId provided, no messages)
-	// Create a new conversation - will be populated after first exchange
-	const conv = await createConversation({
-		userId: input.userId,
-		profileId: input.profileId ?? null,
-		title: null, // Will be set later or remain null
-	});
-
+	// Mode 2: New conversation, created after the first successful answer
 	return {
 		messages: [],
-		conversationId: conv.id,
+		conversationId: null,
+		profileId: input.profileId,
 		isServerManaged: true,
 	};
 }
 
 /**
- * Stores the user query and assistant response in the conversation.
+ * Stores the user query and assistant response, creating the conversation
+ * first when this was the first exchange. Returns the conversation id.
  */
-async function storeMessages(
-	conversationId: string,
-	userQuery: string,
-	assistantResponse: string,
-): Promise<void> {
-	// Store user message
+async function persistExchange(input: {
+	conversationId: string | null;
+	userId: string;
+	profileId: string | undefined;
+	// API key that started the conversation (lets a chat-only key continue it)
+	apiKeyId: string | null;
+	userQuery: string;
+	assistantResponse: string;
+}): Promise<string> {
+	const conversationId =
+		input.conversationId ??
+		(
+			await createConversation({
+				userId: input.userId,
+				profileId: input.profileId ?? null,
+				title: null,
+				metadata: input.apiKeyId ? { apiKeyId: input.apiKeyId } : {},
+			})
+		).id;
+
 	await createMessage({
 		conversationId,
 		role: "user",
-		content: userQuery,
+		content: input.userQuery,
 	});
 
-	// Store assistant response
 	await createMessage({
 		conversationId,
 		role: "assistant",
-		content: assistantResponse,
+		content: input.assistantResponse,
 	});
+
+	return conversationId;
 }
 
 export const chatRoutes = {
-	query: creditsProcedure
+	query: chatProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/query`,
@@ -170,20 +234,30 @@ export const chatRoutes = {
 		.handler(async ({ input, context }) => {
 			const { query, messages, conversationId, options } = input;
 
-			await assertOwnsDocument(options?.documentId, context.user.id);
+			const profileId = resolveKnowledgeBase(
+				options?.profileId,
+				context.apiKeyProfileId,
+			);
+			await assertOwnsDocument(
+				options?.documentId,
+				context.user.id,
+				context.apiKeyProfileId,
+			);
 
 			// Resolve history mode
 			const history = await resolveChatHistory({
-				messages: messages as ChatMessage[] | undefined,
+				messages,
 				conversationId,
-				profileId: options?.profileId,
+				profileId,
 				userId: context.user.id,
+				apiKeyProfileId: context.apiKeyProfileId,
+				apiKeyId: context.apiKeyId,
 			});
 
 			const result = await queryRAG(query, {
 				limit: options?.limit,
 				scoreThreshold: options?.scoreThreshold,
-				profileId: options?.profileId,
+				profileId: history.profileId,
 				messages: history.messages,
 				filter: {
 					documentId: options?.documentId,
@@ -191,21 +265,29 @@ export const chatRoutes = {
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
+				strictProfile: Boolean(context.apiKeyProfileId),
 			});
 
-			// Store messages if server-managed
-			if (history.isServerManaged && history.conversationId) {
-				await storeMessages(history.conversationId, query, result.answer);
-			}
+			// Store the exchange if server-managed (creates the conversation on first use)
+			const savedConversationId = history.isServerManaged
+				? await persistExchange({
+						conversationId: history.conversationId,
+						userId: context.user.id,
+						profileId: history.profileId,
+						apiKeyId: context.apiKeyId,
+						userQuery: query,
+						assistantResponse: result.answer,
+					})
+				: null;
 
 			return {
 				...result,
 				// Return conversationId for server-managed mode so caller can continue
-				conversationId: history.conversationId,
+				conversationId: savedConversationId,
 			};
 		}),
 
-	search: creditsProcedure
+	search: chatProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/search`,
@@ -213,30 +295,39 @@ export const chatRoutes = {
 		})
 		.input(
 			z.object({
-				query: z.string().min(1).max(10000),
+				query: z.string().trim().min(1).max(10000),
 				options: queryOptionsSchema,
 			}),
 		)
 		.handler(async ({ input, context }) => {
 			const { query, options } = input;
 
-			await assertOwnsDocument(options?.documentId, context.user.id);
+			await assertOwnsDocument(
+				options?.documentId,
+				context.user.id,
+				context.apiKeyProfileId,
+			);
 
 			const results = await searchChunks(query, {
 				limit: options?.limit,
 				scoreThreshold: options?.scoreThreshold,
+				profileId: resolveKnowledgeBase(
+					options?.profileId,
+					context.apiKeyProfileId,
+				),
 				filter: {
 					documentId: options?.documentId,
 					source: options?.source,
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
+				strictProfile: Boolean(context.apiKeyProfileId),
 			});
 
 			return { results };
 		}),
 
-	queryStream: creditsProcedure
+	queryStream: chatProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/chat/query/stream`,
@@ -247,17 +338,27 @@ export const chatRoutes = {
 		.handler(async function* ({ input, context }) {
 			const { query, messages, conversationId, options } = input;
 
-			await assertOwnsDocument(options?.documentId, context.user.id);
+			const profileId = resolveKnowledgeBase(
+				options?.profileId,
+				context.apiKeyProfileId,
+			);
+			await assertOwnsDocument(
+				options?.documentId,
+				context.user.id,
+				context.apiKeyProfileId,
+			);
 
 			// Resolve history mode
 			const history = await resolveChatHistory({
-				messages: messages as ChatMessage[] | undefined,
+				messages,
 				conversationId,
-				profileId: options?.profileId,
+				profileId,
 				userId: context.user.id,
+				apiKeyProfileId: context.apiKeyProfileId,
+				apiKeyId: context.apiKeyId,
 			});
 
-			// Yield conversationId first for server-managed mode
+			// Existing conversation: announce its id first
 			if (history.conversationId) {
 				yield { type: "conversation_id", data: history.conversationId };
 			}
@@ -265,7 +366,7 @@ export const chatRoutes = {
 			const stream = queryRAGStream(query, {
 				limit: options?.limit,
 				scoreThreshold: options?.scoreThreshold,
-				profileId: options?.profileId,
+				profileId: history.profileId,
 				messages: history.messages,
 				filter: {
 					documentId: options?.documentId,
@@ -273,6 +374,7 @@ export const chatRoutes = {
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
+				strictProfile: Boolean(context.apiKeyProfileId),
 			});
 
 			// Collect full response for storage
@@ -287,9 +389,20 @@ export const chatRoutes = {
 				}
 			}
 
-			// Store messages if server-managed
-			if (history.isServerManaged && history.conversationId && fullResponse) {
-				await storeMessages(history.conversationId, query, fullResponse);
+			// Store the exchange only after a complete answer. A new conversation is
+			// created now, so its id is announced at the end of the stream.
+			if (history.isServerManaged && fullResponse) {
+				const savedConversationId = await persistExchange({
+					conversationId: history.conversationId,
+					userId: context.user.id,
+					profileId: history.profileId,
+					apiKeyId: context.apiKeyId,
+					userQuery: query,
+					assistantResponse: fullResponse,
+				});
+				if (!history.conversationId) {
+					yield { type: "conversation_id", data: savedConversationId };
+				}
 			}
 		}),
 

@@ -1,99 +1,41 @@
-# Foxmayn API Service
+# @repo/api
 
-The core backend service for Foxmayn AI, built with **Hono**, **ORPC**, and **Better Auth**. It provides a type-safe, high-performance API for document management, RAG processing, and AI chat interactions.
+The HTTP API. Built with Hono, oRPC, Better Auth and BullMQ. The same package also defines the background jobs that `apps/worker` runs.
 
-## Core Pillars
+## Entry points
 
-- **Type-Safety**: End-to-end types using ORPC and Zod.
-- **Unified Auth**: Personal API keys and session-based authentication via Better Auth.
-- **Advanced RAG**: Customizable pipeline with profiles, chunking, and vector retrieval.
-- **Background Processing**: Reliable job execution using BullMQ and Redis.
+- `src/index.ts`: starts the server under `API_V1_PREFIX` (default `/api/v1`), initializes the DB, model pricing and the super admin, and handles graceful shutdown.
+- `src/router/index.ts`: the oRPC router. Exported as `@repo/api/orpc` so the frontend gets its types.
+- `src/jobs/index.ts`: queues and worker factories. Exported as `@repo/api/jobs` for the worker app.
 
-## Getting Started
+## Key files
 
-### Prerequisites
+| Path | Purpose |
+| --- | --- |
+| `src/router/middleware.ts` | Procedures: `authProcedure`, `sessionProcedure`, `adminProcedure`, `orgProcedure`, `orgManagerProcedure`, `creditsProcedure` |
+| `src/router/routes/*.routes.ts` | Routes for users, organizations, documents, profiles, chat, conversations, credits, usage, API keys |
+| `src/services` | Business logic: RAG, credits, usage, chunking, Qdrant access, email |
+| `src/config/auth.ts` | Better Auth setup (email and password, OTP, organizations, admin, API keys) |
+| `src/config/env.schema.ts` | Env validation. Production rejects `CHANGE_ME` values. |
+| `src/jobs/document` | Document indexing, reindex and delete jobs |
+| `src/jobs/email` | Email job queue and worker |
+| `src/plugins` | CORS, body limit, oRPC handlers, Scalar docs, auth, health, Bull Board |
 
-| Service    | Version | Purpose             |
-| ---------- | ------- | ------------------- |
-| Node.js    | >=20    | Runtime environment |
-| Redis      | >=7.0   | Queue management    |
-| PostgreSQL | >=15    | Primary database    |
-| Qdrant     | Latest  | Vector database     |
+## HTTP surface
 
-### Environment Variables
+All under `/api/v1`: `/rpc` (oRPC, used by the frontend), REST routes described in `/spec.json`, docs at `/scalar`, Better Auth at `/auth/*`, `/health`, `/health/ready`, and the Bull Board queue dashboard at `/admin/queues` (admin session only). Chat answers stream from `/chat/query/stream`. Uploads are capped at 10 MB per file and 11 MB per request.
 
-Copy `.env.example` to `.env` and configure:
-
-- `DB_URL`: PostgreSQL connection
-- `REDIS_URL`: Redis connection (e.g., `redis://localhost:6379`)
-- `OPENROUTER_API_KEY`: For LLM and embeddings
-- `BETTER_AUTH_SECRET`: Random string for encryption
-- `QDRANT_URL`: Vector database endpoint
-
-### Installation & Development
+## Commands
 
 ```bash
-# Install dependencies (managed via root)
-pnpm install
-
-# Start the API server
-pnpm dev
-
-# Start the worker process (required for document indexing)
-pnpm dev:worker
+pnpm --filter @repo/api dev        # tsx watch
+pnpm --filter @repo/api build
+pnpm --filter @repo/api typecheck
+pnpm --filter @repo/api test       # node:test through tsx
+pnpm --filter @repo/api lint
+pnpm --filter @repo/api start      # node dist/index.js
 ```
 
-## API Route Summary
+## Environment
 
-### 🔐 Authentication
-
-- `/api/v1/auth/*`: Better Auth endpoints (login, signup, session, etc.)
-- Supports `Bearer` token (API Key) or Cookie-based sessions.
-
-### 👥 User & Admin (`/api/v1/admin/users`)
-
-- Full user management for admins.
-- Roles, banning, session revocation, and impersonation.
-
-### 🔑 API Keys (`/api/v1/api-keys`)
-
-- Create, list, rotate, and delete personal API keys.
-- Configurable rate limits and permissions.
-
-### ⚙️ RAG Profiles (`/api/v1/profiles`)
-
-- Manage RAG configurations.
-- Define models, chunk size, temperature, and personality traits.
-
-### 📄 Documents (`/api/v1/documents`)
-
-- Upload and index documents.
-- Supported formats: `.txt`, `.md`, `.pdf`, `.docx`, `.xlsx`.
-- Background indexing with progress tracking.
-
-### 💬 Chat & Conversations (`/api/v1/chat`, `/api/v1/conversations`)
-
-- **Query**: Direct RAG query with optional streaming.
-- **Search**: Semantic search for document chunks.
-- **Flexible History**:
-  - **Client-Managed**: Provide a `messages` array in the request.
-  - **Server-Managed**: Provide a `conversationId` to persist history on the server.
-
-## Monitoring
-
-- **Swagger/OpenAPI**: Available at `/docs` in development.
-- **Queue Dashboard**: Access BullMQ status at `/api/v1/admin/queues` (admin session required).
-
-## Upgrading: tenant-scoped vectors
-
-Every Qdrant point now carries a `userId` payload (the document owner) and every search filters on it. Vectors indexed before this change lack the field and are not returned by searches until backfilled. After deploying, run once (safe to re-run):
-
-```bash
-pnpm --filter @repo/api backfill:qdrant-userid
-```
-
-It reads each document's owner from PostgreSQL, sets `userId` on its points in every `<QDRANT_COLLECTION_NAME>_<dims>` collection, and creates the `userId` keyword index. Points of deleted documents stay unscoped and are never returned. Retrieval is scoped by user, not organization, matching how documents are owned today.
-
----
-
-_Last Updated: January 2026_
+Read from the root `.env` in development: `NODE_ENV`, `PORT`, `HOST`, `API_V1_PREFIX`, `APP_URL`, `BETTER_AUTH_SECRET`, `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD`, `DB_URL`, `REDIS_URL`, `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION_NAME`, `OPENROUTER_API_KEY`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`. See [.env.example](../../.env.example).

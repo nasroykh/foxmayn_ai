@@ -3,8 +3,8 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { Layout } from "@/components/layout/layout";
-import { orpc } from "@/lib/orpc";
+import { orpc, type RouterOutputs } from "@/lib/orpc";
+import { errorMessage } from "@/lib/validation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { format } from "date-fns";
@@ -51,8 +51,16 @@ import {
 	FormItem,
 	FormLabel,
 	FormMessage,
+	FormDescription,
 } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import {
 	IconPlus,
 	IconTrash,
@@ -63,17 +71,55 @@ import {
 } from "@tabler/icons-react";
 
 export const Route = createFileRoute("/_auth/api-keys")({
+	staticData: { title: "API Keys" },
 	component: ApiKeysPage,
 });
 
+const SECONDS_PER_DAY = 86_400;
+
+// Select value for a key with full access (no knowledge base)
+const FULL_ACCESS = "full";
+
+// Number inputs hand back strings; an empty box means "not set".
+const optionalNumber = (schema: z.ZodNumber) =>
+	z.preprocess(
+		(v) => (v === "" || v === null || v === undefined ? undefined : Number(v)),
+		schema.optional(),
+	);
+
 const createKeySchema = z.object({
-	name: z.string().min(1, "Name is required"),
-	prefix: z.string().optional(),
-	expiresIn: z.number().optional(),
-	remaining: z.number().optional(),
+	name: z.string().trim().min(1, "Name is required").max(100),
+	prefix: z
+		.string()
+		.trim()
+		.max(32)
+		.regex(/^[A-Za-z0-9_-]*$/, "Letters, numbers, _ and - only")
+		.optional(),
+	// days in the form, seconds on the wire
+	knowledgeBase: z.string(),
+	expiresInDays: optionalNumber(
+		z.number().int("Whole days only").min(1, "At least 1 day").max(365, "At most 365 days"),
+	),
 });
 
-type CreateKeyValues = z.infer<typeof createKeySchema>;
+type CreateKeyInput = z.input<typeof createKeySchema>;
+type CreateKeyValues = z.output<typeof createKeySchema>;
+
+type ApiKeyRow = RouterOutputs["apikeys"]["listApiKeys"]["apiKeys"][number];
+
+/** Knowledge base (profile id) a key is limited to; metadata may arrive as JSON text. */
+const keyProfileId = (key: ApiKeyRow): string | null => {
+	let metadata: unknown = key.metadata;
+	if (typeof metadata === "string") {
+		try {
+			metadata = JSON.parse(metadata);
+		} catch {
+			return null;
+		}
+	}
+	const profileId = (metadata as { profileId?: unknown } | null)?.profileId;
+	return typeof profileId === "string" && profileId ? profileId : null;
+};
 
 function ApiKeysPage() {
 	const queryClient = useQueryClient();
@@ -85,18 +131,25 @@ function ApiKeysPage() {
 	const { data: keys, isLoading } = useQuery(
 		orpc.apikeys.listApiKeys.queryOptions({}),
 	);
+	const { data: profilesData } = useQuery(
+		orpc.profiles.listProfiles.queryOptions({ input: { limit: 50 } }),
+	);
+	const profiles = profilesData?.profiles ?? [];
+	const profileName = (id: string) =>
+		profiles.find((p) => p.id === id)?.name ?? "Deleted profile";
 
 	const createMutation = useMutation(
 		orpc.apikeys.createApiKey.mutationOptions({
-			onSuccess: (data: any) => {
-				setCreatedKey(data.key || data.token || null);
+			onSuccess: (data) => {
+				setCreatedKey(data.key);
 				setIsCreateOpen(false);
-				queryClient.invalidateQueries({
+				form.reset();
+				void queryClient.invalidateQueries({
 					queryKey: orpc.apikeys.listApiKeys.key(),
 				});
 			},
-			onError: (err: any) =>
-				toast.error(err.message || "Failed to create API key"),
+			onError: (err) =>
+				toast.error(errorMessage(err, "Failed to create API key")),
 		}),
 	);
 
@@ -105,12 +158,12 @@ function ApiKeysPage() {
 			onSuccess: () => {
 				toast.success("API key deleted");
 				setDeletingKeyId(null);
-				queryClient.invalidateQueries({
+				void queryClient.invalidateQueries({
 					queryKey: orpc.apikeys.listApiKeys.key(),
 				});
 			},
-			onError: (err: any) =>
-				toast.error(err.message || "Failed to delete API key"),
+			onError: (err) =>
+				toast.error(errorMessage(err, "Failed to delete API key")),
 		}),
 	);
 
@@ -118,47 +171,51 @@ function ApiKeysPage() {
 		orpc.apikeys.deleteAllExpiredApiKeys.mutationOptions({
 			onSuccess: () => {
 				toast.success("Expired keys cleared");
-				queryClient.invalidateQueries({
+				void queryClient.invalidateQueries({
 					queryKey: orpc.apikeys.listApiKeys.key(),
 				});
 			},
-			onError: (err: any) => toast.error(err.message),
+			onError: (err) => toast.error(errorMessage(err, "Request failed")),
 		}),
 	);
 
 	const toggleMutation = useMutation(
 		orpc.apikeys.updateApiKey.mutationOptions({
 			onSuccess: () => {
-				queryClient.invalidateQueries({
+				void queryClient.invalidateQueries({
 					queryKey: orpc.apikeys.listApiKeys.key(),
 				});
 			},
-			onError: (err: any) => toast.error(err.message),
+			onError: (err) => toast.error(errorMessage(err, "Request failed")),
 		}),
 	);
 
-	const form = useForm<CreateKeyValues>({
+	const form = useForm<CreateKeyInput, unknown, CreateKeyValues>({
 		resolver: zodResolver(createKeySchema),
 		defaultValues: {
 			name: "",
 			prefix: "",
-			expiresIn: undefined,
-			remaining: undefined,
+			knowledgeBase: FULL_ACCESS,
+			expiresInDays: "",
 		},
 	});
 
-	const handleCopy = () => {
-		if (createdKey) {
-			navigator.clipboard.writeText(createdKey);
+	const handleCopy = async () => {
+		if (!createdKey) return;
+		try {
+			await navigator.clipboard.writeText(createdKey);
 			setCopied(true);
 			setTimeout(() => setCopied(false), 2000);
+		} catch {
+			// insecure origin or permission denied
+			toast.error("Could not copy. Select the key and copy it manually.");
 		}
 	};
 
-	const keyList = Array.isArray(keys) ? keys : ((keys as any)?.keys ?? []);
+	const keyList: ApiKeyRow[] = keys?.apiKeys ?? [];
 
 	return (
-		<Layout>
+		<>
 			<div className="space-y-6">
 				<div className="flex items-center justify-between">
 					<div>
@@ -196,9 +253,9 @@ function ApiKeysPage() {
 									<TableRow>
 										<TableHead>Name</TableHead>
 										<TableHead>Prefix</TableHead>
+										<TableHead>Access</TableHead>
 										<TableHead>Status</TableHead>
-										<TableHead>Uses Left</TableHead>
-										<TableHead>Expires</TableHead>
+																				<TableHead>Expires</TableHead>
 										<TableHead>Created</TableHead>
 										<TableHead className="text-right">Actions</TableHead>
 									</TableRow>
@@ -224,7 +281,7 @@ function ApiKeysPage() {
 											</TableCell>
 										</TableRow>
 									) : (
-										keyList.map((key: any) => (
+										keyList.map((key) => (
 											<TableRow key={key.id}>
 												<TableCell className="font-medium">
 													{key.name || "—"}
@@ -232,15 +289,28 @@ function ApiKeysPage() {
 												<TableCell className="font-mono text-xs">
 													{key.start || key.prefix || "—"}
 												</TableCell>
+												<TableCell className="text-sm text-muted-foreground">
+													{(() => {
+														const profileId = keyProfileId(key);
+														return profileId
+															? `Chat: ${profileName(profileId)}`
+															: "Full";
+													})()}
+												</TableCell>
 												<TableCell>
 													<button
+														type="button"
+														role="switch"
+														aria-checked={key.enabled !== false}
+														aria-label={`${key.name || "API key"} enabled`}
+														disabled={toggleMutation.isPending}
 														onClick={() =>
 															toggleMutation.mutate({
 																keyId: key.id,
-																enabled: !key.enabled,
+																enabled: key.enabled === false,
 															})
 														}
-														className="cursor-pointer"
+														className="cursor-pointer rounded-md focus-visible:ring-2 focus-visible:ring-ring outline-none"
 													>
 														<Badge
 															variant={
@@ -256,7 +326,6 @@ function ApiKeysPage() {
 														</Badge>
 													</button>
 												</TableCell>
-												<TableCell>{key.remaining ?? "Unlimited"}</TableCell>
 												<TableCell className="text-sm text-muted-foreground">
 													{key.expiresAt
 														? format(new Date(key.expiresAt), "MMM d, yyyy")
@@ -272,6 +341,7 @@ function ApiKeysPage() {
 														variant="ghost"
 														size="icon"
 														className="size-8 text-destructive hover:text-destructive"
+														aria-label={`Delete API key ${key.name || ""}`.trim()}
 														onClick={() => setDeletingKeyId(key.id)}
 													>
 														<IconTrash className="size-4" />
@@ -302,8 +372,13 @@ function ApiKeysPage() {
 								createMutation.mutate({
 									name: v.name,
 									prefix: v.prefix || undefined,
-									expiresIn: v.expiresIn || undefined,
-									remaining: v.remaining || undefined,
+									profileId:
+										v.knowledgeBase === FULL_ACCESS
+											? undefined
+											: v.knowledgeBase,
+									expiresIn: v.expiresInDays
+										? v.expiresInDays * SECONDS_PER_DAY
+										: undefined,
 								}),
 							)}
 							className="space-y-4 py-4"
@@ -334,38 +409,75 @@ function ApiKeysPage() {
 									</FormItem>
 								)}
 							/>
-							<div className="grid grid-cols-2 gap-4">
-								<FormField
-									control={form.control}
-									name="expiresIn"
-									render={({ field }) => (
-										<FormItem>
-											<FormLabel>Expires in (days)</FormLabel>
+							<FormField
+								control={form.control}
+								name="knowledgeBase"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Access</FormLabel>
+										<Select
+											value={field.value}
+											onValueChange={(value) =>
+												field.onChange(value ?? FULL_ACCESS)
+											}
+											items={[
+												{ label: "Full access", value: FULL_ACCESS },
+												...profiles.map((p) => ({
+													label: `Chat only: ${p.name}`,
+													value: p.id,
+												})),
+											]}
+										>
 											<FormControl>
-												<Input {...field} type="number" placeholder="30" />
+												<SelectTrigger className="w-full" aria-label="Access">
+													<SelectValue />
+												</SelectTrigger>
 											</FormControl>
-											<FormMessage />
-										</FormItem>
-									)}
-								/>
-								<FormField
-									control={form.control}
-									name="remaining"
-									render={({ field }) => (
-										<FormItem>
-											<FormLabel>Max uses</FormLabel>
-											<FormControl>
-												<Input
-													{...field}
-													type="number"
-													placeholder="Unlimited"
-												/>
-											</FormControl>
-											<FormMessage />
-										</FormItem>
-									)}
-								/>
-							</div>
+											<SelectContent>
+												<SelectItem value={FULL_ACCESS}>Full access</SelectItem>
+												{profiles.map((p) => (
+													<SelectItem key={p.id} value={p.id}>
+														Chat only: {p.name}
+													</SelectItem>
+												))}
+											</SelectContent>
+										</Select>
+										<FormDescription>
+											A chat-only key can only ask questions to one knowledge
+											base (profile). Use it on a server that answers your
+											visitors.
+										</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={form.control}
+								name="expiresInDays"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Expires in (days)</FormLabel>
+										<FormControl>
+											<Input
+												type="number"
+												min={1}
+												step={1}
+												placeholder="Never"
+												name={field.name}
+												ref={field.ref}
+												onBlur={field.onBlur}
+												onChange={field.onChange}
+												value={field.value === undefined ? "" : String(field.value)}
+											/>
+										</FormControl>
+										<FormDescription>
+											Leave empty for a key that never expires. The key works
+											for your active organization.
+										</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
 							<DialogFooter className="pt-4">
 								<Button
 									variant="outline"
@@ -405,7 +517,8 @@ function ApiKeysPage() {
 								variant="ghost"
 								size="icon"
 								className="shrink-0"
-								onClick={handleCopy}
+								aria-label="Copy API key"
+								onClick={() => void handleCopy()}
 							>
 								{copied ? (
 									<IconCheck className="size-4 text-emerald-600" />
@@ -448,6 +561,6 @@ function ApiKeysPage() {
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
-		</Layout>
+		</>
 	);
 }

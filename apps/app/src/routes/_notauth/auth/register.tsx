@@ -8,6 +8,7 @@ import {
 	StepWrapper,
 	FormStep,
 	SuccessStep,
+	OtpStep,
 } from "@/components/auth";
 import {
 	Form,
@@ -19,9 +20,13 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { authClient } from "@/lib/auth";
+import { useAuthActions } from "@/hooks/use-auth-actions";
+import { validateRedirectSearch } from "@/lib/safe-redirect";
+import { errorMessage, newPasswordSchema } from "@/lib/validation";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_notauth/auth/register")({
+	validateSearch: validateRedirectSearch,
 	component: RouteComponent,
 });
 
@@ -30,7 +35,7 @@ const registerSchema = z
 	.object({
 		name: z.string().min(2, "Name must be at least 2 characters"),
 		email: z.email("Invalid email address"),
-		password: z.string().min(8, "Password must be at least 8 characters"),
+		password: newPasswordSchema,
 		confirmPassword: z.string(),
 	})
 	.refine((data) => data.password === data.confirmPassword, {
@@ -38,18 +43,20 @@ const registerSchema = z
 		path: ["confirmPassword"],
 	});
 
-const verificationSchema = z.object({
-	code: z.string().length(6, "Verification code must be 6 digits"),
-});
-
 type RegisterFormValues = z.infer<typeof registerSchema>;
-type VerificationFormValues = z.infer<typeof verificationSchema>;
 
 function RouteComponent() {
 	const navigate = useNavigate();
+	const { redirect } = Route.useSearch();
+	const { completeLogin } = useAuthActions();
 	const [currentStep, setCurrentStep] = useState(1);
 	const [userEmail, setUserEmail] = useState("");
 	const [isLoading, setIsLoading] = useState(false);
+	// Held only until the email is verified, to sign the user straight in.
+	const [password, setPassword] = useState("");
+	// Email whose signUp already succeeded (the OTP step's back button returns
+	// to step 1; submitting again must not call signUp a second time).
+	const [pendingEmail, setPendingEmail] = useState("");
 
 	const registerForm = useForm<RegisterFormValues>({
 		resolver: zodResolver(registerSchema),
@@ -61,75 +68,66 @@ function RouteComponent() {
 		},
 	});
 
-	const verificationForm = useForm<VerificationFormValues>({
-		resolver: zodResolver(verificationSchema),
-		defaultValues: { code: "" },
-	});
+	const sendCode = async (email: string) => {
+		const { error } = await authClient.emailOtp.sendVerificationOtp({
+			email,
+			type: "email-verification",
+		});
+		if (error) throw new Error(error.message || "Failed to send code");
+	};
 
 	const onRegisterSubmit = async (values: RegisterFormValues) => {
 		setIsLoading(true);
 		try {
-			const { error } = await authClient.signUp.email({
-				email: values.email,
-				password: values.password,
-				name: values.name,
-			});
-
-			if (error) {
-				toast.error(error.message || "Registration failed");
-				return;
-			}
-
-			setCurrentStep(2);
-			setUserEmail(values.email);
-			toast.success("Verification email sent successfully");
-		} catch (err: any) {
-			toast.error(err.message || "An unexpected error occurred");
-		} finally {
-			setIsLoading(false);
-		}
-	};
-
-	const onVerificationSubmit = async (values: VerificationFormValues) => {
-		setIsLoading(true);
-		try {
-			const { error } = await authClient.emailOtp.verifyEmail({
-				email: userEmail,
-				otp: values.code,
-			});
-
-			if (error) {
-				toast.error(error.message || "Verification failed");
-				return;
-			}
-
-			// Organization is automatically created by the backend
-			setCurrentStep(3);
-		} catch (err: any) {
-			toast.error(err.message || "Verification failed");
-		} finally {
-			setIsLoading(false);
-		}
-	};
-
-	const handleResendOTP = async () => {
-		if (!userEmail || isLoading) return;
-		setIsLoading(true);
-		try {
-			const { error } = await authClient.emailOtp.sendVerificationOtp({
-				email: userEmail,
-				type: "email-verification",
-			});
-			if (error) {
-				toast.error(error.message || "Failed to resend code");
+			setPassword(values.password);
+			if (pendingEmail === values.email) {
+				// Already signed up, only the code is missing
+				await sendCode(values.email);
 			} else {
-				toast.success("Verification code resent");
+				const { error } = await authClient.signUp.email({
+					email: values.email,
+					password: values.password,
+					name: values.name,
+				});
+
+				if (error) {
+					toast.error(error.message || "Registration failed");
+					return;
+				}
+				setPendingEmail(values.email);
 			}
-		} catch (err: any) {
-			toast.error(err.message || "Failed to resend code");
+
+			setUserEmail(values.email);
+			setCurrentStep(2);
+			toast.success("Verification email sent successfully");
+		} catch (err) {
+			toast.error(errorMessage(err, "An unexpected error occurred"));
 		} finally {
 			setIsLoading(false);
 		}
+	};
+
+	const onVerificationSubmit = async (code: string) => {
+		const { error } = await authClient.emailOtp.verifyEmail({
+			email: userEmail,
+			otp: code,
+		});
+		if (error) throw new Error(error.message || "Verification failed");
+
+		// The account is verified: sign in right away and continue where the
+		// user was headed (e.g. an invitation link). Organization is created by
+		// the backend.
+		const signedIn = await authClient.signIn.email({
+			email: userEmail,
+			password,
+		});
+		setPassword("");
+		setPendingEmail("");
+		if (signedIn.error) {
+			setCurrentStep(3);
+			return;
+		}
+		await completeLogin(redirect);
 	};
 
 	return (
@@ -154,6 +152,7 @@ function RouteComponent() {
 									Already have an account?{" "}
 									<Link
 										to="/auth/login"
+										search={{ redirect }}
 										className="text-primary hover:underline font-medium"
 									>
 										Sign in
@@ -189,6 +188,7 @@ function RouteComponent() {
 											<Input
 												placeholder="name@example.com"
 												type="email"
+												autoComplete="email"
 												{...field}
 												disabled={isLoading}
 											/>
@@ -207,6 +207,7 @@ function RouteComponent() {
 											<Input
 												placeholder="Enter your password"
 												type="password"
+												autoComplete="new-password"
 												{...field}
 												disabled={isLoading}
 											/>
@@ -225,6 +226,7 @@ function RouteComponent() {
 											<Input
 												placeholder="Confirm your password"
 												type="password"
+												autoComplete="new-password"
 												{...field}
 												disabled={isLoading}
 											/>
@@ -239,53 +241,13 @@ function RouteComponent() {
 			)}
 
 			{currentStep === 2 && (
-				<StepWrapper
+				<OtpStep
+					email={userEmail}
 					title="Verify email"
-					description={`We sent a 6-digit code to ${userEmail}`}
-				>
-					<Form {...verificationForm}>
-						<FormStep
-							onSubmit={verificationForm.handleSubmit(onVerificationSubmit)}
-							isLoading={isLoading}
-							submitText="Verify email"
-							footerContent={
-								<>
-									Didn't receive a code?{" "}
-									<button
-										type="button"
-										onClick={handleResendOTP}
-										disabled={isLoading}
-										className="text-primary hover:underline font-medium disabled:opacity-50"
-									>
-										{isLoading ? "Wait..." : "Resend"}
-									</button>
-								</>
-							}
-						>
-							<FormField
-								control={verificationForm.control}
-								name="code"
-								render={({ field }) => (
-									<FormItem>
-										<FormLabel>Verification Code</FormLabel>
-										<FormControl>
-											<Input
-												placeholder="000000"
-												type="text"
-												inputMode="numeric"
-												maxLength={6}
-												{...field}
-												disabled={isLoading}
-												className="tracking-widest text-center text-lg font-semibold"
-											/>
-										</FormControl>
-										<FormMessage />
-									</FormItem>
-								)}
-							/>
-						</FormStep>
-					</Form>
-				</StepWrapper>
+					submitText="Verify email"
+					onSubmit={onVerificationSubmit}
+					onResend={() => sendCode(userEmail)}
+				/>
 			)}
 
 			{currentStep === 3 && (
@@ -299,7 +261,7 @@ function RouteComponent() {
 						message="Welcome! Your account and organization have been created successfully."
 						primaryAction={{
 							label: "Go to login",
-							onClick: () => navigate({ to: "/auth/login" }),
+							onClick: () => navigate({ to: "/auth/login", search: { redirect } }),
 						}}
 					/>
 				</StepWrapper>

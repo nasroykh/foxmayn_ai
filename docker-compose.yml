@@ -1,26 +1,75 @@
+# Production stack. Copy .env.example to .env, replace every CHANGE_ME, then:
+#   make deploy        (or: docker compose up -d --build)
+#
+# Network exposure: only the `app` container is published (default 127.0.0.1:33460),
+# meant to sit behind a TLS-terminating proxy (Cloudflare + Traefik/Pangolin).
+# Caddy in `app` serves the SPA and proxies /api/* to `api`. The API, worker and
+# data stores are reachable only on the internal compose network, except for
+# loopback-only dev ports on postgres/redis/qdrant.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Environment shared by api and worker.
+# The worker imports the API env schema, so it needs the full set.
+x-app-env: &app-env
+  NODE_ENV: production
+  PORT: "33450"
+  HOST: 0.0.0.0
+  API_V1_PREFIX: /api/v1
+  APP_URL: ${APP_URL:?Set APP_URL in .env (public origin, e.g. https://ai.example.com)}
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in .env (openssl rand -base64 48)}
+  SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:?Set SUPER_ADMIN_EMAIL in .env}
+  SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:?Set SUPER_ADMIN_PASSWORD in .env (min 12 chars)}
+  DB_URL: postgresql://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
+  SMTP_HOST: ${SMTP_HOST:?Set SMTP_HOST in .env}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER:?Set SMTP_USER in .env}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:?Set SMTP_PASSWORD in .env}
+  SMTP_FROM: ${SMTP_FROM:?Set SMTP_FROM in .env}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
+  QDRANT_URL: http://qdrant:6333
+  QDRANT_API_KEY: ${QDRANT_API_KEY:?Set QDRANT_API_KEY in .env}
+  QDRANT_COLLECTION_NAME: ${QDRANT_COLLECTION_NAME:-documents}
+
+x-hardened: &hardened
+  init: true
+  restart: unless-stopped
+  logging: *default-logging
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  read_only: true
+  tmpfs:
+    - /tmp
+
 services:
-  # PostgreSQL Database
   postgres:
-    image: postgres:18.2-alpine
-    container_name: foxmayn_ai_postgres
+    image: postgres:18.6-alpine
     restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
     environment:
-      POSTGRES_USER: ${DB_USER:-foxmayn_ai_user}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-foxmayn_ai_password}
-      POSTGRES_DB: ${DB_NAME:-foxmayn_ai_db}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
     ports:
-      - "${DB_PORT:-5432}:5432"
+      # Loopback only (local dev tooling, psql over SSH). Never published externally.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # Postgres 18+ images keep data in /var/lib/postgresql/18/docker (PGDATA);
+      # mount the parent so the named volume really holds the data.
+      - postgres_data:/var/lib/postgresql
     networks:
       - app_network
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U ${DB_USER:-foxmayn_ai_user} -d ${DB_NAME:-foxmayn_ai_db}",
-        ]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -31,143 +80,145 @@ services:
           cpus: "1.0"
           memory: 512M
         reservations:
-          cpus: "0.5"
           memory: 256M
 
-  # Backend API
+  # One-shot: applies packages/db/drizzle migrations, then exits.
+  migrate:
+    <<: *hardened
+    restart: "no"
+    image: foxmayn-ai-migrate:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_URL: postgresql://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
+    networks:
+      - app_network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
   api:
+    <<: *hardened
+    image: foxmayn-ai-api:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: apps/api/Dockerfile
       target: production
-      args:
-        NODE_ENV: production
-    container_name: foxmayn_ai_api
-    restart: unless-stopped
+    stop_grace_period: 30s
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
+      qdrant:
+        condition: service_healthy
     environment:
-      NODE_ENV: production
-      PORT: 33450
-      HOST: 0.0.0.0
-      API_V1_PREFIX: /api/v1
-      DB_URL: "postgresql://${DB_USER:-foxmayn_ai_user}:${DB_PASSWORD:-foxmayn_ai_password}@postgres:5432/${DB_NAME:-foxmayn_ai_db}?sslmode=disable"
-      DB_USER: ${DB_USER:-foxmayn_ai_user}
-      DB_PASSWORD: ${DB_PASSWORD:-foxmayn_ai_password}
-      DB_HOST: postgres
-      DB_PORT: ${DB_PORT:-5432}
-      DB_NAME: ${DB_NAME:-foxmayn_ai_db}
-      DB_SSL_MODE: disable
-      TOKEN_SECRET_KEY: ${TOKEN_SECRET_KEY}
-      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY}
-      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
-      APP_URL: ${APP_URL:-http://localhost:33460}
-      SMTP_HOST: ${SMTP_HOST}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER}
-      SMTP_PASSWORD: ${SMTP_PASSWORD}
-      SMTP_FROM: ${SMTP_FROM}
-      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL}
-      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD}
-      APP_URL_DEV: ${APP_URL_DEV:-http://localhost:33460}
-      REDIS_URL: redis://redis:6379
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-      QDRANT_URL: http://qdrant:6333
-      QDRANT_COLLECTION_NAME: ${QDRANT_COLLECTION_NAME:-documents}
-    ports:
-      - "33450:33450"
+      <<: *app-env
     networks:
       - app_network
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "require('http').get('http://localhost:33450/api/v1/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));",
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
     deploy:
       resources:
         limits:
           cpus: "1.0"
           memory: 1G
         reservations:
-          cpus: "0.5"
           memory: 512M
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 3
-        window: 120s
 
-  # Frontend Application
+  worker:
+    <<: *hardened
+    image: foxmayn-ai-worker:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+      target: production
+    # Lets active jobs finish (worker force-exits at 100s).
+    stop_grace_period: 120s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+    networks:
+      - app_network
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # Caddy: serves the SPA, proxies /api/* to api. The only published service.
   app:
+    <<: *hardened
+    image: foxmayn-ai-app:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: apps/app/Dockerfile
       target: production
       args:
-        NODE_ENV: production
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:33450/api/v1}
-    container_name: foxmayn_ai_app
-    restart: unless-stopped
+        VITE_API_URL: ${VITE_API_URL:-/api/v1}
     depends_on:
       api:
         condition: service_healthy
-    environment:
-      NODE_ENV: production
     ports:
-      - "33460:33460"
+      - "${BIND:-127.0.0.1}:${APP_PORT:-33460}:33460"
+    # Caddy's binary carries the net_bind_service file capability; with
+    # no-new-privileges that capability must be in the bounding set.
+    cap_add:
+      - NET_BIND_SERVICE
+    # Read-only rootfs: Caddy still wants writable /config and /data (unused with TLS off).
+    volumes:
+      - type: tmpfs
+        target: /config
+        tmpfs:
+          mode: 1777
+      - type: tmpfs
+        target: /data
+        tmpfs:
+          mode: 1777
     networks:
       - app_network
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "wget",
-          "--no-verbose",
-          "--tries=1",
-          "--spider",
-          "http://localhost:33460/health",
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
     deploy:
       resources:
         limits:
           cpus: "0.5"
           memory: 256M
         reservations:
-          cpus: "0.25"
-          memory: 128M
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 3
-        window: 120s
+          memory: 64M
 
-  # Redis (BullMQ queue broker)
   redis:
-    image: redis:8.0.6-alpine
-    container_name: foxmayn_ai_redis
+    image: redis:8.10.2-alpine
     restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    # Job payloads hold document text: persist (AOF), never evict, fail writes
+    # with an OOM error instead of being OOM-killed.
+    command:
+      - sh
+      - -c
+      - exec redis-server --requirepass "$$REDIS_PASSWORD" --appendonly yes --maxmemory-policy noeviction --maxmemory 256mb
     ports:
-      - "6379:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     networks:
       - app_network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -176,25 +227,32 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: 256M
+          memory: 384M
         reservations:
-          cpus: "0.25"
           memory: 128M
 
-  # Qdrant vector database
   qdrant:
-    image: qdrant/qdrant:latest
-    container_name: foxmayn_ai_qdrant
+    # -unprivileged runs as uid 1000 instead of root
+    image: qdrant/qdrant:v1.20.0-unprivileged
     restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?Set QDRANT_API_KEY in .env}
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:${QDRANT_HOST_PORT:-6333}:6333"
     volumes:
       - qdrant_data:/qdrant/storage
     networks:
       - app_network
     healthcheck:
-      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/localhost/6333' || exit 1"]
+      # /readyz does not require the API key
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /readyz HTTP/1.0\r\n\r\n' >&3 && head -n1 <&3 | grep -q ' 200 '
       interval: 10s
       timeout: 5s
       retries: 5
@@ -205,66 +263,7 @@ services:
           cpus: "1.0"
           memory: 1G
         reservations:
-          cpus: "0.5"
           memory: 512M
-
-  # Background Worker (BullMQ job processor)
-  worker:
-    build:
-      context: .
-      dockerfile: apps/worker/Dockerfile
-      target: production
-      args:
-        NODE_ENV: production
-    container_name: foxmayn_ai_worker
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-    environment:
-      NODE_ENV: production
-      DB_URL: "postgresql://${DB_USER:-foxmayn_ai_user}:${DB_PASSWORD:-foxmayn_ai_password}@postgres:5432/${DB_NAME:-foxmayn_ai_db}?sslmode=disable"
-      DB_USER: ${DB_USER:-foxmayn_ai_user}
-      DB_PASSWORD: ${DB_PASSWORD:-foxmayn_ai_password}
-      DB_HOST: postgres
-      DB_PORT: ${DB_PORT:-5432}
-      DB_NAME: ${DB_NAME:-foxmayn_ai_db}
-      DB_SSL_MODE: disable
-      REDIS_URL: redis://redis:6379
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-      QDRANT_URL: http://qdrant:6333
-      QDRANT_COLLECTION_NAME: ${QDRANT_COLLECTION_NAME:-documents}
-      TOKEN_SECRET_KEY: ${TOKEN_SECRET_KEY}
-      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY}
-      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
-      APP_URL: ${APP_URL:-http://localhost:33460}
-      APP_URL_DEV: ${APP_URL_DEV:-http://localhost:33460}
-      SMTP_HOST: ${SMTP_HOST}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER}
-      SMTP_PASSWORD: ${SMTP_PASSWORD}
-      SMTP_FROM: ${SMTP_FROM}
-      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL}
-      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD}
-    networks:
-      - app_network
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 1G
-        reservations:
-          cpus: "0.5"
-          memory: 512M
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 3
-        window: 120s
 
 networks:
   app_network:
@@ -272,8 +271,5 @@ networks:
 
 volumes:
   postgres_data:
-    driver: local
   redis_data:
-    driver: local
   qdrant_data:
-    driver: local

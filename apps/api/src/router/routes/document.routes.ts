@@ -7,8 +7,8 @@ import {
 	countDocuments,
 	deleteDocument,
 	indexDocument,
+	importDocument,
 	extractTextFromDocument,
-	MAX_FILE_SIZE,
 } from "../../services/rag.service";
 import { getDocumentJobStatus, getPendingDocumentJobs } from "../../jobs";
 import { authProcedure, creditsProcedure } from "../middleware";
@@ -17,6 +17,9 @@ import {
 	calculateTokens,
 	TIKTOKEN_MODELS,
 } from "../../services/chunking.service";
+
+// Metadata is copied into every vector payload
+const MAX_METADATA_CHARS = 8_000;
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
@@ -32,7 +35,7 @@ export const documentRoutes = {
 				file: z.file(),
 				title: z.string().optional(),
 				source: z.string().optional(),
-				profileId: z.string().optional(),
+				profileId: z.string().min(1).optional(),
 				metadata: z.string().optional(),
 			}),
 		)
@@ -49,13 +52,25 @@ export const documentRoutes = {
 
 			let parsedMetadata: Record<string, unknown> | undefined;
 			if (metadata) {
+				let parsed: unknown;
 				try {
-					parsedMetadata = JSON.parse(metadata);
+					parsed = JSON.parse(metadata);
 				} catch {
 					throw new ORPCError("BAD_REQUEST", {
 						message: "Invalid metadata JSON",
 					});
 				}
+				if (
+					typeof parsed !== "object" ||
+					parsed === null ||
+					Array.isArray(parsed) ||
+					JSON.stringify(parsed).length > MAX_METADATA_CHARS
+				) {
+					throw new ORPCError("BAD_REQUEST", {
+						message: `metadata must be a JSON object of at most ${MAX_METADATA_CHARS} characters`,
+					});
+				}
+				parsedMetadata = parsed as Record<string, unknown>;
 			}
 
 			const { documentId, jobId } = await indexDocument({
@@ -73,6 +88,69 @@ export const documentRoutes = {
 				jobId,
 				message: "File accepted for processing",
 				status: "processing",
+			};
+		}),
+
+	importDocument: creditsProcedure
+		.route({
+			method: "POST",
+			path: `${PREFIX}/documents/import`,
+			description:
+				"Create a document from raw text or an https URL. With replace, older documents with the same source are deleted once this one is indexed.",
+		})
+		.input(
+			z
+				.object({
+					text: z.string().optional(),
+					url: z.url().optional(),
+					title: z.string().optional(),
+					source: z.string().max(2048).optional(),
+					profileId: z.string().min(1).optional(),
+					metadata: z.record(z.string(), z.unknown()).optional(),
+					replace: z.boolean().default(false),
+				})
+				.refine((v) => (v.text !== undefined) !== (v.url !== undefined), {
+					message: "Provide exactly one of text or url",
+				})
+				.refine((v) => !v.replace || Boolean(v.source ?? v.url), {
+					message: "replace requires a source (or a url)",
+				}),
+		)
+		.output(
+			z.object({
+				documentId: z.string(),
+				jobId: z.string().optional(),
+				message: z.string(),
+			}),
+		)
+		.handler(async ({ input, context }) => {
+			const { text, url, title, source, profileId, metadata, replace } = input;
+
+			if (
+				metadata &&
+				JSON.stringify(metadata).length > MAX_METADATA_CHARS
+			) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: `metadata must be a JSON object of at most ${MAX_METADATA_CHARS} characters`,
+				});
+			}
+
+			const { documentId, jobId } = await importDocument({
+				text,
+				url,
+				title,
+				source,
+				profileId,
+				metadata,
+				replace,
+				userId: context.user.id,
+				organizationId: context.organizationId,
+			});
+
+			return {
+				documentId,
+				jobId,
+				message: "Document accepted for processing",
 			};
 		}),
 
@@ -95,9 +173,9 @@ export const documentRoutes = {
 				finishedOn: z.number().optional(),
 			}),
 		)
-		.handler(async ({ input }) => {
-			const { jobId } = input;
-			const status = await getDocumentJobStatus(jobId);
+		.handler(async ({ input, context }) => {
+			// Jobs of other users answer NOT_FOUND, same as missing jobs
+			const status = await getDocumentJobStatus(input.jobId, context.user.id);
 
 			if (!status) {
 				throw new ORPCError("NOT_FOUND", {
@@ -106,8 +184,8 @@ export const documentRoutes = {
 			}
 
 			return {
-				jobId: status.jobId || "",
-				state: status.state || "",
+				jobId: status.jobId,
+				state: status.state,
 				progress: status.progress.toString(),
 				result: status.returnvalue,
 				error: status.failedReason,
@@ -121,10 +199,31 @@ export const documentRoutes = {
 		.route({
 			method: "GET",
 			path: `${PREFIX}/documents/jobs`,
-			description: "Get all pending/active jobs",
+			description: "Get the caller's pending/active jobs (paginated)",
 		})
-		.handler(async () => {
-			return await getPendingDocumentJobs();
+		.input(
+			z.object({
+				offset: z.coerce.number().int().min(0).optional(),
+				limit: z.coerce.number().int().min(1).max(100).optional(),
+			}),
+		)
+		.output(
+			z.object({
+				jobs: z.array(
+					z.object({
+						jobId: z.string(),
+						name: z.string(),
+						documentId: z.string(),
+						state: z.enum(["active", "waiting", "prioritized", "delayed"]),
+						progress: z.number(),
+					}),
+				),
+				hasMore: z.boolean(),
+			}),
+		)
+		.handler(async ({ input, context }) => {
+			const { limit = 50, offset = 0 } = input;
+			return await getPendingDocumentJobs(context.user.id, { limit, offset });
 		}),
 
 	getDocument: authProcedure
@@ -241,7 +340,7 @@ export const documentRoutes = {
 				});
 			}
 
-			const { jobId } = await deleteDocument(id);
+			const { jobId } = await deleteDocument(id, context.user.id);
 
 			return {
 				message: "Document deletion queued",
@@ -263,17 +362,9 @@ export const documentRoutes = {
 		)
 		.output(z.number())
 		.handler(async ({ input }) => {
-			const { file } = input;
+			// Same type allowlist, size cap, signature check and extraction bounds as upload
+			const text = await extractTextFromDocument(input.file);
 
-			if (file.size > MAX_FILE_SIZE)
-				throw new ORPCError("BAD_REQUEST", {
-					message: "File too large (max 10MB)",
-				});
-
-			const text = await extractTextFromDocument(file);
-
-			const tokens = calculateTokens(text, input.model);
-
-			return tokens;
+			return calculateTokens(text, input.model);
 		}),
 };

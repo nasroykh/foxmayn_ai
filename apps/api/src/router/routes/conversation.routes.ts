@@ -25,7 +25,23 @@ import {
 	clearConversationMessages,
 } from "../../services/conversation.service";
 
+import { getProfile } from "../../services/profile.service";
+
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
+
+/**
+ * A stored profileId must belong to the caller (it is a foreign key, so an
+ * unchecked id would let a user pin another user's profile).
+ */
+async function assertOwnsProfile(
+	profileId: string | null | undefined,
+	userId: string,
+): Promise<void> {
+	if (!profileId) return;
+	if (!(await getProfile(profileId, userId))) {
+		throw new ORPCError("NOT_FOUND", { message: "Profile not found" });
+	}
+}
 
 // ============================================================================
 // CONVERSATION ROUTES
@@ -49,6 +65,7 @@ export const conversationRoutes = {
 			}),
 		)
 		.handler(async ({ input, context }) => {
+			await assertOwnsProfile(input.profileId, context.user.id);
 			const conv = await createConversation({
 				...input,
 				userId: context.user.id,
@@ -185,6 +202,7 @@ export const conversationRoutes = {
 			}),
 		)
 		.handler(async ({ input, context }) => {
+			await assertOwnsProfile(input.data.profileId, context.user.id);
 			const conv = await updateConversation(
 				input.id,
 				input.data,

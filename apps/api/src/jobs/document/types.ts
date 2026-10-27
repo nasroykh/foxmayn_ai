@@ -6,35 +6,30 @@
 // Document Jobs
 // ============================================================================
 
+/**
+ * Index (and re-index) payload. The worker reads title, content, source and
+ * metadata from the document row, so large text never sits in Redis.
+ */
 export interface IndexDocumentJobData {
 	documentId: string;
-	title: string;
-	content: string;
-	source?: string;
-	metadata?: Record<string, unknown>;
-	chunkOptions?: {
-		chunkSize?: number;
-		chunkOverlap?: number;
-	};
+	// Owner of the document (tenant key, used to scope job queries)
+	userId: string;
+	// Organization billed for the embeddings
+	organizationId: string;
 	profileId?: string;
-	organizationId?: string;
-	userId?: string;
+	// Embedding tokens already paid for by failed attempts (billed on terminal failure)
+	embeddedTokens?: number;
+	// An earlier attempt already replaced the old index (partial output may exist)
+	indexReplaced?: boolean;
+	// Once indexed, delete the owner's older documents with the same source and profile
+	replaceSource?: boolean;
 }
+
+export type ReindexDocumentJobData = IndexDocumentJobData;
 
 export interface DeleteDocumentJobData {
 	documentId: string;
-}
-
-export interface ReindexDocumentJobData {
-	documentId: string;
-	// Optionally re-chunk with new options
-	chunkOptions?: {
-		chunkSize?: number;
-		chunkOverlap?: number;
-	};
-	profileId?: string;
-	organizationId?: string;
-	userId?: string;
+	userId: string;
 }
 
 // ============================================================================

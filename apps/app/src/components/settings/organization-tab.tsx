@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -16,15 +16,17 @@ import {
 	FormItem,
 	FormLabel,
 	FormMessage,
+	FormDescription,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { IconLoader2, IconCheck } from "@tabler/icons-react";
-import { orpc } from "@/lib/orpc";
 import { toast } from "sonner";
-import { authClient, useSession } from "@/lib/auth";
-import { useMutation } from "@tanstack/react-query";
+import { authClient } from "@/lib/auth";
+import { useAuthActions } from "@/hooks/use-auth-actions";
+import { useMemberRole } from "@/hooks/use-member-role";
+import { errorMessage } from "@/lib/validation";
 
 const orgSchema = z.object({
 	name: z.string().min(2, "Name must be at least 2 characters"),
@@ -34,53 +36,39 @@ const orgSchema = z.object({
 type OrgFormValues = z.infer<typeof orgSchema>;
 
 export function OrganizationTab() {
-	const { data: sessionData } = useSession();
 	const { data: activeOrg } = authClient.useActiveOrganization();
 	const { data: organizations } = authClient.useListOrganizations();
+	const { switchOrganization } = useAuthActions();
+	const { isOwner } = useMemberRole();
 	const [isSwitching, setIsSwitching] = useState(false);
-
-	// Debug logging
-	console.log("[OrganizationTab] Session:", sessionData);
-	console.log("[OrganizationTab] Active Org:", activeOrg);
-	console.log("[OrganizationTab] All Organizations:", organizations);
-
-	const $role = activeOrg?.members?.find(
-		(m) => m.userId === sessionData?.user?.id,
-	)?.role;
+	const [isSaving, setIsSaving] = useState(false);
 
 	const form = useForm<OrgFormValues>({
 		resolver: zodResolver(orgSchema),
-		defaultValues: {
-			name: "",
-			slug: "",
-		},
+		// Re-evaluated by react-hook-form when the active organization changes
+		values: activeOrg
+			? { name: activeOrg.name, slug: activeOrg.slug }
+			: undefined,
 	});
 
-	useEffect(() => {
-		if (activeOrg) {
-			form.reset({
-				name: activeOrg.name,
-				slug: activeOrg.slug,
+	const onSubmit = async (values: OrgFormValues) => {
+		setIsSaving(true);
+		try {
+			// Through the auth client so useActiveOrganization / useListOrganizations
+			// pick up the new name immediately
+			const { error } = await authClient.organization.update({
+				data: { name: values.name, slug: values.slug },
 			});
-		}
-	}, [activeOrg, form]);
-
-	const updateOrgMutation = useMutation(
-		orpc.organization.update.mutationOptions({
-			onSuccess: () => {
-				toast.success("Organization updated successfully");
-			},
-			onError: (error: any) => {
+			if (error) {
 				toast.error(error.message || "Failed to update organization");
-			},
-		}),
-	);
-
-	const onSubmit = (values: OrgFormValues) => {
-		updateOrgMutation.mutate({
-			name: values.name,
-			slug: values.slug,
-		});
+				return;
+			}
+			toast.success("Organization updated successfully");
+		} catch (error) {
+			toast.error(errorMessage(error, "Failed to update organization"));
+		} finally {
+			setIsSaving(false);
+		}
 	};
 
 	const handleSwitchOrganization = async (organizationId: string) => {
@@ -88,16 +76,10 @@ export function OrganizationTab() {
 
 		setIsSwitching(true);
 		try {
-			await authClient.organization.setActive({
-				organizationId,
-			});
-
-			// Refetch session to get updated active organization
-			await authClient.getSession();
-
+			await switchOrganization(organizationId);
 			toast.success("Organization switched successfully");
-		} catch (error: any) {
-			toast.error(error.message || "Failed to switch organization");
+		} catch (error) {
+			toast.error(errorMessage(error, "Failed to switch organization"));
 		} finally {
 			setIsSwitching(false);
 		}
@@ -120,6 +102,7 @@ export function OrganizationTab() {
 								const isActive = org.id === activeOrg?.id;
 								return (
 									<button
+										type="button"
 										key={org.id}
 										onClick={() => handleSwitchOrganization(org.id)}
 										disabled={isSwitching || isActive}
@@ -192,10 +175,10 @@ export function OrganizationTab() {
 								</FormItem>
 							)}
 						/>
-						{$role === "owner" && (
+						{isOwner && (
 							<div className="flex justify-end pt-2">
-								<Button type="submit" disabled={updateOrgMutation.isPending}>
-									{updateOrgMutation.isPending ? (
+								<Button type="submit" disabled={isSaving}>
+									{isSaving ? (
 										<>
 											<IconLoader2 className="mr-2 size-4 animate-spin" />
 											Saving...
@@ -211,19 +194,5 @@ export function OrganizationTab() {
 			</CardContent>
 		</Card>
 		</div>
-	);
-}
-
-function FormDescription({
-	children,
-	className,
-}: {
-	children: React.ReactNode;
-	className?: string;
-}) {
-	return (
-		<p className={`text-[0.8rem] text-muted-foreground ${className}`}>
-			{children}
-		</p>
 	);
 }

@@ -1,4 +1,4 @@
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import {
 	pgTable,
 	text,
@@ -9,6 +9,7 @@ import {
 	index,
 	boolean,
 	real,
+	uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { user } from "../auth/schema";
 
@@ -27,59 +28,68 @@ export const messageRoleEnum = pgEnum("message_role", [
 ]);
 
 // RAG Profile table - stores all settings for the pipeline
-export const ragProfile = pgTable("rag_profile", {
-	id: text("id").primaryKey(),
-	userId: text("user_id")
-		.references(() => user.id, { onDelete: "cascade" })
-		.notNull(),
-	name: text("name").notNull(),
-	description: text("description"),
-	isDefault: boolean("is_default").default(false).notNull(),
+export const ragProfile = pgTable(
+	"rag_profile",
+	{
+		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.references(() => user.id, { onDelete: "cascade" })
+			.notNull(),
+		name: text("name").notNull(),
+		description: text("description"),
+		isDefault: boolean("is_default").default(false).notNull(),
 
-	// Document Processing
-	embeddingModel: text("embedding_model")
-		.default("openai/text-embedding-3-small")
-		.notNull(),
-	chunkSize: integer("chunk_size").default(500).notNull(),
-	chunkOverlap: integer("chunk_overlap").default(50).notNull(),
-	separators: jsonb("separators")
-		.$type<string[]>()
-		.default(["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""])
-		.notNull(),
-	addContextualPrefix: boolean("add_contextual_prefix").default(true).notNull(),
+		// Document Processing
+		// Keep equal to DEFAULT_EMBEDDING_MODEL in @repo/llm (a test checks it)
+		embeddingModel: text("embedding_model")
+			.default("openai/text-embedding-3-small")
+			.notNull(),
+		chunkSize: integer("chunk_size").default(500).notNull(),
+		chunkOverlap: integer("chunk_overlap").default(50).notNull(),
+		separators: jsonb("separators")
+			.$type<string[]>()
+			.default(["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""])
+			.notNull(),
 
-	// Retrieval Settings
-	retrievalStrategy: text("retrieval_strategy").default("similarity").notNull(), // similarity, mmr, hybrid
-	scoreThreshold: real("score_threshold").default(0.3).notNull(),
-	topK: integer("top_k").default(5).notNull(),
+		// Retrieval Settings
+		scoreThreshold: real("score_threshold").default(0.3).notNull(),
+		topK: integer("top_k").default(5).notNull(),
 
-	// LLM Generation
-	model: text("model").default("google/gemini-2.5-flash-lite").notNull(),
-	temperature: real("temperature").default(0.7).notNull(),
-	topP: real("top_p").default(1.0).notNull(),
-	maxTokens: integer("max_tokens").default(2048).notNull(),
-	reasoningEffort: text("reasoning_effort").default("none").notNull(), // none, minimal, moderate, high
+		// LLM Generation
+		model: text("model").default("google/gemini-2.5-flash-lite").notNull(),
+		temperature: real("temperature").default(0.7).notNull(),
+		topP: real("top_p").default(1.0).notNull(),
+		maxTokens: integer("max_tokens").default(2048).notNull(),
+		reasoningEffort: text("reasoning_effort").default("none").notNull(), // none, minimal, moderate, high
 
-	// Personality
-	assistantName: text("assistant_name").default("Assistant").notNull(),
-	companyName: text("company_name"),
-	domain: text("domain"),
-	tone: text("tone").default("friendly").notNull(),
-	responseLength: text("response_length").default("balanced").notNull(),
-	language: text("language").default("English").notNull(),
-	enableCitations: boolean("enable_citations").default(true).notNull(),
-	systemPrompt: text("system_prompt"),
-	customInstructions: jsonb("custom_instructions")
-		.$type<string[]>()
-		.default([])
-		.notNull(),
+		// Personality
+		assistantName: text("assistant_name").default("Assistant").notNull(),
+		companyName: text("company_name"),
+		domain: text("domain"),
+		tone: text("tone").default("friendly").notNull(),
+		responseLength: text("response_length").default("balanced").notNull(),
+		// "auto" answers in the language of the question
+		language: text("language").default("auto").notNull(),
+		enableCitations: boolean("enable_citations").default(true).notNull(),
+		systemPrompt: text("system_prompt"),
+		customInstructions: jsonb("custom_instructions")
+			.$type<string[]>()
+			.default([])
+			.notNull(),
 
-	createdAt: timestamp("created_at").defaultNow().notNull(),
-	updatedAt: timestamp("updated_at")
-		.defaultNow()
-		.$onUpdate(() => new Date())
-		.notNull(),
-});
+		createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
+			.defaultNow()
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(table) => [
+		index("rag_profile_userId_idx").on(table.userId),
+		uniqueIndex("rag_profile_one_default_per_user_uidx")
+			.on(table.userId)
+			.where(sql`${table.isDefault}`),
+	],
+);
 
 // Documents table - stores document metadata
 export const document = pgTable(
@@ -89,15 +99,19 @@ export const document = pgTable(
 		userId: text("user_id")
 			.references(() => user.id, { onDelete: "cascade" })
 			.notNull(),
-		profileId: text("profile_id").references(() => ragProfile.id),
+		profileId: text("profile_id").references(() => ragProfile.id, {
+			onDelete: "set null",
+		}),
 		title: text("title").notNull(),
 		content: text("content").notNull(),
 		source: text("source"),
+		// Embedding model the document was indexed with (set by the worker).
+		embeddingModel: text("embedding_model"),
 		metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
 		status: documentStatusEnum("status").default("pending").notNull(),
 		chunkCount: integer("chunk_count").default(0),
-		createdAt: timestamp("created_at").defaultNow().notNull(),
-		updatedAt: timestamp("updated_at")
+		createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
 			.defaultNow()
 			.$onUpdate(() => new Date())
 			.notNull(),
@@ -122,8 +136,8 @@ export const documentChunk = pgTable(
 		tokenCount: integer("token_count"),
 		qdrantPointId: text("qdrant_point_id"), // Reference to Qdrant vector
 		metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
-		createdAt: timestamp("created_at").defaultNow().notNull(),
-		updatedAt: timestamp("updated_at")
+		createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
 			.defaultNow()
 			.$onUpdate(() => new Date())
 			.notNull(),
@@ -142,11 +156,13 @@ export const conversation = pgTable(
 		userId: text("user_id")
 			.references(() => user.id, { onDelete: "cascade" })
 			.notNull(),
-		profileId: text("profile_id").references(() => ragProfile.id),
+		profileId: text("profile_id").references(() => ragProfile.id, {
+			onDelete: "set null",
+		}),
 		title: text("title"),
 		metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
-		createdAt: timestamp("created_at").defaultNow().notNull(),
-		updatedAt: timestamp("updated_at")
+		createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
 			.defaultNow()
 			.$onUpdate(() => new Date())
 			.notNull(),
@@ -169,13 +185,18 @@ export const message = pgTable(
 		content: text("content").notNull(),
 		tokenCount: integer("token_count"),
 		metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
-		createdAt: timestamp("created_at").defaultNow().notNull(),
-		updatedAt: timestamp("updated_at")
+		createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
 			.defaultNow()
 			.$onUpdate(() => new Date())
 			.notNull(),
 	},
-	(table) => [index("message_conversationId_idx").on(table.conversationId)]
+	(table) => [
+		index("message_conversation_createdAt_idx").on(
+			table.conversationId,
+			table.createdAt,
+		),
+	]
 );
 
 // Relations

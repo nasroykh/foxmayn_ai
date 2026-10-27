@@ -1,13 +1,27 @@
 {
 	"$schema": "https://turbo.build/schema.json",
+	"envMode": "loose",
 	"globalEnv": ["NODE_ENV", "CI"],
 	"tasks": {
 		"build": {
 			"dependsOn": ["^build"],
 			"outputs": ["dist/**"],
+			"env": ["VITE_API_URL"],
 			"inputs": ["$TURBO_DEFAULT$", "../../.env", "../../.env.local"]
 		},
+		"typecheck": {
+			"dependsOn": ["^build"],
+			"outputs": []
+		},
+		"test": {
+			"dependsOn": ["^build"],
+			"outputs": []
+		},
+		"lint": {
+			"outputs": []
+		},
 		"dev": {
+			"dependsOn": ["^build"],
 			"cache": false,
 			"persistent": true
 		},
@@ -15,11 +29,6 @@
 			"dependsOn": ["build"],
 			"cache": false,
 			"persistent": true
-		},
-		"lint": {
-			"dependsOn": ["^build"],
-			"outputs": [],
-			"inputs": ["$TURBO_DEFAULT$"]
 		},
 		"db:generate": {
 			"cache": false
@@ -31,6 +40,10 @@
 			"cache": false
 		},
 		"db:studio": {
+			"cache": false,
+			"persistent": true
+		},
+		"models:generate": {
 			"cache": false
 		}
 	}

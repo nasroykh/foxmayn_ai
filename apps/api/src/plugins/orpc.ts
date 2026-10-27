@@ -1,6 +1,7 @@
 import type { Hono } from "hono";
 import { RPCHandler } from "@orpc/server/fetch";
 import { onError } from "@orpc/server";
+import { logRpcError } from "./error-log";
 
 import { router } from "../router/index";
 import { env } from "../config/env";
@@ -10,9 +11,7 @@ const rpcEndpoint = `${env.API_V1_PREFIX}/rpc` as `/${string}`;
 export const registerORPC = (app: Hono) => {
 	const handler = new RPCHandler(router, {
 		interceptors: [
-			onError((error) => {
-				console.error(error);
-			}),
+			onError(logRpcError),
 		],
 	});
 

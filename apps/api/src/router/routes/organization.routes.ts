@@ -1,11 +1,10 @@
 import { z } from "zod";
 
-import { publicProcedure, authProcedure } from "../middleware";
+import { adminProcedure, authProcedure, sessionProcedure } from "../middleware";
 import { env } from "../../config/env";
 import {
 	createOrganization,
 	updateOrganization,
-	setActiveOrganization,
 	listOrganizations,
 	getFullOrganization,
 	listMembers,
@@ -13,8 +12,8 @@ import {
 	updateMemberRole,
 	removeMember,
 	getInvitation,
-	acceptInvitation,
 	rejectInvitation,
+	adminListOrganizations,
 } from "../../services/organization.service";
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
@@ -37,10 +36,6 @@ const updateOrgSchema = z.object({
 	metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
-const setActiveOrgSchema = z.object({
-	organizationId: z.string(),
-});
-
 const inviteMemberSchema = z.object({
 	email: z.string().email(),
 	role: z.enum(["member", "admin", "owner"]),
@@ -58,6 +53,12 @@ const removeMemberSchema = z.object({
 	organizationId: z.string(),
 });
 
+const adminListOrgsSchema = z.object({
+	search: z.string().max(100).optional(),
+	limit: z.coerce.number().int().min(1).max(100).default(20),
+	offset: z.coerce.number().int().min(0).default(0),
+});
+
 const invitationIdSchema = z.object({
 	invitationId: z.string(),
 });
@@ -70,7 +71,7 @@ export const organizationRoutes = {
 	// -------------------------------------------------------------------------
 	// Create Organization
 	// -------------------------------------------------------------------------
-	create: authProcedure
+	create: sessionProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/organizations`,
@@ -84,7 +85,7 @@ export const organizationRoutes = {
 	// -------------------------------------------------------------------------
 	// Update Organization
 	// -------------------------------------------------------------------------
-	update: authProcedure
+	update: sessionProcedure
 		.route({
 			method: "PATCH",
 			path: `${PREFIX}/organizations`,
@@ -93,20 +94,6 @@ export const organizationRoutes = {
 		.input(updateOrgSchema)
 		.handler(async ({ input, context }) => {
 			return updateOrganization(input, context.headers);
-		}),
-
-	// -------------------------------------------------------------------------
-	// Set Active Organization
-	// -------------------------------------------------------------------------
-	setActive: authProcedure
-		.route({
-			method: "POST",
-			path: `${PREFIX}/organizations/set-active`,
-			description: "Set active organization for current user",
-		})
-		.input(setActiveOrgSchema)
-		.handler(async ({ input, context }) => {
-			return setActiveOrganization(input.organizationId, context.headers);
 		}),
 
 	// -------------------------------------------------------------------------
@@ -151,7 +138,7 @@ export const organizationRoutes = {
 	// -------------------------------------------------------------------------
 	// Invite Member
 	// -------------------------------------------------------------------------
-	inviteMember: authProcedure
+	inviteMember: sessionProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/organizations/members/invite`,
@@ -165,7 +152,7 @@ export const organizationRoutes = {
 	// -------------------------------------------------------------------------
 	// Update Member Role
 	// -------------------------------------------------------------------------
-	updateMemberRole: authProcedure
+	updateMemberRole: sessionProcedure
 		.route({
 			method: "PATCH",
 			path: `${PREFIX}/organizations/members/role`,
@@ -179,7 +166,7 @@ export const organizationRoutes = {
 	// -------------------------------------------------------------------------
 	// Remove Member
 	// -------------------------------------------------------------------------
-	removeMember: authProcedure
+	removeMember: sessionProcedure
 		.route({
 			method: "DELETE",
 			path: `${PREFIX}/organizations/members`,
@@ -193,10 +180,10 @@ export const organizationRoutes = {
 	// -------------------------------------------------------------------------
 	// Get Invitation
 	// -------------------------------------------------------------------------
-	getInvitation: publicProcedure
+	getInvitation: authProcedure
 		.route({
 			method: "GET",
-			path: `${PREFIX}/organizations/invitations/:invitationId`,
+			path: `${PREFIX}/organizations/invitations/{invitationId}`,
 			description: "Get invitation details",
 		})
 		.input(invitationIdSchema)
@@ -205,23 +192,9 @@ export const organizationRoutes = {
 		}),
 
 	// -------------------------------------------------------------------------
-	// Accept Invitation
-	// -------------------------------------------------------------------------
-	acceptInvitation: authProcedure
-		.route({
-			method: "POST",
-			path: `${PREFIX}/organizations/invitations/accept`,
-			description: "Accept organization invitation",
-		})
-		.input(invitationIdSchema)
-		.handler(async ({ input, context }) => {
-			return acceptInvitation(input.invitationId, context.headers);
-		}),
-
-	// -------------------------------------------------------------------------
 	// Reject Invitation
 	// -------------------------------------------------------------------------
-	rejectInvitation: authProcedure
+	rejectInvitation: sessionProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/organizations/invitations/reject`,
@@ -230,5 +203,19 @@ export const organizationRoutes = {
 		.input(invitationIdSchema)
 		.handler(async ({ input, context }) => {
 			return rejectInvitation(input.invitationId, context.headers);
+		}),
+
+	// -------------------------------------------------------------------------
+	// List All Organizations (admin)
+	// -------------------------------------------------------------------------
+	adminList: adminProcedure
+		.route({
+			method: "GET",
+			path: `${PREFIX}/admin/organizations`,
+			description: "List all organizations with credits balance (Admin only)",
+		})
+		.input(adminListOrgsSchema)
+		.handler(async ({ input }) => {
+			return adminListOrganizations(input);
 		}),
 };

@@ -1,12 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useForm, Controller } from "react-hook-form";
-import { Layout } from "@/components/layout/layout";
-import { orpc } from "@/lib/orpc";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
+import { orpc, type RouterInputs, type RouterOutputs } from "@/lib/orpc";
+import { errorMessage } from "@/lib/validation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -60,26 +63,74 @@ import {
 } from "@/components/ui/combobox";
 
 export const Route = createFileRoute("/_auth/profiles")({
+	staticData: { title: "Profiles" },
 	component: ProfilesPage,
 });
 
-type ProfileFormValues = {
-	name: string;
-	description: string;
-	model: string;
-	embeddingModel: string;
-	systemPrompt: string;
-	chunkSize: number;
-	chunkOverlap: number;
-	topK: number;
-	temperature: number;
-	isDefault: boolean;
-};
+type Profile = RouterOutputs["profiles"]["listProfiles"]["profiles"][number];
+type CreateProfileInput = RouterInputs["profiles"]["createProfile"];
+
+// Bounds mirror apps/api/src/utils/profile_schema.ts
+const profileFormSchema = z
+	.object({
+		name: z.string().trim().min(1, "Name is required").max(100),
+		description: z.string().max(1000),
+		model: z.string().optional(),
+		embeddingModel: z.string().optional(),
+		systemPrompt: z.string().max(8000, "At most 8000 characters"),
+		language: z.string().trim().min(1, "Language is required").max(50),
+		chunkSize: z.coerce
+			.number("Enter a number")
+			.int("Whole number")
+			.min(100, "At least 100")
+			.max(4000, "At most 4000"),
+		chunkOverlap: z.coerce
+			.number("Enter a number")
+			.int("Whole number")
+			.min(0, "At least 0"),
+		topK: z.coerce
+			.number("Enter a number")
+			.int("Whole number")
+			.min(1, "At least 1")
+			.max(50, "At most 50"),
+		temperature: z.coerce
+			.number("Enter a number")
+			.min(0, "At least 0")
+			.max(2, "At most 2"),
+		isDefault: z.boolean(),
+	})
+	.refine((v) => v.chunkOverlap < v.chunkSize, {
+		message: "Overlap must be smaller than the chunk size",
+		path: ["chunkOverlap"],
+	});
+
+type ProfileFormInput = z.input<typeof profileFormSchema>;
+type ProfileFormValues = z.output<typeof profileFormSchema>;
+
+/** Form values to the API payload (empty model fields keep the server default). */
+function toPayload(values: ProfileFormValues): CreateProfileInput {
+	return {
+		name: values.name,
+		description: values.description,
+		// The model combobox only offers ids from chat.getModels; the API
+		// re-validates them
+		model: (values.model || undefined) as CreateProfileInput["model"],
+		embeddingModel: (values.embeddingModel ||
+			undefined) as CreateProfileInput["embeddingModel"],
+		systemPrompt: values.systemPrompt,
+		language: values.language,
+		chunkSize: values.chunkSize,
+		chunkOverlap: values.chunkOverlap,
+		topK: values.topK,
+		temperature: values.temperature,
+		isDefault: values.isDefault,
+	};
+}
 
 function ProfilesPage() {
 	const queryClient = useQueryClient();
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
-	const [editingProfile, setEditingProfile] = useState<any>(null);
+	const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
 	const [deletingProfileId, setDeletingProfileId] = useState<string | null>(
 		null,
 	);
@@ -93,26 +144,33 @@ function ProfilesPage() {
 			onSuccess: () => {
 				toast.success("Profile created");
 				setIsCreateOpen(false);
-				queryClient.invalidateQueries({
+				void queryClient.invalidateQueries({
 					queryKey: orpc.profiles.listProfiles.key(),
 				});
 			},
-			onError: (err: any) =>
-				toast.error(err.message || "Failed to create profile"),
+			onError: (err) =>
+				toast.error(errorMessage(err, "Failed to create profile")),
 		}),
 	);
 
 	const updateMutation = useMutation(
 		orpc.profiles.updateProfile.mutationOptions({
-			onSuccess: () => {
-				toast.success("Profile updated");
+			onSuccess: (data) => {
+				toast.success(
+					data.reindexingDocuments > 0
+						? `Profile updated. Re-indexing ${data.reindexingDocuments} document${data.reindexingDocuments === 1 ? "" : "s"} with the new embedding model.`
+						: "Profile updated",
+				);
+				void queryClient.invalidateQueries({
+					queryKey: orpc.documents.key(),
+				});
 				setEditingProfile(null);
-				queryClient.invalidateQueries({
+				void queryClient.invalidateQueries({
 					queryKey: orpc.profiles.listProfiles.key(),
 				});
 			},
-			onError: (err: any) =>
-				toast.error(err.message || "Failed to update profile"),
+			onError: (err) =>
+				toast.error(errorMessage(err, "Failed to update profile")),
 		}),
 	);
 
@@ -121,19 +179,19 @@ function ProfilesPage() {
 			onSuccess: () => {
 				toast.success("Profile deleted");
 				setDeletingProfileId(null);
-				queryClient.invalidateQueries({
+				void queryClient.invalidateQueries({
 					queryKey: orpc.profiles.listProfiles.key(),
 				});
 			},
-			onError: (err: any) =>
-				toast.error(err.message || "Failed to delete profile"),
+			onError: (err) =>
+				toast.error(errorMessage(err, "Failed to delete profile")),
 		}),
 	);
 
-	const profiles = (profilesData as any)?.profiles ?? [];
+	const profiles: Profile[] = profilesData?.profiles ?? [];
 
 	return (
-		<Layout>
+		<>
 			<div className="space-y-6">
 				<div className="flex items-center justify-between">
 					<div>
@@ -174,7 +232,7 @@ function ProfilesPage() {
 					</Card>
 				) : (
 					<div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-						{profiles.map((profile: any) => (
+						{profiles.map((profile) => (
 							<Card key={profile.id} className="relative">
 								<CardHeader className="pb-2">
 									<div className="flex items-start justify-between">
@@ -196,6 +254,7 @@ function ProfilesPage() {
 														variant="ghost"
 														size="icon"
 														className="size-7"
+														aria-label={`Actions for ${profile.name}`}
 													/>
 												}
 											>
@@ -250,14 +309,16 @@ function ProfilesPage() {
 				)}
 			</div>
 
-			{/* Create Dialog */}
-			<ProfileFormDialog
-				open={isCreateOpen}
-				title="Create Profile"
-				onOpenChange={setIsCreateOpen}
-				onSubmit={(values) => createMutation.mutate(values)}
-				isPending={createMutation.isPending}
-			/>
+			{/* Create Dialog (mounted only while open so every open starts blank) */}
+			{isCreateOpen && (
+				<ProfileFormDialog
+					open
+					title="Create Profile"
+					onOpenChange={setIsCreateOpen}
+					onSubmit={(values) => createMutation.mutate(toPayload(values))}
+					isPending={createMutation.isPending}
+				/>
+			)}
 
 			{/* Edit Dialog */}
 			{editingProfile && (
@@ -267,7 +328,10 @@ function ProfilesPage() {
 					defaultValues={editingProfile}
 					onOpenChange={(v) => !v && setEditingProfile(null)}
 					onSubmit={(values) =>
-						updateMutation.mutate({ id: editingProfile.id, data: values })
+						updateMutation.mutate({
+							id: editingProfile.id,
+							data: toPayload(values),
+						})
 					}
 					isPending={updateMutation.isPending}
 				/>
@@ -301,7 +365,7 @@ function ProfilesPage() {
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
-		</Layout>
+		</>
 	);
 }
 
@@ -315,18 +379,25 @@ function ProfileFormDialog({
 }: {
 	open: boolean;
 	title: string;
-	defaultValues?: Partial<ProfileFormValues>;
+	defaultValues?: Profile;
 	onOpenChange: (v: boolean) => void;
-	onSubmit: (values: any) => void;
+	onSubmit: (values: ProfileFormValues) => void;
 	isPending: boolean;
 }) {
-	const { register, handleSubmit, control } = useForm<ProfileFormValues>({
+	const {
+		register,
+		handleSubmit,
+		control,
+		formState: { errors },
+	} = useForm<ProfileFormInput, unknown, ProfileFormValues>({
+		resolver: zodResolver(profileFormSchema),
 		defaultValues: {
 			name: defaultValues?.name ?? "",
 			description: defaultValues?.description ?? "",
-			model: defaultValues?.model,
-			embeddingModel: defaultValues?.embeddingModel,
+			model: defaultValues?.model ?? undefined,
+			embeddingModel: defaultValues?.embeddingModel ?? undefined,
 			systemPrompt: defaultValues?.systemPrompt ?? "",
+			language: defaultValues?.language ?? "auto",
 			chunkSize: defaultValues?.chunkSize ?? 500,
 			chunkOverlap: defaultValues?.chunkOverlap ?? 50,
 			topK: defaultValues?.topK ?? 5,
@@ -345,6 +416,13 @@ function ProfileFormDialog({
 	const llmModels = llmModelsData?.models ?? [];
 	const embeddingModels = embeddingModelsData?.models ?? [];
 
+	const fieldError = (name: keyof ProfileFormInput) =>
+		errors[name]?.message ? (
+			<p className="text-xs text-destructive" role="alert">
+				{String(errors[name]?.message)}
+			</p>
+		) : null;
+
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="max-w-2xl! max-h-[80dvh] overflow-y-auto pb-0">
@@ -357,30 +435,38 @@ function ProfileFormDialog({
 				<form onSubmit={handleSubmit(onSubmit)} className="space-y-4 py-4">
 					<div className="grid grid-cols-2 gap-4">
 						<div className="col-span-2 space-y-2">
-							<Label>Name *</Label>
-							<Input {...register("name")} placeholder="My Profile" required />
+							<Label htmlFor="profile-name">Name *</Label>
+							<Input
+								id="profile-name"
+								{...register("name")}
+								placeholder="My Profile"
+							/>
+							{fieldError("name")}
 						</div>
 						<div className="col-span-2 space-y-2">
-							<Label>Description</Label>
+							<Label htmlFor="profile-description">Description</Label>
 							<Input
+								id="profile-description"
 								{...register("description")}
 								placeholder="Optional description"
 							/>
+							{fieldError("description")}
 						</div>
 
 						{/* LLM Model */}
 						<div className="col-span-2 space-y-2">
-							<Label>LLM Model</Label>
+							<Label htmlFor="profile-model">LLM Model</Label>
 							<Controller
 								name="model"
 								control={control}
 								render={({ field }) => (
 									<Combobox
-										value={field.value}
-										onValueChange={(v) => field.onChange(v)}
+										value={field.value ?? null}
+										onValueChange={(v) => field.onChange(v ?? undefined)}
 										items={llmModels.map((m) => m.id)}
 									>
 										<ComboboxInput
+											id="profile-model"
 											className="w-full"
 											placeholder="Search LLM model..."
 											showClear
@@ -402,17 +488,18 @@ function ProfileFormDialog({
 
 						{/* Embedding Model */}
 						<div className="col-span-2 space-y-2">
-							<Label>Embedding Model</Label>
+							<Label htmlFor="profile-embedding">Embedding Model</Label>
 							<Controller
 								name="embeddingModel"
 								control={control}
 								render={({ field }) => (
 									<Combobox
-										value={field.value}
-										onValueChange={(v) => field.onChange(v)}
+										value={field.value ?? null}
+										onValueChange={(v) => field.onChange(v ?? undefined)}
 										items={embeddingModels.map((m) => m.id)}
 									>
 										<ComboboxInput
+											id="profile-embedding"
 											className="w-full"
 											placeholder="Search embedding model..."
 											showClear
@@ -430,46 +517,80 @@ function ProfileFormDialog({
 									</Combobox>
 								)}
 							/>
+							{defaultValues && (
+								<p className="text-xs text-muted-foreground">
+									Changing the embedding model re-indexes this profile's
+									documents and uses credits.
+								</p>
+							)}
 						</div>
 
 						<div className="space-y-2">
-							<Label>Chunk Size</Label>
+							<Label htmlFor="profile-chunk-size">Chunk Size (100-4000)</Label>
 							<Input
-								{...register("chunkSize", { valueAsNumber: true })}
+								id="profile-chunk-size"
+								{...register("chunkSize")}
 								type="number"
+								min={100}
+								max={4000}
 							/>
+							{fieldError("chunkSize")}
 						</div>
 						<div className="space-y-2">
-							<Label>Chunk Overlap</Label>
+							<Label htmlFor="profile-chunk-overlap">Chunk Overlap</Label>
 							<Input
-								{...register("chunkOverlap", { valueAsNumber: true })}
+								id="profile-chunk-overlap"
+								{...register("chunkOverlap")}
 								type="number"
+								min={0}
 							/>
+							{fieldError("chunkOverlap")}
 						</div>
 						<div className="space-y-2">
-							<Label>Top-K Results</Label>
+							<Label htmlFor="profile-top-k">Top-K Results (1-50)</Label>
 							<Input
-								{...register("topK", { valueAsNumber: true })}
+								id="profile-top-k"
+								{...register("topK")}
 								type="number"
+								min={1}
+								max={50}
 							/>
+							{fieldError("topK")}
 						</div>
 						<div className="space-y-2">
-							<Label>Temperature</Label>
+							<Label htmlFor="profile-temperature">Temperature (0-2)</Label>
 							<Input
-								{...register("temperature", { valueAsNumber: true })}
+								id="profile-temperature"
+								{...register("temperature")}
 								type="number"
 								step="0.1"
 								min="0"
 								max="2"
 							/>
+							{fieldError("temperature")}
 						</div>
 						<div className="col-span-2 space-y-2">
-							<Label>System Prompt</Label>
-							<textarea
+							<Label htmlFor="profile-language">Answer language</Label>
+							<Input
+								id="profile-language"
+								{...register("language")}
+								placeholder="auto"
+							/>
+							<p className="text-xs text-muted-foreground">
+								&quot;auto&quot; answers in the language of each question. Or
+								name one language, e.g. Arabic.
+							</p>
+							{fieldError("language")}
+						</div>
+						<div className="col-span-2 space-y-2">
+							<Label htmlFor="profile-system-prompt">System Prompt</Label>
+							<Textarea
+								id="profile-system-prompt"
 								{...register("systemPrompt")}
-								className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+								className="min-h-[80px]"
 								placeholder="Optional system prompt..."
 							/>
+							{fieldError("systemPrompt")}
 						</div>
 						<div className="col-span-2 flex items-center gap-2">
 							<input

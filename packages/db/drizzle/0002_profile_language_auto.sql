@@ -1,0 +1,1 @@
+ALTER TABLE "rag_profile" ALTER COLUMN "language" SET DEFAULT 'auto';

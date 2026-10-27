@@ -1,81 +1,39 @@
 # @repo/db
 
-The database package for Foxmayn AI, powered by **PostgreSQL** and **Drizzle ORM**. It manages all data models, schemas, and migrations for the entire monorepo.
+Drizzle ORM schema, migrations and the shared PostgreSQL client.
 
-## Tech Stack
+## Entry points
 
-- **Database**: PostgreSQL
-- **ORM**: [Drizzle ORM](https://orm.drizzle.team/)
-- **Migrations**: Drizzle Kit
-- **Driver**: `node-postgres`
+- `src/index.ts`: exports `db`, `initDB()`, `disconnectDB()` and the schema.
+- `src/migrate.ts`: applies the committed migrations (`pnpm db:migrate`, and the `migrate` compose service).
+- Subpath exports: `@repo/db/schema`, `@repo/db/types`, `@repo/db/drizzle-orm`.
 
-## Database Modules
+## Key files
 
-### 1. Auth Module (`src/models/auth/`)
+| Path | Purpose |
+| --- | --- |
+| `src/models/schema.ts` | Collects all tables |
+| `src/models/auth/schema.ts` | Better Auth tables. Generated with `pnpm auth:generate`. |
+| `src/models/rag/schema.ts` | RAG profiles, documents, chunks, conversations, messages |
+| `src/models/usage/schema.ts` | AI usage log and credit transactions |
+| `drizzle/` | Committed SQL migrations and drizzle-kit metadata |
+| `drizzle.config.ts` | drizzle-kit config |
 
-Managed by **Better Auth**, handles user identity and security.
+## Schema workflow
 
-- `user`: High-level user profile (name, email, image, role, ban status).
-- `session`: Active user sessions.
-- `account`: OAuth and provider-specific account details.
-- `apikey`: Personal API keys with rate limiting and permissions.
-- `organization`: Multi-tenant organization support.
-- `member`: Organization membership and roles.
-- `subscription`: Stripe subscription data.
+Edit `src/models`, run `pnpm db:generate`, read the new SQL in `drizzle/`, commit both. Do not use `db:push` on production.
 
-### 2. RAG Module (`src/models/rag/`)
+## Commands (from the repository root)
 
-Handles all data related to the AI pipeline and context.
-
-- `rag_profile`: Advanced pipeline configuration (models, chunking, retrieval settings, personality).
-- `document`: Indexed document metadata and status.
-- `document_chunk`: Individual text chunks with vector references.
-- `conversation`: Chat sessions for server-managed history.
-- `message`: Individual messages within conversations.
-
-## Scripts
-
-| Command            | Description                                  |
-| ------------------ | -------------------------------------------- |
-| `pnpm db:generate` | Generate migration files from schema changes |
-| `pnpm db:migrate`  | Apply pending migrations to the database     |
-| `pnpm db:push`     | Push schema changes directly (dev only)      |
-| `pnpm db:studio`   | Launch Drizzle Studio UI                     |
-
-> **Docker**: `db:generate` runs automatically during `make build`; `db:migrate` runs automatically on container startup. No manual steps needed.
-
-## Configuration
-
-### Environment Variables
-
-| Variable      | Description                       |
-| ------------- | --------------------------------- |
-| `DB_URL`      | Full PostgreSQL connection string |
-| `DB_HOST`     | Database host                     |
-| `DB_PORT`     | Database port                     |
-| `DB_USER`     | Database user                     |
-| `DB_PASSWORD` | Database password                 |
-| `DB_NAME`     | Database name                     |
-
-## Usage
-
-### Using the Database Client
-
-```typescript
-import { db, user } from "@repo/db";
-import { eq } from "@repo/db/drizzle-orm";
-
-const result = await db.select().from(user).where(eq(user.id, "123"));
+```bash
+pnpm db:generate   # create a migration
+pnpm db:migrate    # apply migrations to DB_URL
+pnpm db:studio     # Drizzle Studio
+pnpm db:push       # local experiments only
+pnpm --filter @repo/db build
+pnpm --filter @repo/db typecheck
 ```
 
-### Accessing Types
+## Environment
 
-```typescript
-import { User, Message } from "@repo/db/types";
-
-const myUser: User = { ... };
-```
-
----
-
-_Last Updated: January 2026_
+`DB_URL`, read from the root `.env`. Timestamps are `timestamptz`.

@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -21,24 +21,47 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { IconLoader2 } from "@tabler/icons-react";
+import { OtpStep } from "@/components/auth";
 import { authClient } from "@/lib/auth";
-import { ensureActiveOrganization } from "@/lib/organization";
+import { useAuthActions } from "@/hooks/use-auth-actions";
+import { validateRedirectSearch } from "@/lib/safe-redirect";
+import { errorMessage } from "@/lib/validation";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_notauth/auth/login")({
+	validateSearch: validateRedirectSearch,
 	component: RouteComponent,
 });
 
+// Existing passwords may predate the current rules (e.g. admin-set), so login
+// only requires a value.
 const loginSchema = z.object({
 	email: z.email("Invalid email address"),
-	password: z.string().min(6, "Password must be at least 6 characters"),
+	password: z.string().min(1, "Password is required"),
 });
+
+function isEmailNotVerified(error: {
+	code?: string;
+	status?: number;
+	message?: string;
+}) {
+	return (
+		error.code === "EMAIL_NOT_VERIFIED" ||
+		(error.status === 403 && /verif/i.test(error.message ?? ""))
+	);
+}
 
 type LoginFormValues = z.infer<typeof loginSchema>;
 
 function RouteComponent() {
-	const navigate = useNavigate();
+	const { redirect } = Route.useSearch();
+	const { completeLogin } = useAuthActions();
 	const [isLoading, setIsLoading] = useState(false);
+	// Set when the account exists but its email was never verified.
+	const [unverified, setUnverified] = useState<{
+		email: string;
+		password: string;
+	} | null>(null);
 
 	const form = useForm<LoginFormValues>({
 		resolver: zodResolver(loginSchema),
@@ -56,20 +79,78 @@ function RouteComponent() {
 				password: values.password,
 			});
 
+			if (error && isEmailNotVerified(error)) {
+				const sent = await authClient.emailOtp.sendVerificationOtp({
+					email: values.email,
+					type: "email-verification",
+				});
+				if (sent.error) {
+					toast.error(sent.error.message || "Failed to send verification code");
+					return;
+				}
+				setUnverified({ email: values.email, password: values.password });
+				toast.info("Verify your email to continue");
+				return;
+			}
+
 			if (error || !data?.user) {
 				toast.error(error?.message || "Login failed");
 				return;
 			}
 
-			await ensureActiveOrganization();
-			toast.success("Login successful");
-			navigate({ to: "/" });
-		} catch (err: any) {
-			toast.error(err.message || "An unexpected error occurred");
+			await completeLogin(redirect);
+		} catch (err) {
+			toast.error(errorMessage(err, "An unexpected error occurred"));
 		} finally {
 			setIsLoading(false);
 		}
 	};
+
+	if (unverified) {
+		return (
+			<div className="min-h-screen flex flex-col items-center justify-center px-4">
+				<OtpStep
+					email={unverified.email}
+					title="Verify your email"
+					submitText="Verify and sign in"
+					onSubmit={async (code) => {
+						const verified = await authClient.emailOtp.verifyEmail({
+							email: unverified.email,
+							otp: code,
+						});
+						if (verified.error) {
+							throw new Error(verified.error.message || "Verification failed");
+						}
+						const signedIn = await authClient.signIn.email({
+							email: unverified.email,
+							password: unverified.password,
+						});
+						if (signedIn.error) {
+							setUnverified(null);
+							throw new Error(
+								signedIn.error.message || "Verified. Please sign in.",
+							);
+						}
+						await completeLogin(redirect);
+					}}
+					onResend={async () => {
+						const sent = await authClient.emailOtp.sendVerificationOtp({
+							email: unverified.email,
+							type: "email-verification",
+						});
+						if (sent.error) throw new Error(sent.error.message);
+					}}
+				/>
+				<button
+					type="button"
+					onClick={() => setUnverified(null)}
+					className="mt-4 text-sm text-primary hover:underline font-medium"
+				>
+					Back to sign in
+				</button>
+			</div>
+		);
+	}
 
 	return (
 		<div className="min-h-screen flex flex-col items-center justify-center px-4 transition-colors duration-300">
@@ -94,6 +175,7 @@ function RouteComponent() {
 											<Input
 												placeholder="name@example.com"
 												type="email"
+												autoComplete="email"
 												{...field}
 												disabled={isLoading}
 											/>
@@ -114,6 +196,7 @@ function RouteComponent() {
 											<Input
 												placeholder="Enter your password"
 												type="password"
+												autoComplete="current-password"
 												{...field}
 												disabled={isLoading}
 											/>
@@ -157,6 +240,7 @@ function RouteComponent() {
 							Don't have an account?{" "}
 							<Link
 								to="/auth/register"
+								search={{ redirect }}
 								className="text-primary hover:underline font-medium"
 							>
 								Sign up

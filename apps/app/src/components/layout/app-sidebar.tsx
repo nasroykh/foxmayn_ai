@@ -45,8 +45,10 @@ import {
 import { themeAtom, type Theme } from "@/atoms/global";
 import { useAtom } from "jotai";
 import { toast } from "sonner";
-import { useNavigate } from "@tanstack/react-router";
 import { authClient, type User } from "@/lib/auth";
+import { useAuthActions } from "@/hooks/use-auth-actions";
+import { hasAdminRole } from "@/lib/roles";
+import { errorMessage } from "@/lib/validation";
 
 const mainNavItems = [
 	{ title: "Dashboard", icon: IconHome, href: "/" },
@@ -83,11 +85,11 @@ function NavItem({ item }: { item: { title: string; icon: React.ElementType; hre
 }
 
 export function AppSidebar({ user }: { user?: User | null }) {
-	const navigate = useNavigate();
+	const { logout, switchOrganization } = useAuthActions();
 	const [theme, setTheme] = useAtom(themeAtom);
 	const { data: activeOrg } = authClient.useActiveOrganization();
 	const { data: organizations } = authClient.useListOrganizations();
-	const isAdmin = user?.role === "admin";
+	const isAdmin = hasAdminRole(user?.role);
 
 	const themeOptions: { value: Theme; label: string; icon: typeof IconSun }[] =
 		[
@@ -100,24 +102,18 @@ export function AppSidebar({ user }: { user?: User | null }) {
 		if (organizationId === activeOrg?.id) return;
 
 		try {
-			await authClient.organization.setActive({ organizationId });
-			await authClient.getSession();
+			await switchOrganization(organizationId);
 			toast.success("Organization switched successfully");
-		} catch (error: any) {
-			toast.error(error.message || "Failed to switch organization");
+		} catch (error) {
+			toast.error(errorMessage(error, "Failed to switch organization"));
 		}
 	};
 
 	const handleLogout = async () => {
 		try {
-			await authClient.signOut({
-				fetchOptions: {
-					onSuccess: () => navigate({ to: "/auth/login" }),
-				},
-			});
-		} catch (error: any) {
-			console.error("Logout failed:", error);
-			toast.error(error.message || "Logout failed");
+			await logout();
+		} catch (error) {
+			toast.error(errorMessage(error, "Logout failed"));
 		}
 	};
 
@@ -184,7 +180,7 @@ export function AppSidebar({ user }: { user?: User | null }) {
 								render={
 									<SidebarMenuButton size="lg">
 										<Avatar className="size-8">
-											<AvatarImage src={user?.image || undefined} alt="User avatar" />
+											<AvatarImage src={user?.image || undefined} alt="" />
 											<AvatarFallback className="bg-primary/10 text-primary text-xs">
 												{user?.name
 													?.split(" ")

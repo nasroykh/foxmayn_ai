@@ -1,114 +1,28 @@
 # @repo/llm
 
-A typed wrapper around the OpenRouter API for Large Language Model (LLM) interactions, including chat completions, streaming, and batch embeddings.
+Thin wrapper over the OpenRouter SDK: chat (plain and streaming), embeddings, and the list of models the platform knows about.
 
-## Features
+## Entry points
 
-- **Typed Model Support**: Full TypeScript support for popular OpenRouter models.
-- **Chat & Streaming**: Support for both standard and streaming chat completions.
-- **RAG Ready**: Efficient batch embedding generation optimized for RAG pipelines.
-- **Reasoning Effort**: Support for "reasoning" models with configurable effort settings.
-- **Automatic Fallbacks**: Sensible defaults for temperature, max tokens, and models.
+- `src/openrouter.ts`: `OpenRouterQuery` (chat, streaming and non-streaming) and `OpenRouterEmbed`. The client is created on first use and reports a clear error if the key is missing. Requests time out after 180 seconds and retry with backoff.
+- `src/data/openrouter_models.ts`: `OPENROUTER_AI_MODELS` and `OPENROUTER_EMBEDDING_MODELS`. Only these ids are accepted by the API. Exported as `@repo/llm/openrouter/models`.
 
-## Installation
-
-This package is part of the monorepo. To use it in an app (e.g., `apps/api`):
-
-```json
-// apps/api/package.json
-{
-	"dependencies": {
-		"@repo/llm": "workspace:*"
-	}
-}
-```
-
-## Configuration
-
-### Environment Variables
-
-| Variable             | Description                               | Required |
-| -------------------- | ----------------------------------------- | -------- |
-| `OPENROUTER_API_KEY` | Your OpenRouter API key                   | Yes      |
-| `APP_URL`            | Application URL (for OpenRouter rankings) | No       |
-
-## Usage
-
-### 1. Chat Completion
-
-```typescript
-import { OpenRouterQuery } from "@repo/llm";
-
-const answer = await OpenRouterQuery(
-	{
-		model: "google/gemini-2.5-flash-lite",
-		temperature: 0.7,
-		maxTokens: 1000,
-		reasoning: "none",
-	},
-	[{ role: "user", content: "Hello!" }],
-	"You are a helpful assistant.",
-	"What is the capital of France?",
-);
-```
-
-### 2. Streaming Response
-
-```typescript
-import { OpenRouterQuery } from "@repo/llm";
-
-const stream = await OpenRouterQuery(
-	{
-		model: "google/gemini-2.5-flash-lite",
-		temperature: 0.7,
-		maxTokens: 1000,
-		reasoning: "none",
-		stream: true,
-	},
-	[],
-	"You are a helpful assistant.",
-	"Tell me a long story.",
-);
-
-for await (const chunk of stream) {
-	process.stdout.write(chunk);
-}
-```
-
-### 3. Batch Embeddings
-
-```typescript
-import { OpenRouterEmbed } from "@repo/llm";
-
-const chunks = ["Hello world", "Artificial intelligence is cool"];
-const embeddings = await OpenRouterEmbed(
-	"openai/text-embedding-3-small",
-	chunks,
-);
-
-console.log(embeddings.length); // 2
-console.log(embeddings[0].length); // 1536
-```
-
-## Available Models
-
-The package includes pre-defined model IDs for type safety:
-
-- **Chat Models**: `google/gemini-2.5-flash`, `anthropic/claude-3.5-sonnet`, `openai/gpt-4o`, etc.
-- **Embedding Models**: `openai/text-embedding-3-small`, `google/gemini-embedding-001`, etc.
-
-Models are defined in `src/data/openrouter_models.ts` and can be updated using the provided generation script.
-
-## Scripts
-
-### Generate Model List
-
-Updates the local model list from the OpenRouter API:
+## Updating the model list
 
 ```bash
-pnpm run models:generate
+pnpm models:generate
 ```
 
----
+The script `src/scripts/generate_model_list.ts` fetches current data from OpenRouter for the ids already in the file. It exits with an error and writes nothing if the fetch fails or a model is missing. To add a model, add its id to the file first, then run the script.
 
-_Last Updated: January 2026_
+## Commands
+
+```bash
+pnpm --filter @repo/llm build
+pnpm --filter @repo/llm typecheck
+pnpm --filter @repo/llm lint
+```
+
+## Environment
+
+`OPENROUTER_API_KEY` (needed on first call) and `APP_URL` (sent as the referer), read from the root `.env`.

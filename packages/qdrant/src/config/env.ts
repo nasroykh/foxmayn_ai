@@ -2,16 +2,20 @@ import { z } from "zod";
 import * as dotenv from "dotenv";
 import path from "path";
 
-// Load root .env (two levels up from packages/qdrant/)
-dotenv.config({ path: path.resolve(process.cwd(), "../../.env") });
-
-// Define the schema for your environment variables
-const envSchema = z.object({
-	QDRANT_URL: z.url(),
+// Load the root .env. Resolved from this file (src/config or dist/config),
+// not from process.cwd(). In containers there is no .env file; dotenv skips it.
+dotenv.config({
+	path: path.resolve(__dirname, "../../../../.env"),
+	quiet: true,
 });
 
-// Validate the environment variables and export the result
+const envSchema = z.object({
+	QDRANT_URL: z.url(),
+	// Optional: required only when the Qdrant server enforces an API key
+	// (always the case in docker-compose.yml).
+	QDRANT_API_KEY: z.string().optional(),
+});
+
 export const env = envSchema.parse(process.env);
 
-// Export the inferred type for use in other parts of your application
 export type Env = z.infer<typeof envSchema>;

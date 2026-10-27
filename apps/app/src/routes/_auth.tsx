@@ -1,4 +1,5 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
+import { Layout } from "@/components/layout/layout";
 
 export const Route = createFileRoute("/_auth")({
 	beforeLoad: async ({ context, location }) => {
@@ -11,4 +12,5 @@ export const Route = createFileRoute("/_auth")({
 			},
 		});
 	},
+	component: Layout,
 });

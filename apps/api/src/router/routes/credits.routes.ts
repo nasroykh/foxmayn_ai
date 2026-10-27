@@ -1,8 +1,16 @@
 import { z } from "zod";
-import { orgProcedure, adminProcedure } from "../middleware";
+import {
+	orgProcedure,
+	orgManagerProcedure,
+	adminProcedure,
+} from "../middleware";
 import { env } from "../../config/env";
+import { ORPCError } from "@orpc/server";
 import {
 	getBalance,
+	getMonthlyCap,
+	getMonthToDateSpend,
+	setMonthlyCap,
 	addCredits,
 	getTransactionHistory,
 } from "../../services/credits.service";
@@ -20,14 +28,53 @@ export const creditsRoutes = {
 			description: "Get credits balance for the active organization",
 		})
 		.handler(async ({ context }) => {
-			const balance = await getBalance(context.organizationId);
-			return { balance, organizationId: context.organizationId };
+			const [balance, monthlyCap, monthSpent] = await Promise.all([
+				getBalance(context.organizationId),
+				getMonthlyCap(context.organizationId),
+				getMonthToDateSpend(context.organizationId),
+			]);
+			return {
+				balance,
+				monthlyCap,
+				monthSpent,
+				organizationId: context.organizationId,
+			};
 		}),
 
 	/**
-	 * Get credit transaction history for the active organization.
+	 * Set or clear the monthly spending cap (UTC calendar month) of the active
+	 * organization (organization owners and admins only, not with an API key).
 	 */
-	getTransactions: orgProcedure
+	setMonthlyCap: orgManagerProcedure
+		.route({
+			method: "PATCH",
+			path: `${PREFIX}/credits/cap`,
+			description: "Set or clear the monthly spending cap (null clears it)",
+		})
+		.input(
+			z.object({
+				monthlyCap: z.number().positive().max(1_000_000).nullable(),
+			}),
+		)
+		.handler(async ({ input, context }) => {
+			if (context.isApiKeySession) {
+				throw new ORPCError("FORBIDDEN", {
+					message: "This endpoint cannot be used with an API key",
+				});
+			}
+
+			const monthlyCap = await setMonthlyCap(
+				context.organizationId,
+				input.monthlyCap,
+			);
+			return { monthlyCap };
+		}),
+
+	/**
+	 * Get credit transaction history for the active organization
+	 * (organization owners and admins only).
+	 */
+	getTransactions: orgManagerProcedure
 		.route({
 			method: "GET",
 			path: `${PREFIX}/credits/transactions`,
@@ -35,8 +82,8 @@ export const creditsRoutes = {
 		})
 		.input(
 			z.object({
-				limit: z.number().min(1).max(100).optional(),
-				offset: z.number().min(0).optional(),
+				limit: z.coerce.number().min(1).max(100).optional(),
+				offset: z.coerce.number().min(0).optional(),
 				type: z.enum(["topup", "usage", "refund", "adjustment"]).optional(),
 			}),
 		)

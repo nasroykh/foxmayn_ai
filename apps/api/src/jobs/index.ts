@@ -7,6 +7,10 @@ export {
 	getDocumentJobStatus,
 	getPendingDocumentJobs,
 } from "./document/document.queue";
+export type {
+	DocumentJobStatus,
+	PendingDocumentJob,
+} from "./document/document.queue";
 export {
 	emailQueue,
 	addSendEmailJob,

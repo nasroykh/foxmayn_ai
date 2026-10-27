@@ -7,6 +7,7 @@ import {
 } from "./types";
 import { transporter } from "../../config/nodemailer";
 import { env } from "../../config/env";
+import { maskEmails, describeError } from "../../config/redact";
 
 const QUEUE_NAME = "email";
 
@@ -18,12 +19,10 @@ async function processSendEmail(
 ): Promise<SendEmailJobResult> {
 	const { to, subject, html, text, template } = job.data;
 
-	console.log(
-		`[Email Worker] Sending email to: ${Array.isArray(to) ? to.join(", ") : to}`
-	);
+	console.log(`[Email Worker] Sending email to: ${maskEmails(to)}`);
 
-	let emailHtml = html;
-	let emailText = text;
+	const emailHtml = html;
+	const emailText = text;
 
 	// If using a template, render it
 	if (template) {
@@ -85,7 +84,7 @@ export function createEmailWorker() {
 	});
 
 	worker.on("error", (err) => {
-		console.error("[Email Worker] Worker error:", err);
+		console.error("[Email Worker] Worker error:", describeError(err));
 	});
 
 	console.log("[Email Worker] Worker started");
