@@ -8,13 +8,10 @@ import {
 	deleteDocument,
 	indexDocument,
 	extractTextFromDocument,
+	MAX_FILE_SIZE,
 } from "../../services/rag.service";
 import { getDocumentJobStatus, getPendingDocumentJobs } from "../../jobs";
-import {
-	authProcedure,
-	creditsProcedure,
-	publicProcedure,
-} from "../middleware";
+import { authProcedure, creditsProcedure } from "../middleware";
 import { env } from "../../config/env";
 import {
 	calculateTokens,
@@ -252,7 +249,7 @@ export const documentRoutes = {
 			};
 		}),
 
-	countTokens: publicProcedure
+	countTokens: authProcedure
 		.route({
 			method: "POST",
 			path: `${PREFIX}/documents/tokens`,
@@ -267,6 +264,11 @@ export const documentRoutes = {
 		.output(z.number())
 		.handler(async ({ input }) => {
 			const { file } = input;
+
+			if (file.size > MAX_FILE_SIZE)
+				throw new ORPCError("BAD_REQUEST", {
+					message: "File too large (max 10MB)",
+				});
 
 			const text = await extractTextFromDocument(file);
 

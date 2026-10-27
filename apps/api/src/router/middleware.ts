@@ -24,6 +24,14 @@ const authMiddleware = base.middleware(async ({ context, next }) => {
 	});
 });
 
+/**
+ * Admin check on a user's role (can be comma-separated for multiple roles).
+ */
+export const hasAdminRole = (role: string | null | undefined): boolean => {
+	const roles = role?.split(",").map((r: string) => r.trim()) ?? [];
+	return roles.includes("admin");
+};
+
 export const publicProcedure = base;
 
 export const authProcedure = base.use(authMiddleware);
@@ -31,11 +39,7 @@ export const authProcedure = base.use(authMiddleware);
 export const adminProcedure = base
 	.use(authMiddleware)
 	.use(async ({ context, next }) => {
-		const userRole = context.user.role;
-
-		// Check if user has admin role (can be comma-separated for multiple roles)
-		const roles = userRole?.split(",").map((r: string) => r.trim()) ?? [];
-		if (!roles.includes("admin")) {
+		if (!hasAdminRole(context.user.role)) {
 			throw new ORPCError("FORBIDDEN", {
 				message: "Admin access required",
 			});
