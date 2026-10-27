@@ -4,7 +4,7 @@ import {
 	OPENROUTER_AI_MODELS,
 	OPENROUTER_EMBEDDING_MODELS,
 } from "./data/openrouter_models";
-import type { Reasoning } from "openai/resources";
+type Reasoning = { effort: "xhigh" | "high" | "medium" | "low" | "minimal" | "none" | null | undefined };
 
 if (!env.OPENROUTER_API_KEY) {
 	throw new Error("OPENROUTER_API_KEY is not set");
@@ -12,7 +12,7 @@ if (!env.OPENROUTER_API_KEY) {
 
 const openrouter = new OpenRouter({
 	apiKey: env.OPENROUTER_API_KEY,
-	xTitle: "Foxmayn AI",
+	appTitle: "Foxmayn AI",
 	httpReferer: env.APP_URL || "https://foxmayn.ai",
 });
 

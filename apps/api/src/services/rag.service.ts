@@ -13,7 +13,7 @@ import {
 	addDeleteDocumentJob,
 	getDocumentJobStatus,
 } from "../jobs";
-import { parseDocx, parseHTML, parsePDF, parseXlsx } from "../utils/parsers";
+import { parseDocx, parseHTML, parsePDF } from "../utils/parsers";
 import { ORPCError } from "@orpc/server";
 import { GET_MAIN_SYSTEM_PROMPT } from "../utils/system_prompts";
 import { qdrant, ensureCollection, type VectorPayload } from "./qdrant.shared";
@@ -30,10 +30,7 @@ const ALLOWED_FILE_TYPES = [
 	// "application/xml",
 	"text/html",
 	"application/pdf",
-	"application/msword",
 	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-	// "application/vnd.ms-excel",
-	// "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ];
 export const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
@@ -574,15 +571,9 @@ export const extractTextFromDocument = async (file: File) => {
 			const pdfBuffer = await file.arrayBuffer();
 			return await parsePDF(Buffer.from(pdfBuffer));
 		}
-		case "application/msword":
 		case "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
 			const docxBuffer = await file.arrayBuffer();
 			return await parseDocx(Buffer.from(docxBuffer));
-		}
-		case "application/vnd.ms-excel":
-		case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
-			const xlsxBuffer = await file.arrayBuffer();
-			return parseXlsx(Buffer.from(xlsxBuffer));
 		}
 		case "text/plain":
 		case "text/markdown": {

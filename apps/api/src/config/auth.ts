@@ -4,9 +4,9 @@ import {
 	admin,
 	emailOTP,
 	organization,
-	apiKey,
 	bearer,
 } from "better-auth/plugins";
+import { apiKey } from "@better-auth/api-key";
 
 import { db } from "@repo/db";
 import * as schema from "@repo/db/schema";
