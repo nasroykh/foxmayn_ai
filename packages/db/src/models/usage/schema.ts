@@ -32,20 +32,20 @@ export const aiUsageLog = pgTable(
 		organizationId: text("organization_id")
 			.notNull()
 			.references(() => organization.id, { onDelete: "cascade" }),
-		userId: text("user_id")
-			.notNull()
-			.references(() => user.id, { onDelete: "cascade" }),
+		// Kept when the user is deleted: usage belongs to the organization.
+		userId: text("user_id").references(() => user.id, {
+			onDelete: "set null",
+		}),
 		operationType: operationTypeEnum("operation_type").notNull(),
 		model: text("model").notNull(),
 		inputTokens: integer("input_tokens").notNull().default(0),
 		outputTokens: integer("output_tokens").notNull().default(0),
 		totalTokens: integer("total_tokens").notNull().default(0),
-		costCredits: numeric("cost_credits", { precision: 12, scale: 6 }).notNull().default("0"),
+		costCredits: numeric("cost_credits", { precision: 18, scale: 8 }).notNull().default("0"),
 		metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
-		createdAt: timestamp("created_at").defaultNow().notNull(),
+		createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 	},
 	(table) => [
-		index("ai_usage_log_orgId_idx").on(table.organizationId),
 		index("ai_usage_log_userId_idx").on(table.userId),
 		index("ai_usage_log_createdAt_idx").on(table.createdAt),
 		index("ai_usage_log_operationType_idx").on(table.operationType),
@@ -62,18 +62,19 @@ export const creditTransaction = pgTable(
 			.notNull()
 			.references(() => organization.id, { onDelete: "cascade" }),
 		type: creditTransactionTypeEnum("type").notNull(),
-		amount: numeric("amount", { precision: 12, scale: 6 }).notNull(), // positive for additions, negative for deductions
-		balanceAfter: numeric("balance_after", { precision: 12, scale: 6 }).notNull(),
+		amount: numeric("amount", { precision: 18, scale: 8 }).notNull(), // positive for additions, negative for deductions
+		balanceAfter: numeric("balance_after", { precision: 18, scale: 8 }).notNull(),
 		description: text("description").notNull(),
-		referenceId: text("reference_id"), // links to ai_usage_log.id or Stripe payment ID
+		referenceId: text("reference_id"), // links to ai_usage_log.id or a payment reference
 		createdBy: text("created_by").references(() => user.id, {
 			onDelete: "set null",
 		}),
-		createdAt: timestamp("created_at").defaultNow().notNull(),
+		createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 	},
 	(table) => [
 		index("credit_tx_orgId_idx").on(table.organizationId),
 		index("credit_tx_createdAt_idx").on(table.createdAt),
+		index("credit_tx_referenceId_idx").on(table.referenceId),
 	],
 );
 

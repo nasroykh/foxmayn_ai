@@ -19,8 +19,7 @@
 		"dev": "NODE_ENV=development tsx watch src/index.ts",
 		"build": "rimraf dist && tsc",
 		"start": "NODE_ENV=production node dist/index.js",
-		"test": "tsx --test src/**/*.test.ts",
-		"backfill:qdrant-userid": "tsx src/scripts/backfill-qdrant-userid.ts"
+		"test": "tsx --test src/**/*.test.ts"
 	},
 	"dependencies": {
 		"@bull-board/api": "^9.10.5",
