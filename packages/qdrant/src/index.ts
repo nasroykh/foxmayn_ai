@@ -122,6 +122,32 @@ export const createCollection = async (
 };
 
 /**
+ * Ensure a keyword payload index exists on a field.
+ * Creating an index that already exists is a no-op, so this is safe to repeat
+ * (used to add indexes to collections created before the field existed).
+ */
+export const ensureKeywordIndex = async (
+	client: QdrantClient,
+	collection: string,
+	field: string
+): Promise<void> => {
+	await client.createPayloadIndex(collection, {
+		field_name: field,
+		field_schema: "keyword",
+	});
+};
+
+/**
+ * List the names of all collections
+ */
+export const listCollectionNames = async (
+	client: QdrantClient
+): Promise<string[]> => {
+	const { collections } = await client.getCollections();
+	return collections.map((c) => c.name);
+};
+
+/**
  * Delete a collection (indexes are deleted automatically with the collection)
  */
 export const deleteCollection = async (

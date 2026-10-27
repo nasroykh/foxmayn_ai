@@ -17,6 +17,7 @@ import { parseDocx, parseHTML, parsePDF, parseXlsx } from "../utils/parsers";
 import { ORPCError } from "@orpc/server";
 import { GET_MAIN_SYSTEM_PROMPT } from "../utils/system_prompts";
 import { qdrant, ensureCollection, type VectorPayload } from "./qdrant.shared";
+import { buildChunkFilter } from "./qdrant.filter";
 import { logUsageAndDeduct } from "./usage.service";
 import { deductCredits, addCredits } from "./credits.service";
 import { estimateChatCost, calculateCost } from "../utils/cost";
@@ -34,7 +35,7 @@ const ALLOWED_FILE_TYPES = [
 	// "application/vnd.ms-excel",
 	// "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ];
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+export const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 // Types
 export interface ChatMessage {
@@ -53,7 +54,8 @@ export interface QueryOptions {
 	};
 	// Usage tracking context
 	organizationId?: string;
-	userId?: string;
+	// Owner of the documents to search (mandatory: retrieval is always scoped to it)
+	userId: string;
 }
 
 export interface QueryResult {
@@ -164,14 +166,14 @@ export const getIndexingStatus = async (jobId: string) => {
  */
 export const searchChunks = async (
 	query: string,
-	options: QueryOptions = {},
+	options: QueryOptions,
 ): Promise<SearchResult[]> => {
 	const { profileId, filter, organizationId, userId } = options;
 
-	// Load profile or use default
+	// Load profile or use default (scoped to the caller)
 	const profile = profileId
-		? await getProfile(profileId)
-		: await getDefaultProfile();
+		? await getProfile(profileId, userId)
+		: await getDefaultProfile(userId);
 
 	const embeddingModelId =
 		profile?.embeddingModel || "openai/text-embedding-3-small";
@@ -187,9 +189,12 @@ export const searchChunks = async (
 		.from(documentChunk)
 		.innerJoin(document, eq(documentChunk.documentId, document.id))
 		.where(
-			filter?.documentId
-				? eq(document.id, filter.documentId)
-				: eq(document.status, "indexed"),
+			and(
+				eq(document.userId, userId),
+				filter?.documentId
+					? eq(document.id, filter.documentId)
+					: eq(document.status, "indexed"),
+			),
 		);
 	if ((chunkCount?.count ?? 0) === 0) return [];
 
@@ -212,20 +217,12 @@ export const searchChunks = async (
 		});
 	}
 
-	// Build filter
-	let qdrantFilter = undefined;
-	if (filter?.documentId || filter?.source) {
-		const must: Array<{ key: string; match: { value: string } }> = [];
-
-		if (filter.documentId) {
-			must.push({ key: "documentId", match: { value: filter.documentId } });
-		}
-		if (filter.source) {
-			must.push({ key: "source", match: { value: filter.source } });
-		}
-
-		qdrantFilter = { must };
-	}
+	// Build filter (always scoped to the owner)
+	const qdrantFilter = buildChunkFilter({
+		userId,
+		documentId: filter?.documentId,
+		source: filter?.source,
+	});
 
 	// Search Qdrant
 	const results = await searchVectors(qdrant, collectionName, embeddings[0], {
@@ -251,11 +248,11 @@ export const searchChunks = async (
  */
 export const queryRAG = async (
 	query: string,
-	options: QueryOptions = {},
+	options: QueryOptions,
 ): Promise<QueryResult> => {
 	const profile = options.profileId
-		? await getProfile(options.profileId)
-		: await getDefaultProfile();
+		? await getProfile(options.profileId, options.userId)
+		: await getDefaultProfile(options.userId);
 
 	const searchResults = await searchChunks(query, options);
 
@@ -319,7 +316,7 @@ export const queryRAG = async (
  */
 export async function* queryRAGStream(
 	query: string,
-	options: QueryOptions = {},
+	options: QueryOptions,
 ): AsyncGenerator<
 	| { type: "sources"; data: SearchResult[] }
 	| { type: "token"; data: string }
@@ -329,8 +326,8 @@ export async function* queryRAGStream(
 	unknown
 > {
 	const profile = options.profileId
-		? await getProfile(options.profileId)
-		: await getDefaultProfile();
+		? await getProfile(options.profileId, options.userId)
+		: await getDefaultProfile(options.userId);
 
 	const searchResults = await searchChunks(query, options);
 

@@ -4,6 +4,7 @@ import {
 	queryRAG,
 	queryRAGStream,
 	searchChunks,
+	getDocument,
 	type ChatMessage,
 } from "../../services/rag.service";
 import {
@@ -55,6 +56,22 @@ const queryBodySchema = z
 		(data) => !(data.messages && data.conversationId),
 		"Cannot provide both 'messages' and 'conversationId'. Choose one mode.",
 	);
+
+/**
+ * Rejects a documentId filter that does not belong to the caller.
+ */
+async function assertOwnsDocument(
+	documentId: string | undefined,
+	userId: string,
+): Promise<void> {
+	if (!documentId) return;
+	const doc = await getDocument(documentId, userId);
+	if (!doc) {
+		throw new ORPCError("NOT_FOUND", {
+			message: "Document not found",
+		});
+	}
+}
 
 /**
  * Resolves chat history based on the provided mode.
@@ -153,6 +170,8 @@ export const chatRoutes = {
 		.handler(async ({ input, context }) => {
 			const { query, messages, conversationId, options } = input;
 
+			await assertOwnsDocument(options?.documentId, context.user.id);
+
 			// Resolve history mode
 			const history = await resolveChatHistory({
 				messages: messages as ChatMessage[] | undefined,
@@ -201,6 +220,8 @@ export const chatRoutes = {
 		.handler(async ({ input, context }) => {
 			const { query, options } = input;
 
+			await assertOwnsDocument(options?.documentId, context.user.id);
+
 			const results = await searchChunks(query, {
 				limit: options?.limit,
 				scoreThreshold: options?.scoreThreshold,
@@ -225,6 +246,8 @@ export const chatRoutes = {
 		.input(queryBodySchema)
 		.handler(async function* ({ input, context }) {
 			const { query, messages, conversationId, options } = input;
+
+			await assertOwnsDocument(options?.documentId, context.user.id);
 
 			// Resolve history mode
 			const history = await resolveChatHistory({

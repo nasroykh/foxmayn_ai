@@ -1,6 +1,13 @@
-import { createQdrantClient, createCollection } from "@repo/qdrant";
+import {
+	createQdrantClient,
+	createCollection,
+	deleteVectorsByFilter,
+	ensureKeywordIndex,
+	listCollectionNames,
+} from "@repo/qdrant";
 import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
 import { env } from "../config/env";
+import { isVectorCollection } from "./qdrant.filter";
 
 // Constants
 export const COLLECTION_NAME = env.QDRANT_COLLECTION_NAME || "foxmayn_ai";
@@ -24,12 +31,28 @@ export const ensureCollection = async (modelId: string) => {
 	await createCollection(qdrant, collectionName, {
 		size: model.dimensions,
 		distance: "Cosine",
-		keywordFields: ["documentId", "source"],
+		keywordFields: ["documentId", "source", "userId"],
 		textFields: ["content"],
 	});
 
+	// Collections created before `userId` was stored lack its index (no-op if present)
+	await ensureKeywordIndex(qdrant, collectionName, "userId");
+
 	initializedCollections.add(collectionName);
 	return collectionName;
+};
+
+/**
+ * Delete every vector of a document from all `<COLLECTION_NAME>_<dims>` collections.
+ * A document may live in any of them, depending on the embedding model of its profile.
+ */
+export const deleteDocumentVectors = async (documentId: string) => {
+	const names = await listCollectionNames(qdrant);
+	for (const name of names.filter((n) => isVectorCollection(n, COLLECTION_NAME))) {
+		await deleteVectorsByFilter(qdrant, name, {
+			must: [{ key: "documentId", match: { value: documentId } }],
+		});
+	}
 };
 
 // Payload type for Qdrant vectors
@@ -38,6 +61,7 @@ export interface VectorPayload extends Record<string, unknown> {
 	chunkId: string;
 	content: string;
 	chunkIndex: number;
+	userId: string;
 	source?: string;
 	metadata?: Record<string, unknown>;
 }

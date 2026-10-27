@@ -82,7 +82,17 @@ pnpm dev:worker
 ## Monitoring
 
 - **Swagger/OpenAPI**: Available at `/docs` in development.
-- **Queue Dashboard**: Access BullMQ status at `/api/v1/queues` (Admin only).
+- **Queue Dashboard**: Access BullMQ status at `/api/v1/admin/queues` (admin session required).
+
+## Upgrading: tenant-scoped vectors
+
+Every Qdrant point now carries a `userId` payload (the document owner) and every search filters on it. Vectors indexed before this change lack the field and are not returned by searches until backfilled. After deploying, run once (safe to re-run):
+
+```bash
+pnpm --filter @repo/api backfill:qdrant-userid
+```
+
+It reads each document's owner from PostgreSQL, sets `userId` on its points in every `<QDRANT_COLLECTION_NAME>_<dims>` collection, and creates the `userId` keyword index. Points of deleted documents stay unscoped and are never returned. Retrieval is scoped by user, not organization, matching how documents are owned today.
 
 ---
 

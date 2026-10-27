@@ -4,7 +4,6 @@ import { db, document, documentChunk, aiUsageLog } from "@repo/db";
 import { upsertVectors, deleteVectorsByFilter, type Point } from "@repo/qdrant";
 import { eq } from "@repo/db/drizzle-orm";
 import { OpenRouterEmbed } from "@repo/llm/openrouter";
-import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
 import { redisConnection } from "../connection";
 import {
 	type IndexDocumentJobData,
@@ -16,9 +15,9 @@ import {
 import { chunkText, calculateTokens } from "../../services/chunking.service";
 import { getProfile, getDefaultProfile } from "../../services/profile.service";
 import {
-	COLLECTION_NAME,
 	qdrant,
 	ensureCollection,
+	deleteDocumentVectors,
 	type VectorPayload,
 } from "../../services/qdrant.shared";
 import { deductCredits, addCredits } from "../../services/credits.service";
@@ -52,9 +51,17 @@ async function processIndexDocument(
 		}`,
 	);
 
+	// The document row is the source of truth for the owner (tenant key)
+	const [doc] = await db
+		.select({ userId: document.userId })
+		.from(document)
+		.where(eq(document.id, documentId));
+	if (!doc) throw new Error(`Document not found: ${documentId}`);
+	const ownerId = doc.userId;
+
 	const profile = profileId
-		? await getProfile(profileId)
-		: await getDefaultProfile();
+		? await getProfile(profileId, ownerId)
+		: await getDefaultProfile(ownerId);
 	const embeddingModelId =
 		profile?.embeddingModel || "openai/text-embedding-3-small";
 
@@ -151,6 +158,7 @@ async function processIndexDocument(
 					chunkId,
 					content: chunk.content,
 					chunkIndex: chunk.index,
+					userId: ownerId,
 					source,
 					metadata,
 				},
@@ -311,31 +319,8 @@ async function processDeleteDocument(
 		`[Document Worker] Starting deletion for document: ${documentId}`,
 	);
 
-	// Delete from Qdrant first
-	const [doc] = await db
-		.select()
-		.from(document)
-		.where(eq(document.id, documentId));
-	if (doc?.profileId) {
-		const profile = await getProfile(doc.profileId);
-		if (profile?.embeddingModel) {
-			const model = OPENROUTER_EMBEDDING_MODELS.find(
-				(m) => m.id === profile.embeddingModel,
-			);
-			if (model) {
-				const collectionName = `${COLLECTION_NAME}_${model.dimensions}`;
-				await deleteVectorsByFilter(qdrant, collectionName, {
-					must: [{ key: "documentId", match: { value: documentId } }],
-				});
-			}
-		}
-	} else {
-		// Try default collection just in case
-		const collectionName = `${COLLECTION_NAME}_1536`; // Default dimensions for small
-		await deleteVectorsByFilter(qdrant, collectionName, {
-			must: [{ key: "documentId", match: { value: documentId } }],
-		});
-	}
+	// Delete from Qdrant first (every embedding-dimension collection)
+	await deleteDocumentVectors(documentId);
 
 	await job.updateProgress(50);
 
@@ -372,26 +357,8 @@ async function processReindexDocument(
 
 	await job.updateProgress(10);
 
-	// Delete existing vectors
-	if (doc.profileId) {
-		const profile = await getProfile(doc.profileId);
-		if (profile?.embeddingModel) {
-			const model = OPENROUTER_EMBEDDING_MODELS.find(
-				(m) => m.id === profile.embeddingModel,
-			);
-			if (model) {
-				const collectionName = `${COLLECTION_NAME}_${model.dimensions}`;
-				await deleteVectorsByFilter(qdrant, collectionName, {
-					must: [{ key: "documentId", match: { value: documentId } }],
-				});
-			}
-		}
-	} else {
-		const collectionName = `${COLLECTION_NAME}_1536`;
-		await deleteVectorsByFilter(qdrant, collectionName, {
-			must: [{ key: "documentId", match: { value: documentId } }],
-		});
-	}
+	// Delete existing vectors (every embedding-dimension collection)
+	await deleteDocumentVectors(documentId);
 
 	// Delete existing chunks from PostgreSQL
 	await db
