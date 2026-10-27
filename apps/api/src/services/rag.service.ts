@@ -92,12 +92,7 @@ export interface QueryOptions {
 
 export interface QueryResult {
 	answer: string;
-	sources: Array<{
-		documentId: string;
-		chunkId: string;
-		content: string;
-		score: number;
-	}>;
+	sources: SearchResult[];
 	usage?: AIUsage;
 }
 
@@ -106,6 +101,9 @@ export interface SearchResult {
 	chunkId: string;
 	content: string;
 	score: number;
+	// Of the document, so a caller can cite it without another request
+	title: string;
+	source: string | null;
 }
 
 type Profile = NonNullable<Awaited<ReturnType<typeof getProfile>>>;
@@ -531,7 +529,7 @@ const searchWithProfile = async (
 	const scopeToProfile =
 		profile !== null && (options.strictProfile || !filter?.documentId);
 	const searchable = await db
-		.select({ id: document.id })
+		.select({ id: document.id, title: document.title, source: document.source })
 		.from(document)
 		.where(
 			and(
@@ -578,13 +576,17 @@ const searchWithProfile = async (
 		filter: qdrantFilter,
 	});
 
+	const documents = new Map(searchable.map((d) => [d.id, d]));
 	return results.map((r) => {
 		const payload = r.payload as unknown as VectorPayload;
+		const doc = documents.get(payload.documentId);
 		return {
 			documentId: payload.documentId,
 			chunkId: payload.chunkId,
 			content: payload.content,
 			score: r.score,
+			title: doc?.title ?? "",
+			source: doc?.source ?? null,
 		};
 	});
 };

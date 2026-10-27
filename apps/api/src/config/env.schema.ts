@@ -77,6 +77,15 @@ export const envSchema = z
 			.transform((value) => value || undefined),
 		// Used as a collection name prefix
 		QDRANT_COLLECTION_NAME: z.string().min(1).default("documents"),
+
+		// Per API key rate limit. Copied into each key at creation: changing it
+		// later does not affect existing keys.
+		API_KEY_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
+		API_KEY_RATE_LIMIT_WINDOW_SECONDS: z.coerce
+			.number()
+			.int()
+			.positive()
+			.default(300),
 	})
 	.superRefine((values, ctx) => {
 		if (values.NODE_ENV !== "production") return;

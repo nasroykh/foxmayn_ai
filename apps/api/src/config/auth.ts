@@ -33,8 +33,8 @@ export const auth = betterAuth({
 		bearer(),
 		apiKey({
 			rateLimit: {
-				maxRequests: 100,
-				timeWindow: 1000 * 60 * 5, // 5 minutes
+				maxRequests: env.API_KEY_RATE_LIMIT_MAX,
+				timeWindow: env.API_KEY_RATE_LIMIT_WINDOW_SECONDS * 1000,
 			},
 			enableSessionForAPIKeys: true,
 			apiKeyHeaders: API_KEY_HEADER,
