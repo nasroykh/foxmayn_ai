@@ -34,7 +34,7 @@
 	},
 	"keywords": [],
 	"author": "",
-	"license": "ISC",
+	"license": "MIT",
 	"dependencies": {
 		"dotenv": "^17.2.3",
 		"drizzle-kit": "^0.31.8",

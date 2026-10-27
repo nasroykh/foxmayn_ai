@@ -15,7 +15,7 @@
 	},
 	"keywords": [],
 	"author": "",
-	"license": "ISC",
+	"license": "MIT",
 	"dependencies": {
 		"@qdrant/js-client-rest": "^1.16.2",
 		"dotenv": "^17.2.4",
