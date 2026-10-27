@@ -271,15 +271,13 @@ export const OpenRouterEmbed = async (
 			return item.embedding;
 		});
 
-		// Extract usage from response
-		const usage = (response as Record<string, unknown>).usage as
-			| { prompt_tokens?: number; total_tokens?: number }
-			| undefined;
+		// The SDK maps the wire's snake_case usage to camelCase
+		const usage = response.usage;
 
 		return {
 			embeddings,
 			usage: {
-				totalTokens: usage?.total_tokens ?? usage?.prompt_tokens ?? 0,
+				totalTokens: usage?.totalTokens ?? usage?.promptTokens ?? 0,
 			},
 		};
 	} catch (error) {

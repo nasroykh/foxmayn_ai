@@ -558,7 +558,8 @@ const searchWithProfile = async (
 		userId,
 		operationType: "embedding",
 		model: embeddingModelId,
-		inputTokens: embedUsage.totalTokens,
+		// Providers occasionally omit usage: fall back to our own count
+		inputTokens: embedUsage.totalTokens || estimateTokens(query),
 		outputTokens: 0,
 		metadata: { context: "search_query" },
 	});
