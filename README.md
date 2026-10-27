@@ -3,11 +3,11 @@
 Multi-tenant RAG (retrieval-augmented generation) platform.
 
 - Organizations with members, roles and email invitations.
-- A personal knowledge base per user: upload documents, they are chunked, embedded and indexed.
-- RAG profiles per user: model, embedding model, chunking, retrieval and prompt settings.
-- Streaming chat that returns the sources it used.
-- Credits per organization. Every AI call is billed to the organization's balance.
-- API keys, each bound to one organization.
+- Knowledge bases per user: each RAG profile is one knowledge base, with its documents and its model, embedding, chunking, retrieval and prompt settings. Chat searches only the profile's documents.
+- Documents by file upload, raw text or https URL. An import can replace older documents with the same source once the new one is indexed.
+- Streaming chat that returns the sources it used. Answers follow the language of the question by default.
+- Credits per organization, with an optional monthly spending cap. Every AI call is billed to the organization's balance.
+- API keys, each bound to one organization. A key can also be limited to chatting with one knowledge base.
 - Admin console: users, bans, credit top-ups, job queue dashboard.
 
 ## Stack
@@ -84,6 +84,7 @@ Run from the repository root.
 | `pnpm db:studio` | Open Drizzle Studio |
 | `pnpm auth:generate` | Regenerate the Better Auth tables in `packages/db` |
 | `pnpm models:generate` | Refresh the OpenRouter model list in `packages/llm` |
+| `pnpm models:eval-multilingual` | Rank the embedding models on Arabic questions against English text (needs `OPENROUTER_API_KEY`) |
 
 ## API documentation
 
@@ -96,6 +97,10 @@ With the API running, under the prefix `/api/v1`:
 In development open them on `http://localhost:33460` (through Vite) or `http://localhost:33450`.
 
 Browser users sign in with a session cookie. Programmatic clients send an API key in the `x-api-key` header. A key is bound to one organization and cannot manage keys or call admin routes.
+
+A chat-only key is bound to one knowledge base (choose "Chat only" when creating it). It can call `POST /chat/query`, `POST /chat/query/stream` and `POST /chat/search`, always with that profile, and every other route refuses it. It reads only the documents in that profile and continues only the conversations it started. A document uploaded without a profile goes to the default profile at upload time. Keep it on a server: a key in browser code can be copied and spend the organization's credits. Each key is rate limited to 100 requests per 5 minutes.
+
+To keep a knowledge base in sync with a published file (for example `llms-full.txt`), call `POST /documents/import` with a full-access key and `{ "url": "https://...", "profileId": "...", "replace": true }`. The new document is indexed first. Older documents with the same source (the URL by default) in the same profile are deleted only after that succeeds. URL imports accept public https URLs only.
 
 ## Supported upload types
 

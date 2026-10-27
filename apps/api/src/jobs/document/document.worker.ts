@@ -2,7 +2,7 @@ import { Worker, Job, UnrecoverableError, DelayedError } from "bullmq";
 import { randomUUID } from "crypto";
 import { db, document, documentChunk, aiUsageLog } from "@repo/db";
 import { upsertVectors, deleteVectorsByFilter, type Point } from "@repo/qdrant";
-import { eq, and, ne, lt, isNull } from "@repo/db/drizzle-orm";
+import { eq, and, ne, lt, isNull, or } from "@repo/db/drizzle-orm";
 import { DEFAULT_EMBEDDING_MODEL, OpenRouterEmbed } from "@repo/llm/openrouter";
 import { redisConnection } from "../connection";
 import { redis } from "../../config/redis";
@@ -65,6 +65,11 @@ async function replaceOlderDocuments(
 ): Promise<void> {
 	if (!doc.source) return;
 	try {
+		// Profile-less documents are searched with the default profile, so they
+		// are older copies too when this document is in the default profile
+		const profile = doc.profileId
+			? await getProfile(doc.profileId, doc.userId)
+			: null;
 		const older = await db
 			.select({ id: document.id })
 			.from(document)
@@ -73,7 +78,9 @@ async function replaceOlderDocuments(
 					eq(document.userId, doc.userId),
 					eq(document.source, doc.source),
 					doc.profileId
-						? eq(document.profileId, doc.profileId)
+						? profile?.isDefault
+							? or(eq(document.profileId, doc.profileId), isNull(document.profileId))
+							: eq(document.profileId, doc.profileId)
 						: isNull(document.profileId),
 					ne(document.id, documentId),
 					lt(document.createdAt, doc.createdAt),

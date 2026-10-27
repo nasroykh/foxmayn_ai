@@ -44,6 +44,8 @@ blockV6("ff00::", 8);
 blockV6("2001:db8::", 32);
 blockV6("100::", 64);
 blockV6("64:ff9b::", 96);
+blockV6("64:ff9b:1::", 48);
+blockV6("::ffff:0:0:0", 96);
 // 6to4 and Teredo embed an IPv4 address that could be private
 blockV6("2002::", 16);
 blockV6("2001::", 32);

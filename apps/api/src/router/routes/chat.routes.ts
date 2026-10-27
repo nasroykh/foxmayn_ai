@@ -123,8 +123,12 @@ async function resolveChatHistory(input: {
 	conversationId?: string;
 	profileId?: string;
 	userId: string;
-	/** Set for keys bound to one knowledge base: only its conversations can be continued. */
+	/**
+	 * Set for keys bound to one knowledge base: such a key only continues the
+	 * conversations it created itself, never the owner's own chats.
+	 */
 	apiKeyProfileId: string | null;
+	apiKeyId: string | null;
 }): Promise<{
 	messages: ChatMessage[];
 	// Existing conversation id, null for client-managed mode and new conversations
@@ -146,10 +150,11 @@ async function resolveChatHistory(input: {
 	// Mode 2: Server-managed, continuing an existing conversation
 	if (input.conversationId) {
 		const conv = await getConversation(input.conversationId, input.userId);
-		if (
-			!conv ||
-			(input.apiKeyProfileId && conv.profileId !== input.apiKeyProfileId)
-		) {
+		const createdByThisKey =
+			conv?.profileId === input.apiKeyProfileId &&
+			(conv?.metadata as { apiKeyId?: unknown } | null)?.apiKeyId ===
+				input.apiKeyId;
+		if (!conv || (input.apiKeyProfileId && !createdByThisKey)) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Conversation not found",
 			});
@@ -186,6 +191,8 @@ async function persistExchange(input: {
 	conversationId: string | null;
 	userId: string;
 	profileId: string | undefined;
+	// API key that started the conversation (lets a chat-only key continue it)
+	apiKeyId: string | null;
 	userQuery: string;
 	assistantResponse: string;
 }): Promise<string> {
@@ -196,6 +203,7 @@ async function persistExchange(input: {
 				userId: input.userId,
 				profileId: input.profileId ?? null,
 				title: null,
+				metadata: input.apiKeyId ? { apiKeyId: input.apiKeyId } : {},
 			})
 		).id;
 
@@ -243,6 +251,7 @@ export const chatRoutes = {
 				profileId,
 				userId: context.user.id,
 				apiKeyProfileId: context.apiKeyProfileId,
+				apiKeyId: context.apiKeyId,
 			});
 
 			const result = await queryRAG(query, {
@@ -256,6 +265,7 @@ export const chatRoutes = {
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
+				strictProfile: Boolean(context.apiKeyProfileId),
 			});
 
 			// Store the exchange if server-managed (creates the conversation on first use)
@@ -264,6 +274,7 @@ export const chatRoutes = {
 						conversationId: history.conversationId,
 						userId: context.user.id,
 						profileId: history.profileId,
+						apiKeyId: context.apiKeyId,
 						userQuery: query,
 						assistantResponse: result.answer,
 					})
@@ -310,6 +321,7 @@ export const chatRoutes = {
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
+				strictProfile: Boolean(context.apiKeyProfileId),
 			});
 
 			return { results };
@@ -343,6 +355,7 @@ export const chatRoutes = {
 				profileId,
 				userId: context.user.id,
 				apiKeyProfileId: context.apiKeyProfileId,
+				apiKeyId: context.apiKeyId,
 			});
 
 			// Existing conversation: announce its id first
@@ -361,6 +374,7 @@ export const chatRoutes = {
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
+				strictProfile: Boolean(context.apiKeyProfileId),
 			});
 
 			// Collect full response for storage
@@ -382,6 +396,7 @@ export const chatRoutes = {
 					conversationId: history.conversationId,
 					userId: context.user.id,
 					profileId: history.profileId,
+					apiKeyId: context.apiKeyId,
 					userQuery: query,
 					assistantResponse: fullResponse,
 				});

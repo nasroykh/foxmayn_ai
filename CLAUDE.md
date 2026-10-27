@@ -37,12 +37,13 @@ Run one workspace: `pnpm --filter @repo/api test`. There is no format script. Ma
 - Tabs for indentation. TypeScript strict, Zod 4 for validation.
 - oRPC routes live in `apps/api/src/router/routes/*.routes.ts`. Pick the procedure from `apps/api/src/router/middleware.ts`:
   - `publicProcedure` (the `base`): no auth.
-  - `authProcedure`: signed-in user or API key.
+  - `authProcedure`: signed-in user or full-access API key. Every procedure except `chatProcedure` rejects chat-only keys (bound to one knowledge base).
   - `sessionProcedure`: browser session only, API keys rejected.
   - `adminProcedure`: session plus global admin role.
   - `orgProcedure`: active organization (session) or the key's organization, and the user must be a member. Adds `organizationId` and `memberRole`.
   - `orgManagerProcedure`: `orgProcedure` for org owner or admin.
-  - `creditsProcedure`: `orgProcedure` plus a minimum balance. Use it for anything that calls an AI model.
+  - `creditsProcedure`: `orgProcedure` plus a minimum balance and the monthly cap. Use it for anything that calls an AI model.
+  - `chatProcedure`: `creditsProcedure` that also accepts chat-only keys. Only the chat routes use it, and they force `context.apiKeyProfileId` as the profile (`resolveKnowledgeBase` in `chat.routes.ts`).
 - Throw `ORPCError` for errors a client can cause. A plain `Error` becomes a 500.
 - Business logic goes in `src/services`. Routes validate input and call services.
 - The frontend calls the API through the typed oRPC client in `apps/app/src/lib/orpc.ts` and the Better Auth client in `apps/app/src/lib/auth.ts`.
@@ -51,9 +52,10 @@ Run one workspace: `pnpm --filter @repo/api test`. There is no format script. Ma
 ## Tenancy and billing rules
 
 - Documents, RAG profiles and conversations belong to a user. Every service query that reads or writes them must filter by `userId`. Check profile ownership before using a `profileId` from a client.
-- Credits belong to an organization. API keys are bound to one organization through key metadata.
+- A RAG profile is a knowledge base. Retrieval searches only the profile's documents; documents without a profile belong to the user's default profile.
+- Credits belong to an organization. API keys are bound to one organization through key metadata (`organizationId`, plus `profileId` for a chat-only key). The service writes these keys; never copy them from client input.
 - Membership is checked on every `orgProcedure` request. Do not trust the session's active organization alone.
-- Billing is reserve then settle: reserve an estimate before the AI call, settle the real cost in `finally`, and refund the rest. A shortfall is still collected. See `apps/api/src/services/credits.service.ts` and `apps/api/src/utils/cost.ts`.
+- Billing is reserve then settle: reserve an estimate before the AI call, settle the real cost in `finally`, and refund the rest. A shortfall is still collected. The optional monthly cap is checked inside `reserveCredits` under a row lock; month-to-date spend counts `usage` and `refund` transactions only. See `apps/api/src/services/credits.service.ts` and `apps/api/src/utils/cost.ts`.
 - Only models listed in `packages/llm/src/data/openrouter_models.ts` are allowed. An unknown model must fail, never fall back to a default price.
 - Embeddings use one Qdrant collection per embedding model: `<QDRANT_COLLECTION_NAME>_<model slug>`.
 
@@ -65,7 +67,7 @@ Run one workspace: `pnpm --filter @repo/api test`. There is no format script. Ma
 4. Commit the schema change and the SQL together.
 5. Apply with `pnpm db:migrate`. Production applies them through the `migrate` compose service.
 
-Never use `pnpm db:push` against production. Better Auth tables in `packages/db/src/models/auth/schema.ts` are generated: change the Better Auth config in `apps/api/src/config/auth.ts`, run `pnpm auth:generate`, then follow the steps above.
+Never use `pnpm db:push` against production. Better Auth tables in `packages/db/src/models/auth/schema.ts` are generated: change the Better Auth config in `apps/api/src/config/auth.ts`, run `pnpm auth:generate`, then follow the steps above. The generator drops `organization.credits_balance` and `organization.credits_monthly_cap`: put both back before `pnpm db:generate`.
 
 ## Gotchas
 

@@ -62,6 +62,13 @@ const authMiddleware = root.middleware(async ({ context, next }) => {
 	const apiKeyId = isApiKeySession ? sessionData.session.id : null;
 	const apiKeyScope = apiKeyId ? await getApiKeyScope(apiKeyId) : null;
 
+	// Fail closed: a key whose binding cannot be read is not treated as full access
+	if (apiKeyId && !apiKeyScope?.organizationId) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "This API key is not bound to an organization.",
+		});
+	}
+
 	// Adds session and user to the context
 	return next({
 		context: {

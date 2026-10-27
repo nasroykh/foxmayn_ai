@@ -20,3 +20,12 @@ export const rejectApiKeyHeader: MiddlewareHandler = async (c, next) => {
 	}
 	return next();
 };
+
+/**
+ * Rejects better-auth's own API key endpoints. They accept `metadata` from the
+ * browser, which would let a user rewrite the organization or knowledge base a
+ * key is bound to. Keys are managed through the oRPC routes (apikey.service),
+ * which set that metadata themselves.
+ */
+export const rejectRawApiKeyRoutes: MiddlewareHandler = async (c) =>
+	c.json({ message: "Manage API keys through /api/v1/api-keys" }, 404);

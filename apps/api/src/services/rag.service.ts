@@ -85,6 +85,9 @@ export interface QueryOptions {
 	organizationId: string;
 	// Owner of the documents to search (mandatory: retrieval is always scoped to it)
 	userId: string;
+	// Chat-only API key: only documents explicitly in the profile, never the
+	// profile-less ones the default profile otherwise includes
+	strictProfile?: boolean;
 }
 
 export interface QueryResult {
@@ -239,11 +242,16 @@ const createAndQueueDocument = async (options: {
 
 	const documentId = randomUUID();
 
+	// A document without a profile goes to the current default profile, so it
+	// belongs to one knowledge base explicitly (a chat-only key only reads those)
+	const resolvedProfileId =
+		profileId ?? (await getDefaultProfile(userId))?.id ?? undefined;
+
 	// Create document record with status "processing"
 	await db.insert(document).values({
 		id: documentId,
 		userId,
-		profileId,
+		profileId: resolvedProfileId,
 		title,
 		content,
 		source,
@@ -255,7 +263,7 @@ const createAndQueueDocument = async (options: {
 	try {
 		const { jobId } = await addIndexDocumentJob({
 			documentId,
-			profileId,
+			profileId: resolvedProfileId,
 			organizationId,
 			userId,
 			replaceSource,
@@ -368,14 +376,20 @@ export const deleteDocument = async (
 	return { jobId };
 };
 
-/** Documents that follow a profile (those without a profile follow the default). */
+/**
+ * Documents that follow a profile (those without a profile follow the default).
+ * `strict` keeps only documents explicitly in the profile: a document loses its
+ * profile when that profile is deleted, and must not join what a chat-only key
+ * bound to the default profile can read.
+ */
 const profileDocumentsFilter = (
 	profile: { id: string; isDefault: boolean },
 	userId: string,
+	strict = false,
 ) =>
 	and(
 		eq(document.userId, userId),
-		profile.isDefault
+		profile.isDefault && !strict
 			? or(eq(document.profileId, profile.id), isNull(document.profileId))
 			: eq(document.profileId, profile.id),
 	);
@@ -511,14 +525,18 @@ const searchWithProfile = async (
 
 	// Documents searchable with this model. A profile is a knowledge base: only
 	// its documents are searched (those without a profile follow the default one).
+	// A browser session naming one of its documents searches that document,
+	// whatever its profile (the route checked ownership).
 	// Documents indexed with another embedding model live in another collection.
+	const scopeToProfile =
+		profile !== null && (options.strictProfile || !filter?.documentId);
 	const searchable = await db
 		.select({ id: document.id })
 		.from(document)
 		.where(
 			and(
-				profile
-					? profileDocumentsFilter(profile, userId)
+				scopeToProfile
+					? profileDocumentsFilter(profile, userId, options.strictProfile)
 					: eq(document.userId, userId),
 				eq(document.embeddingModel, embeddingModelId),
 				filter?.documentId
@@ -549,7 +567,7 @@ const searchWithProfile = async (
 	const qdrantFilter = buildChunkFilter({
 		userId,
 		documentId: filter?.documentId,
-		documentIds: profile ? searchable.map((d) => d.id) : undefined,
+		documentIds: scopeToProfile ? searchable.map((d) => d.id) : undefined,
 		source: filter?.source,
 	});
 
@@ -581,7 +599,7 @@ export const searchChunks = async (
 	return searchWithProfile(query, profile, options);
 };
 
-/** True when the document belongs to the knowledge base (profile) of `userId`. */
+/** True when the document is explicitly in the knowledge base (profile) of `userId`. */
 export const isDocumentInProfile = async (
 	documentId: string,
 	profileId: string,
@@ -592,7 +610,9 @@ export const isDocumentInProfile = async (
 	const [row] = await db
 		.select({ id: document.id })
 		.from(document)
-		.where(and(eq(document.id, documentId), profileDocumentsFilter(profile, userId)))
+		.where(
+			and(eq(document.id, documentId), profileDocumentsFilter(profile, userId, true)),
+		)
 		.limit(1);
 	return Boolean(row);
 };

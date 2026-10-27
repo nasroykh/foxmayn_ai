@@ -496,7 +496,7 @@ function DocumentsPage() {
 									<SelectValue />
 								</SelectTrigger>
 								<SelectContent>
-									<SelectItem value="none">No profile</SelectItem>
+									<SelectItem value="none">Default profile</SelectItem>
 									{profileList.map((p) => (
 										<SelectItem key={p.id} value={p.id}>
 											{p.name}

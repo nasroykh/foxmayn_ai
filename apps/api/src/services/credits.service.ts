@@ -52,7 +52,8 @@ export async function getMonthToDateSpend(
 			),
 		);
 
-	return Number(row?.spent ?? 0);
+	// A refund dated this month for last month's reservation must not create room
+	return Math.max(Number(row?.spent ?? 0), 0);
 }
 
 /** Monthly spending cap of an organization, or null when there is none. */

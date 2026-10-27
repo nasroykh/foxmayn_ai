@@ -35,7 +35,7 @@ export const documentRoutes = {
 				file: z.file(),
 				title: z.string().optional(),
 				source: z.string().optional(),
-				profileId: z.string().optional(),
+				profileId: z.string().min(1).optional(),
 				metadata: z.string().optional(),
 			}),
 		)
@@ -105,7 +105,7 @@ export const documentRoutes = {
 					url: z.url().optional(),
 					title: z.string().optional(),
 					source: z.string().max(2048).optional(),
-					profileId: z.string().optional(),
+					profileId: z.string().min(1).optional(),
 					metadata: z.record(z.string(), z.unknown()).optional(),
 					replace: z.boolean().default(false),
 				})
