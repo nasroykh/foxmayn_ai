@@ -3,7 +3,7 @@ import { db, apikey } from "@repo/db";
 import { eq } from "@repo/db/drizzle-orm";
 import { auth } from "../config/auth";
 import { API_KEY_HEADER } from "../config/constants";
-import { hasEnoughCredits } from "../services/credits.service";
+import { checkSpendGate } from "../services/credits.service";
 import { getMemberRole } from "../services/organization.service";
 import {
 	hasAdminRole,
@@ -185,22 +185,20 @@ export const orgManagerProcedure = orgProcedure.use(
 
 /**
  * Fast-fail guard for AI-consuming endpoints: it prevents wasted work for
- * clearly broke orgs. The hard enforcement is reserveCredits(), an atomic
+ * clearly broke orgs and orgs past their monthly cap. The hard enforcement is reserveCredits(), an atomic
  * conditional debit that fails regardless of what this (non-atomic) check returned.
  */
 const requireCredits = os
 	.$context<{ organizationId: string }>()
 	.middleware(async ({ context, next }) => {
-		const hasCredits = await hasEnoughCredits(
+		const gate = await checkSpendGate(
 			context.organizationId,
 			0.001, // ~$0.001 minimum — enough for at least a small embedding call
 		);
 
-		if (!hasCredits) {
-			throw new ORPCError("FORBIDDEN", {
-				message:
-					"Insufficient credits. Please top up your organization's balance.",
-			});
+		// Not enough balance, or the monthly cap is used up
+		if (!gate.ok) {
+			throw new ORPCError("FORBIDDEN", { message: gate.message });
 		}
 
 		return next();

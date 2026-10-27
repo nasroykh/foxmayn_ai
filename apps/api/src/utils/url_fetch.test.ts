@@ -164,3 +164,13 @@ test("fetchUrlAsFile rejects before any network access", async () => {
 		rejection("URL resolves to a private address"),
 	);
 });
+
+test("isPublicAddress fails closed on IPv6 forms that embed IPv4", () => {
+	// Expanded mapped spelling the regexes do not parse
+	assert.equal(isPublicAddress("0:0:0:0:0:ffff:7f00:1"), false);
+	// 6to4 (10.0.0.1 inside) and Teredo
+	assert.equal(isPublicAddress("2002:a00:1::1"), false);
+	assert.equal(isPublicAddress("2001:0:4136:e378::1"), false);
+	// Plain IPv4 is not affected by the IPv6 mapped rule
+	assert.equal(isPublicAddress("8.8.8.8"), true);
+});

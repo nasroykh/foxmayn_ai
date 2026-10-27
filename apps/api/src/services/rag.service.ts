@@ -208,7 +208,8 @@ export const extractTextFromDocument = async (file: File): Promise<string> => {
 
 /**
  * Create the document row and queue its indexing. Shared by the file upload
- * and the import path. The caller has already extracted `content`.
+ * and the import path. The caller has already extracted `content` and checked
+ * that `profileId` belongs to the owner.
  */
 const createAndQueueDocument = async (options: {
 	content: string;
@@ -230,9 +231,6 @@ const createAndQueueDocument = async (options: {
 		userId,
 		organizationId,
 	} = options;
-
-	// The profile id is stored as-is: it must belong to the caller
-	if (profileId) await loadProfile(profileId, userId);
 
 	if (!content.trim())
 		throw new ORPCError("BAD_REQUEST", {
@@ -289,6 +287,10 @@ export const indexDocument = async (options: {
 }): Promise<{ documentId: string; jobId: string | undefined }> => {
 	const { file, title, ...rest } = options;
 
+	// The profile id is stored as-is: it must belong to the caller. Checked
+	// before parsing so a bad id costs nothing.
+	if (rest.profileId) await loadProfile(rest.profileId, rest.userId);
+
 	const content = await extractTextFromDocument(file);
 
 	return createAndQueueDocument({
@@ -319,6 +321,10 @@ export const importDocument = async (options: {
 	organizationId: string;
 }): Promise<{ documentId: string; jobId: string | undefined }> => {
 	const { text, url, title, source, replace, ...rest } = options;
+
+	// The profile id is stored as-is: it must belong to the caller. Checked
+	// before any fetch so a bad id costs nothing.
+	if (rest.profileId) await loadProfile(rest.profileId, rest.userId);
 
 	let content: string;
 	let defaultTitle: string;

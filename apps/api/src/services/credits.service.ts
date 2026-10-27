@@ -23,17 +23,6 @@ export async function getBalance(orgId: string): Promise<number> {
 	return Number(org?.creditsBalance ?? 0);
 }
 
-/**
- * Check if an organization has enough credits for an estimated cost.
- */
-export async function hasEnoughCredits(
-	orgId: string,
-	estimatedCost: number,
-): Promise<boolean> {
-	const balance = await getBalance(orgId);
-	return balance >= estimatedCost;
-}
-
 // ============================================================================
 // Monthly spending cap
 // ============================================================================

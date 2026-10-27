@@ -44,6 +44,14 @@ blockV6("ff00::", 8);
 blockV6("2001:db8::", 32);
 blockV6("100::", 64);
 blockV6("64:ff9b::", 96);
+// 6to4 and Teredo embed an IPv4 address that could be private
+blockV6("2002::", 16);
+blockV6("2001::", 32);
+
+// IPv4-mapped spellings the regexes below miss fail closed. Kept out of
+// `blocked`: a mapped subnet there would also match plain IPv4 checks.
+const mappedV6 = new BlockList();
+mappedV6.addSubnet("::ffff:0:0", 96, "ipv6");
 
 // IPv4-mapped IPv6 in the dotted or the hex form (::ffff:7f00:1)
 const MAPPED_DOTTED = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i;
@@ -69,6 +77,7 @@ export const isPublicAddress = (ip: string): boolean => {
 			`${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`,
 		);
 	}
+	if (mappedV6.check(ip, "ipv6")) return false;
 	return !blocked.check(ip, "ipv6");
 };
 
