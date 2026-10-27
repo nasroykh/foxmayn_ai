@@ -130,7 +130,10 @@ export const organization = pgTable(
 		logo: text("logo"),
 		createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 		metadata: text("metadata"),
+		// Both credit columns are hand-added: restore them after `pnpm auth:generate`.
 		creditsBalance: numeric("credits_balance", { precision: 18, scale: 8 }).default("0").notNull(),
+		// Optional monthly spending cap (UTC calendar month); null means no cap.
+		creditsMonthlyCap: numeric("credits_monthly_cap", { precision: 18, scale: 8 }),
 	},
 	(table) => [uniqueIndex("organization_slug_uidx").on(table.slug)],
 );

@@ -78,6 +78,7 @@ function CreditsPage() {
 	const [topUpOrgId, setTopUpOrgId] = useState<string | null>(null);
 	const [topUpAmount, setTopUpAmount] = useState("");
 	const [topUpDesc, setTopUpDesc] = useState("");
+	const [capInput, setCapInput] = useState("");
 
 	const { data: balance, isLoading: balanceLoading } = useQuery(
 		orpc.credits.getBalance.queryOptions({}),
@@ -130,6 +131,28 @@ function CreditsPage() {
 		}),
 	);
 
+	const capMutation = useMutation(
+		orpc.credits.setMonthlyCap.mutationOptions({
+			onSuccess: (data) => {
+				toast.success(
+					data.monthlyCap === null
+						? "Monthly cap removed"
+						: `Monthly cap set to $${data.monthlyCap.toFixed(2)}`,
+				);
+				setCapInput("");
+				void queryClient.invalidateQueries({ queryKey: orpc.credits.key() });
+			},
+			onError: (err) => toast.error(errorMessage(err, "Could not update the cap")),
+		}),
+	);
+
+	const capValue = Number(capInput);
+	const capValid =
+		capInput.trim() !== "" &&
+		Number.isFinite(capValue) &&
+		capValue > 0 &&
+		capValue <= 1_000_000;
+
 	const amountValue = Number(topUpAmount);
 	const amountValid =
 		Number.isFinite(amountValue) && amountValue > 0 && amountValue <= 10000;
@@ -172,6 +195,53 @@ function CreditsPage() {
 								<div className="text-3xl font-bold">
 									${Number(balance?.balance ?? 0).toFixed(4)}
 								</div>
+							)}
+							{!balanceLoading && (
+								<p className="mt-1 text-xs text-muted-foreground">
+									{balance?.monthlyCap == null
+										? `This month: $${Number(balance?.monthSpent ?? 0).toFixed(4)}, no monthly cap`
+										: `This month: $${Number(balance.monthSpent).toFixed(4)} of $${balance.monthlyCap.toFixed(2)}`}
+								</p>
+							)}
+							{isManager && (
+								<form
+									className="mt-3 flex items-center gap-2"
+									onSubmit={(e) => {
+										e.preventDefault();
+										if (capValid)
+											capMutation.mutate({ monthlyCap: capValue });
+									}}
+								>
+									<Input
+										type="number"
+										min="0.01"
+										max="1000000"
+										step="0.01"
+										placeholder="Monthly cap ($)"
+										aria-label="Monthly cap in dollars"
+										className="h-8"
+										value={capInput}
+										onChange={(e) => setCapInput(e.target.value)}
+									/>
+									<Button
+										type="submit"
+										size="sm"
+										disabled={!capValid || capMutation.isPending}
+									>
+										Set
+									</Button>
+									{balance?.monthlyCap != null && (
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											disabled={capMutation.isPending}
+											onClick={() => capMutation.mutate({ monthlyCap: null })}
+										>
+											Clear
+										</Button>
+									)}
+								</form>
 							)}
 						</CardContent>
 					</Card>

@@ -72,7 +72,7 @@ export const creditTransaction = pgTable(
 		createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 	},
 	(table) => [
-		index("credit_tx_orgId_idx").on(table.organizationId),
+		index("credit_tx_org_createdAt_idx").on(table.organizationId, table.createdAt),
 		index("credit_tx_createdAt_idx").on(table.createdAt),
 		index("credit_tx_referenceId_idx").on(table.referenceId),
 	],

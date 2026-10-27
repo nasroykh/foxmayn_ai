@@ -5,8 +5,12 @@ import {
 	adminProcedure,
 } from "../middleware";
 import { env } from "../../config/env";
+import { ORPCError } from "@orpc/server";
 import {
 	getBalance,
+	getMonthlyCap,
+	getMonthToDateSpend,
+	setMonthlyCap,
 	addCredits,
 	getTransactionHistory,
 } from "../../services/credits.service";
@@ -24,8 +28,46 @@ export const creditsRoutes = {
 			description: "Get credits balance for the active organization",
 		})
 		.handler(async ({ context }) => {
-			const balance = await getBalance(context.organizationId);
-			return { balance, organizationId: context.organizationId };
+			const [balance, monthlyCap, monthSpent] = await Promise.all([
+				getBalance(context.organizationId),
+				getMonthlyCap(context.organizationId),
+				getMonthToDateSpend(context.organizationId),
+			]);
+			return {
+				balance,
+				monthlyCap,
+				monthSpent,
+				organizationId: context.organizationId,
+			};
+		}),
+
+	/**
+	 * Set or clear the monthly spending cap (UTC calendar month) of the active
+	 * organization (organization owners and admins only, not with an API key).
+	 */
+	setMonthlyCap: orgManagerProcedure
+		.route({
+			method: "PATCH",
+			path: `${PREFIX}/credits/cap`,
+			description: "Set or clear the monthly spending cap (null clears it)",
+		})
+		.input(
+			z.object({
+				monthlyCap: z.number().positive().max(1_000_000).nullable(),
+			}),
+		)
+		.handler(async ({ input, context }) => {
+			if (context.isApiKeySession) {
+				throw new ORPCError("FORBIDDEN", {
+					message: "This endpoint cannot be used with an API key",
+				});
+			}
+
+			const monthlyCap = await setMonthlyCap(
+				context.organizationId,
+				input.monthlyCap,
+			);
+			return { monthlyCap };
 		}),
 
 	/**

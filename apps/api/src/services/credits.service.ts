@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { db, organization, creditTransaction } from "@repo/db";
-import { eq, desc, and, sql } from "@repo/db/drizzle-orm";
+import { eq, desc, and, sql, gte, inArray } from "@repo/db/drizzle-orm";
 import { ORPCError } from "@orpc/server";
 import { computeSettlement } from "../utils/cost";
+import { startOfUtcMonth } from "../utils/month";
+
+export { startOfUtcMonth };
 
 // ============================================================================
 // Balance Operations
@@ -32,11 +35,104 @@ export async function hasEnoughCredits(
 }
 
 // ============================================================================
+// Monthly spending cap
+// ============================================================================
+
+/** Handle that can run a select: the shared `db` or a transaction. */
+type Queryable = Pick<typeof db, "select">;
+
+/**
+ * Month-to-date spend of an organization (UTC calendar month): minus the sum of
+ * `usage` and `refund` transactions, so settlement refunds give spend back.
+ * Top-ups and admin adjustments do not count.
+ */
+export async function getMonthToDateSpend(
+	orgId: string,
+	tx: Queryable = db,
+): Promise<number> {
+	const [row] = await tx
+		.select({
+			spent: sql<string>`coalesce(-sum(${creditTransaction.amount}), 0)`,
+		})
+		.from(creditTransaction)
+		.where(
+			and(
+				eq(creditTransaction.organizationId, orgId),
+				inArray(creditTransaction.type, ["usage", "refund"]),
+				gte(creditTransaction.createdAt, startOfUtcMonth(new Date())),
+			),
+		);
+
+	return Number(row?.spent ?? 0);
+}
+
+/** Monthly spending cap of an organization, or null when there is none. */
+export async function getMonthlyCap(orgId: string): Promise<number | null> {
+	const [org] = await db
+		.select({ cap: organization.creditsMonthlyCap })
+		.from(organization)
+		.where(eq(organization.id, orgId));
+
+	return org?.cap == null ? null : Number(org.cap);
+}
+
+/** Set the monthly spending cap, or clear it with null. */
+export async function setMonthlyCap(
+	orgId: string,
+	cap: number | null,
+): Promise<number | null> {
+	const [updated] = await db
+		.update(organization)
+		.set({ creditsMonthlyCap: cap === null ? null : toNumeric(cap) })
+		.where(eq(organization.id, orgId))
+		.returning({ cap: organization.creditsMonthlyCap });
+
+	if (!updated)
+		throw new ORPCError("NOT_FOUND", {
+			message: `Organization not found: ${orgId}`,
+		});
+
+	return updated.cap == null ? null : Number(updated.cap);
+}
+
+/**
+ * Fast-fail gate for the middleware: not enough balance for `minimum`, or the
+ * monthly cap is already used up. Not atomic; reserveCredits() is the hard check.
+ */
+export async function checkSpendGate(
+	orgId: string,
+	minimum: number,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+	const [org] = await db
+		.select({
+			balance: organization.creditsBalance,
+			cap: organization.creditsMonthlyCap,
+		})
+		.from(organization)
+		.where(eq(organization.id, orgId));
+
+	if (Number(org?.balance ?? 0) < minimum) {
+		return {
+			ok: false,
+			message: "Insufficient credits. Please top up your organization's balance.",
+		};
+	}
+
+	if (org?.cap != null && (await getMonthToDateSpend(orgId)) >= Number(org.cap)) {
+		return { ok: false, message: MONTHLY_CAP_MESSAGE };
+	}
+
+	return { ok: true };
+}
+
+// ============================================================================
 // Credit Mutations (atomic)
 // ============================================================================
 
 // Credit columns are numeric(18,8)
 const toNumeric = (amount: number) => amount.toFixed(8);
+
+const MONTHLY_CAP_MESSAGE = "Monthly spending cap reached for this organization";
 
 /** Transaction handle passed to `db.transaction` callbacks. */
 export type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -195,7 +291,13 @@ async function addCreditsIn(
 
 /**
  * Hold `amount` credits before doing paid work.
- * Throws FORBIDDEN when the balance does not cover it.
+ * Throws FORBIDDEN when the balance does not cover it or the organization's
+ * monthly spending cap would be exceeded.
+ *
+ * The organization row is locked for the transaction, so concurrent
+ * reservations of one organization run one at a time and cannot overshoot the
+ * cap. Settlement shortfall charges and already-paid embedding charges are not
+ * capped: that work is done, same as the balance rule.
  */
 export async function reserveCredits(input: {
 	orgId: string;
@@ -206,12 +308,27 @@ export async function reserveCredits(input: {
 }): Promise<CreditReservation> {
 	const { orgId, userId, amount, description, referenceId } = input;
 
-	const result = await deductCredits({
-		orgId,
-		userId,
-		amount,
-		description,
-		referenceId,
+	const result = await db.transaction(async (tx) => {
+		const [org] = await tx
+			.select({ cap: organization.creditsMonthlyCap })
+			.from(organization)
+			.where(eq(organization.id, orgId))
+			.for("update");
+
+		if (org?.cap != null) {
+			const spent = await getMonthToDateSpend(orgId, tx);
+			if (spent + amount > Number(org.cap)) {
+				throw new ORPCError("FORBIDDEN", { message: MONTHLY_CAP_MESSAGE });
+			}
+		}
+
+		return deductCreditsIn(tx, {
+			orgId,
+			userId,
+			amount,
+			description,
+			referenceId,
+		});
 	});
 
 	if (!result) {
@@ -250,7 +367,8 @@ export async function settleReservation(
 				orgId: reservation.orgId,
 				userId: reservation.userId,
 				amount: settlement.amount,
-				type: "adjustment",
+				// "refund", not "adjustment": it must count against month-to-date spend
+				type: "refund",
 				description: `${label} settlement refund`,
 				referenceId: ref,
 			});
