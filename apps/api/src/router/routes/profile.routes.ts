@@ -19,11 +19,13 @@ import { ragProfileInsertSchema, ragProfileUpdateSchema } from "@repo/db/types";
 import {
 	DEFAULT_CHUNK_OVERLAP,
 	DEFAULT_CHUNK_SIZE,
+	isAcceptableModelChange,
 	isValidChunkOverlap,
 	profileSettingsShape,
 } from "../../utils/profile_schema";
 
 const OVERLAP_MESSAGE = "chunkOverlap must be smaller than chunkSize";
+const UNSUPPORTED_MODEL_MESSAGE = "Unsupported model";
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
@@ -54,7 +56,11 @@ export const profileRoutes = {
 							p.chunkOverlap ?? DEFAULT_CHUNK_OVERLAP,
 						),
 					{ message: OVERLAP_MESSAGE, path: ["chunkOverlap"] },
-				),
+				)
+				.refine((p) => isAcceptableModelChange(p.model), {
+					message: UNSUPPORTED_MODEL_MESSAGE,
+					path: ["model"],
+				}),
 		)
 		.handler(async ({ input, context }) => {
 			const profile = await createProfile({
@@ -149,6 +155,14 @@ export const profileRoutes = {
 				)
 			) {
 				throw new ORPCError("BAD_REQUEST", { message: OVERLAP_MESSAGE });
+			}
+
+			// Only a changed model is checked: one OpenRouter has since delisted
+			// must not block edits to the rest of the profile
+			if (!isAcceptableModelChange(input.data.model, existing.model)) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: UNSUPPORTED_MODEL_MESSAGE,
+				});
 			}
 
 			// Vectors of different embedding models are not comparable: re-index the

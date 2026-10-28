@@ -23,10 +23,8 @@ import {
 } from "../../utils/history";
 import { chatProcedure, publicProcedure } from "../middleware";
 import { env } from "../../config/env";
-import {
-	OPENROUTER_AI_MODELS,
-	OPENROUTER_EMBEDDING_MODELS,
-} from "@repo/llm/openrouter/models";
+import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
+import { listChatModels } from "../../services/model-catalog.service";
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
@@ -43,6 +41,8 @@ const queryOptionsSchema = z
 		scoreThreshold: z.number().min(0).max(1).optional(),
 		documentId: z.string().optional(),
 		source: z.string().optional(),
+		// Only documents whose source starts with this, e.g. "https://example.com/en/"
+		sourcePrefix: z.string().min(1).max(512).optional(),
 		profileId: z.string().optional(),
 	})
 	.optional();
@@ -262,6 +262,7 @@ export const chatRoutes = {
 				filter: {
 					documentId: options?.documentId,
 					source: options?.source,
+					sourcePrefix: options?.sourcePrefix,
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
@@ -318,6 +319,7 @@ export const chatRoutes = {
 				filter: {
 					documentId: options?.documentId,
 					source: options?.source,
+					sourcePrefix: options?.sourcePrefix,
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
@@ -371,6 +373,7 @@ export const chatRoutes = {
 				filter: {
 					documentId: options?.documentId,
 					source: options?.source,
+					sourcePrefix: options?.sourcePrefix,
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
@@ -411,7 +414,7 @@ export const chatRoutes = {
 			method: "GET",
 			path: `${PREFIX}/chat/models`,
 			description:
-				"Get available models. Use `type=embedding` to fetch embedding models, defaults to `chat`.",
+				"Get available models. Use `type=embedding` to fetch embedding models, defaults to `chat`. Chat models are the current OpenRouter list, newest first; prices are USD per 1M tokens.",
 		})
 		.input(
 			z.object({
@@ -425,6 +428,9 @@ export const chatRoutes = {
 				models: z.array(
 					z.object({
 						id: z.string(),
+						name: z.string(),
+						// Unix seconds; 0 when the model comes from the static list
+						created: z.number(),
 						inputPrice: z.number(),
 						outputPrice: z.number(),
 						contextLength: z.number(),
@@ -436,17 +442,22 @@ export const chatRoutes = {
 		.handler(async ({ input }) => {
 			const { type, sortType, sortOrder } = input;
 
+			// Chat models come newest first from the catalog
 			const models =
 				type === "embedding"
 					? OPENROUTER_EMBEDDING_MODELS.map((model) => ({
 							id: model.id,
+							name: model.id,
+							created: 0,
 							inputPrice: model.inputPrice,
 							outputPrice: model.outputPrice,
 							contextLength: model.contextLength,
 							dimensions: model.dimensions,
 						}))
-					: OPENROUTER_AI_MODELS.map((model) => ({
+					: listChatModels().map((model) => ({
 							id: model.id,
+							name: model.name,
+							created: model.created,
 							inputPrice: model.inputPrice,
 							outputPrice: model.outputPrice,
 							contextLength: model.contextLength,

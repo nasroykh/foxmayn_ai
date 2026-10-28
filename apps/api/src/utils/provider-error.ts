@@ -30,3 +30,41 @@ export const toChatProviderError = (error: unknown): ORPCError<string, unknown> 
 		message: "The AI provider is temporarily unavailable. Try again shortly.",
 	});
 };
+
+const NO_ANSWER_MESSAGE = "The model returned no answer";
+
+/**
+ * The model finished without any text, e.g. reasoning used the whole output
+ * budget. Same status as a provider failure; the call is still billed.
+ */
+export const noAnswerError = (finishReason?: string): ORPCError<string, unknown> =>
+	new ORPCError("BAD_GATEWAY", {
+		message: NO_ANSWER_MESSAGE,
+		data: finishReason ? { finishReason } : undefined,
+	});
+
+/** The answer text, or a no-answer error when it is empty or blank. */
+export const requireAnswer = (text: string, finishReason?: string): string => {
+	if (!text.trim()) throw noAnswerError(finishReason);
+	return text;
+};
+
+/**
+ * Pass a streamed answer through, then fail when it held no text.
+ * `onAccepted` runs on every chunk and once at the end, before any error, so
+ * the caller knows the provider accepted the call and bills it.
+ */
+export async function* requireStreamedAnswer(
+	stream: AsyncIterable<string>,
+	onAccepted: () => void,
+): AsyncGenerator<string> {
+	let answered = false;
+	for await (const delta of stream) {
+		onAccepted();
+		if (!delta) continue;
+		if (delta.trim()) answered = true;
+		yield delta;
+	}
+	onAccepted();
+	if (!answered) throw noAnswerError();
+}

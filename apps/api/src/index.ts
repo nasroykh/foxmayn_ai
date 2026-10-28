@@ -8,7 +8,7 @@ import { closeQueues } from "./jobs";
 import { registerPlugins } from "./plugins/index";
 import { registerHealth } from "./plugins/health";
 import { initSuperAdmin } from "./plugins/auth";
-import { initModelPricing } from "./services/model-pricing.service";
+import { initModelCatalog } from "./services/model-catalog.service";
 
 // Compose/Kubernetes should give the container at least this long to stop
 const SHUTDOWN_TIMEOUT_MS = 25_000;
@@ -69,9 +69,9 @@ const start = async () => {
 		console.log("🚀 Starting server initialization...");
 		await initDB();
 
-		// Initialize model pricing cache (seeds from static data, hydrates from Redis,
-		// then fires a non-blocking refresh from OpenRouter API)
-		await initModelPricing(redis);
+		// Load the chat model list (Redis copy, else static), then a
+		// non-blocking refresh from the OpenRouter API when it is a day old
+		await initModelCatalog(redis);
 
 		await initSuperAdmin();
 

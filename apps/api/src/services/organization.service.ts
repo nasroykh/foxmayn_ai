@@ -2,6 +2,7 @@ import { db, member, organization } from "@repo/db";
 import { and, asc, count, eq, ilike, or, sql } from "@repo/db/drizzle-orm";
 import { auth } from "../config/auth";
 import { createTtlCache } from "../router/access";
+import { escapeLike } from "../utils/sql";
 
 // A removed member keeps access for up to this long
 const MEMBERSHIP_CACHE_TTL_MS = 15_000;
@@ -184,8 +185,6 @@ export async function rejectInvitation(invitationId: string, headers: Headers) {
 // Admin
 // ============================================================================
 
-/** Escape LIKE wildcards so a search term is matched literally. */
-const escapeLike = (value: string) => value.replace(/[\\%_]/g, "\\$&");
 
 /**
  * Every organization, for platform admins (credits top-up picker).

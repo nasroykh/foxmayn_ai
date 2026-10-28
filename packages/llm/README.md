@@ -1,11 +1,13 @@
 # @repo/llm
 
-Thin wrapper over the OpenRouter SDK: chat (plain and streaming), embeddings, and the list of models the platform knows about.
+Thin wrapper over the OpenRouter SDK: chat (plain and streaming), embeddings, and a static model list.
 
 ## Entry points
 
 - `src/openrouter.ts`: `OpenRouterQuery` (chat, streaming and non-streaming) and `OpenRouterEmbed`. The client is created on first use and reports a clear error if the key is missing. Requests time out after 180 seconds and retry with backoff.
-- `src/data/openrouter_models.ts`: `OPENROUTER_AI_MODELS` and `OPENROUTER_EMBEDDING_MODELS`. Only these ids are accepted by the API. Exported as `@repo/llm/openrouter/models`.
+- `src/data/openrouter_models.ts`: `OPENROUTER_AI_MODELS` and `OPENROUTER_EMBEDDING_MODELS`. Exported as `@repo/llm/openrouter/models`.
+  - Embedding models: only these ids are accepted by the API.
+  - Chat models: the API accepts any priced model in the live OpenRouter list. This list is only the fallback until the first fetch, when neither OpenRouter nor the Redis copy is available.
 
 ## Updating the model list
 

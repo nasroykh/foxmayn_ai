@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { selectHistory } from "./history";
+import {
+	buildRetrievalQuery,
+	RETRIEVAL_QUERY_MAX_CHARS,
+	selectHistory,
+} from "./history";
 
 // one token per character keeps the arithmetic obvious
 const countTokens = (t: string) => t.length;
@@ -47,4 +51,64 @@ test("never replays stored system messages", () => {
 
 test("empty history", () => {
 	assert.deepEqual(selectHistory([], { countTokens }), []);
+});
+
+test("buildRetrievalQuery prepends the previous user turn", () => {
+	const history = [
+		{ role: "user" as const, content: "What is ffc?" },
+		{ role: "assistant" as const, content: "ffc is a CLI for Frappe." },
+	];
+	assert.equal(
+		buildRetrievalQuery("Est-ce qu'il marche sur Windows ?", history),
+		"What is ffc?\nEst-ce qu'il marche sur Windows ?",
+	);
+});
+
+test("buildRetrievalQuery uses the most recent user turn", () => {
+	const history = [
+		{ role: "user" as const, content: "first" },
+		{ role: "assistant" as const, content: "a" },
+		{ role: "user" as const, content: "  second  " },
+		{ role: "assistant" as const, content: "b" },
+	];
+	assert.equal(buildRetrievalQuery("third", history), "second\nthird");
+});
+
+test("buildRetrievalQuery returns the query alone without a previous user turn", () => {
+	assert.equal(buildRetrievalQuery("q", []), "q");
+	assert.equal(
+		buildRetrievalQuery("q", [{ role: "assistant", content: "hi" }]),
+		"q",
+	);
+	assert.equal(buildRetrievalQuery("q", [{ role: "user", content: "   " }]), "q");
+});
+
+test("buildRetrievalQuery caps the whole text, the query first", () => {
+	const long = "x".repeat(5000);
+	const result = buildRetrievalQuery("short", [{ role: "user", content: long }]);
+	assert.equal(result.length, RETRIEVAL_QUERY_MAX_CHARS);
+	assert.ok(result.endsWith("\nshort"));
+
+	// A query over the cap is cut for retrieval and used alone
+	const longQuery = "q".repeat(RETRIEVAL_QUERY_MAX_CHARS + 10);
+	assert.equal(
+		buildRetrievalQuery(longQuery, [{ role: "user", content: "prev" }]),
+		"q".repeat(RETRIEVAL_QUERY_MAX_CHARS),
+	);
+});
+
+test("buildRetrievalQuery never splits a surrogate pair", () => {
+	// The cut falls between the two halves of the emoji
+	const query = "a".repeat(RETRIEVAL_QUERY_MAX_CHARS - 1) + "😀";
+	const result = buildRetrievalQuery(query, []);
+	assert.equal(result, "a".repeat(RETRIEVAL_QUERY_MAX_CHARS - 1));
+
+	const previous = "😀".repeat(10);
+	// Room for the previous turn: 1000 - 994 - 1 = 5 units, so 2 emoji
+	const withContext = buildRetrievalQuery("b".repeat(994), [
+		{ role: "user", content: previous },
+	]);
+	assert.ok(withContext.startsWith("😀😀\n"));
+	assert.ok(withContext.length <= RETRIEVAL_QUERY_MAX_CHARS);
+	assert.doesNotMatch(withContext, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
 });

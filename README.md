@@ -46,7 +46,7 @@ In production only `app` is published to the host. See [DOCKER.md](DOCKER.md).
 | `apps/worker` | Process that runs the BullMQ workers ([README](apps/worker/README.md)) |
 | `apps/app` | React frontend ([README](apps/app/README.md)) |
 | `packages/db` | Drizzle schema, migrations, DB client ([README](packages/db/README.md)) |
-| `packages/llm` | OpenRouter wrapper and known model list ([README](packages/llm/README.md)) |
+| `packages/llm` | OpenRouter wrapper and static model list ([README](packages/llm/README.md)) |
 | `packages/qdrant` | Qdrant client helpers ([README](packages/qdrant/README.md)) |
 
 ## Quick start (local development)
@@ -83,7 +83,7 @@ Run from the repository root.
 | `pnpm db:push` | Push the schema without a migration (local experiments only) |
 | `pnpm db:studio` | Open Drizzle Studio |
 | `pnpm auth:generate` | Regenerate the Better Auth tables in `packages/db` |
-| `pnpm models:generate` | Refresh the OpenRouter model list in `packages/llm` |
+| `pnpm models:generate` | Refresh prices in the static model list in `packages/llm` |
 | `pnpm models:eval-multilingual` | Rank the embedding models on Arabic questions against English text (needs `OPENROUTER_API_KEY`) |
 
 ## API documentation

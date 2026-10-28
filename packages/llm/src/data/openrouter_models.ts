@@ -1,6 +1,8 @@
 // prettier-ignore
 
 export const OPENROUTER_AI_MODELS = [
+	{ id: "anthropic/claude-haiku-5.5", inputPrice: 0.1, outputPrice: 0.5, contextLength: 1000000 },
+	{ id: "openai/gpt-6-luna", inputPrice: 0.1, outputPrice: 0.5, contextLength: 1050000 },
 	{ id: "anthropic/claude-opus-4.5", inputPrice: 5, outputPrice: 25, contextLength: 200000 },
 	{ id: "anthropic/claude-haiku-4.5", inputPrice: 1, outputPrice: 5, contextLength: 200000 },
 	{ id: "anthropic/claude-sonnet-4.5", inputPrice: 3, outputPrice: 15, contextLength: 1000000 },

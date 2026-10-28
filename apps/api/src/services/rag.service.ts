@@ -4,8 +4,6 @@ import { searchVectors } from "@repo/qdrant";
 import {
 	eq,
 	and,
-	or,
-	isNull,
 	inArray,
 	desc,
 	count,
@@ -18,7 +16,11 @@ import {
 } from "@repo/llm/openrouter";
 import { ORPCError } from "@orpc/server";
 import { describeError } from "../config/redact";
-import { toChatProviderError } from "../utils/provider-error";
+import {
+	requireAnswer,
+	requireStreamedAnswer,
+	toChatProviderError,
+} from "../utils/provider-error";
 import { getProfile, getDefaultProfile } from "./profile.service";
 import {
 	addIndexDocumentJob,
@@ -41,6 +43,10 @@ import { fetchUrlAsFile } from "../utils/url_fetch";
 import { buildSystemPrompt } from "../utils/system_prompts";
 import { qdrant, ensureCollection, type VectorPayload } from "./qdrant.shared";
 import { buildChunkFilter } from "./qdrant.filter";
+import {
+	profileDocumentsFilter,
+	searchableDocumentsFilter,
+} from "./document.filter";
 import { logUsageAndDeduct, recordUsage } from "./usage.service";
 import {
 	reserveCredits,
@@ -53,9 +59,11 @@ import {
 	resolveChatCost,
 	CREDIT_EPSILON,
 } from "../utils/cost";
+import { buildRetrievalQuery } from "../utils/history";
+import { DEFAULT_CHAT_MODEL } from "./model-catalog.service";
+import { DEFAULT_REASONING_EFFORT } from "../utils/profile_schema";
 import { estimateTokens } from "./chunking.service";
 
-const DEFAULT_CHAT_MODEL = "google/gemini-2.5-flash-lite";
 const DEFAULT_MAX_TOKENS = 2048;
 // Per-message framing overhead of chat formats, in tokens
 const MESSAGE_OVERHEAD_TOKENS = 4;
@@ -80,6 +88,8 @@ export interface QueryOptions {
 	filter?: {
 		documentId?: string;
 		source?: string;
+		// Only documents whose source starts with this
+		sourcePrefix?: string;
 	};
 	// Organization billed for the call
 	organizationId: string;
@@ -380,18 +390,6 @@ export const deleteDocument = async (
  * profile when that profile is deleted, and must not join what a chat-only key
  * bound to the default profile can read.
  */
-const profileDocumentsFilter = (
-	profile: { id: string; isDefault: boolean },
-	userId: string,
-	strict = false,
-) =>
-	and(
-		eq(document.userId, userId),
-		profile.isDefault && !strict
-			? or(eq(document.profileId, profile.id), isNull(document.profileId))
-			: eq(document.profileId, profile.id),
-	);
-
 /** Number of documents a re-index of this profile would process. */
 export const countProfileDocuments = async (
 	profile: { id: string; isDefault: boolean },
@@ -528,19 +526,19 @@ const searchWithProfile = async (
 	// Documents indexed with another embedding model live in another collection.
 	const scopeToProfile =
 		profile !== null && (options.strictProfile || !filter?.documentId);
+	// A source prefix narrows that set further (e.g. one language of a site)
 	const searchable = await db
 		.select({ id: document.id, title: document.title, source: document.source })
 		.from(document)
 		.where(
-			and(
-				scopeToProfile
-					? profileDocumentsFilter(profile, userId, options.strictProfile)
-					: eq(document.userId, userId),
-				eq(document.embeddingModel, embeddingModelId),
-				filter?.documentId
-					? eq(document.id, filter.documentId)
-					: eq(document.status, "indexed"),
-			),
+			searchableDocumentsFilter({
+				userId,
+				embeddingModel: embeddingModelId,
+				profile: scopeToProfile ? profile : null,
+				strictProfile: options.strictProfile,
+				documentId: filter?.documentId,
+				sourcePrefix: filter?.sourcePrefix,
+			}),
 		);
 	// Early exit: nothing indexed here yet, skip the embedding API call
 	if (searchable.length === 0) return [];
@@ -566,7 +564,10 @@ const searchWithProfile = async (
 	const qdrantFilter = buildChunkFilter({
 		userId,
 		documentId: filter?.documentId,
-		documentIds: scopeToProfile ? searchable.map((d) => d.id) : undefined,
+		documentIds:
+			scopeToProfile || filter?.sourcePrefix
+				? searchable.map((d) => d.id)
+				: undefined,
 		source: filter?.source,
 	});
 
@@ -657,11 +658,17 @@ const prepareChat = async (
 			message: `Unsupported model: ${modelId}`,
 		});
 
-	const sources = await searchWithProfile(query, profile, options);
+	const messages = options.messages ?? [];
+
+	// A follow-up is searched together with the previous question
+	const sources = await searchWithProfile(
+		buildRetrievalQuery(query, messages),
+		profile,
+		options,
+	);
 
 	const context = sources.map((r, i) => `[${i + 1}] ${r.content}`).join("\n\n");
 	const systemPrompt = buildSystemPrompt(profile, context);
-	const messages = options.messages ?? [];
 
 	// Tokenize the full prompt that will be sent
 	const promptTokens =
@@ -693,7 +700,9 @@ const prepareChat = async (
 		maxTokens,
 		temperature: profile?.temperature ?? 1.0,
 		topP: profile?.topP,
-		reasoning: (profile?.reasoningEffort as ReasoningEffort | undefined) ?? "none",
+		reasoning:
+			(profile?.reasoningEffort as ReasoningEffort | undefined) ??
+			DEFAULT_REASONING_EFFORT,
 		systemPrompt,
 		messages,
 		sources,
@@ -798,7 +807,7 @@ export const queryRAG = async (
 	let providerCalled = false;
 	let usage: AIUsage | null = null;
 	try {
-		let result: { text: string; usage: AIUsage };
+		let result: { text: string; usage: AIUsage; finishReason?: string };
 		try {
 			result = await OpenRouterQuery(
 				{
@@ -821,7 +830,8 @@ export const queryRAG = async (
 		usage = result.usage;
 
 		return {
-			answer: result.text,
+			// An empty answer is billed (usage is set) and reported as a 502
+			answer: requireAnswer(result.text, result.finishReason),
 			sources: prepared.sources,
 			usage: result.usage,
 		};
@@ -877,15 +887,14 @@ export async function* queryRAGStream(
 			);
 			getUsage = call.getUsage;
 
-			for await (const delta of call.stream) {
-				// First chunk: the provider accepted the request
+			// Any chunk, or the end of the stream, means the provider accepted the
+			// request. An answer without text ends in an error event, still billed.
+			const accepted = () => {
 				providerCalled = true;
-				if (delta) {
-					yield { type: "token", data: delta };
-				}
+			};
+			for await (const delta of requireStreamedAnswer(call.stream, accepted)) {
+				yield { type: "token", data: delta };
 			}
-			// Finished without any chunk (empty answer): still accepted
-			providerCalled = true;
 		} catch (err) {
 			// Consumer abort/close arrives as generator return, not a throw
 			console.error("[RAG] Provider stream failed:", describeError(err));

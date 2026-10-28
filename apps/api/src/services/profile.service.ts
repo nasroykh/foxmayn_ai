@@ -2,6 +2,7 @@ import { db, ragProfile } from "@repo/db";
 import { eq, desc, and, ne } from "@repo/db/drizzle-orm";
 import { type RagProfileInsert, type RagProfileUpdate } from "@repo/db/types";
 import { randomUUID } from "node:crypto";
+import { withProfileDefaults } from "../utils/profile_schema";
 
 /**
  * Create a new RAG profile
@@ -22,7 +23,7 @@ export const createProfile = async (
 		}
 		const [newProfile] = await tx
 			.insert(ragProfile)
-			.values({ ...data, id })
+			.values({ ...withProfileDefaults(data), id })
 			.returning();
 		return newProfile;
 	});

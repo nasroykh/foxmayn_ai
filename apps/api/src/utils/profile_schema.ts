@@ -1,8 +1,9 @@
 import { z } from "zod";
+import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
 import {
-	OPENROUTER_AI_MODELS,
-	OPENROUTER_EMBEDDING_MODELS,
-} from "@repo/llm/openrouter/models";
+	DEFAULT_CHAT_MODEL,
+	isListedChatModel,
+} from "../services/model-catalog.service";
 
 /**
  * Bounds for the user-editable RAG profile settings. These are spread over the
@@ -13,10 +14,6 @@ import {
 export const DEFAULT_CHUNK_SIZE = 500;
 export const DEFAULT_CHUNK_OVERLAP = 50;
 
-const chatModelIds = OPENROUTER_AI_MODELS.map((m) => m.id) as [
-	string,
-	...string[],
-];
 const embeddingModelIds = OPENROUTER_EMBEDDING_MODELS.map((m) => m.id) as [
 	string,
 	...string[],
@@ -42,6 +39,24 @@ export const PROFILE_REASONING_EFFORTS = [
 	"xhigh",
 ] as const;
 
+// Reasoning effort of a new profile that does not choose one
+export const DEFAULT_REASONING_EFFORT: (typeof PROFILE_REASONING_EFFORTS)[number] =
+	"low";
+
+/**
+ * Values a new profile gets when the caller leaves them out. Set here, not as
+ * column defaults, so the defaults can change without a migration.
+ */
+export const withProfileDefaults = <
+	T extends { model?: string | null; reasoningEffort?: string | null },
+>(
+	data: T,
+): T & { model: string; reasoningEffort: string } => ({
+	...data,
+	model: data.model ?? DEFAULT_CHAT_MODEL,
+	reasoningEffort: data.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+});
+
 export const profileSettingsShape = {
 	name: z.string().trim().min(1).max(100).optional(),
 	description: z.string().max(1000).nullish(),
@@ -57,7 +72,8 @@ export const profileSettingsShape = {
 	topK: z.number().int().min(1).max(50).optional(),
 
 	// Generation
-	model: z.enum(chatModelIds).optional(),
+	// Checked against the model list with isAcceptableModelChange
+	model: z.string().trim().min(1).max(200).optional(),
 	temperature: z.number().min(0).max(2).optional(),
 	topP: z.number().min(0).max(1).optional(),
 	maxTokens: z.number().int().min(1).max(32000).optional(),
@@ -73,6 +89,16 @@ export const profileSettingsShape = {
 	systemPrompt: z.string().max(8000).nullish(),
 	customInstructions: z.array(z.string().max(500)).max(20).optional(),
 };
+
+/**
+ * A profile may newly choose only a model OpenRouter lists now. Keeping the
+ * stored model is always allowed, so a delisted model never blocks other edits.
+ */
+export const isAcceptableModelChange = (
+	model: string | undefined,
+	storedModel?: string,
+): boolean =>
+	model === undefined || model === storedModel || isListedChatModel(model);
 
 /** Overlap must leave room for new text in every chunk. */
 export const isValidChunkOverlap = (
