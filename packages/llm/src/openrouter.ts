@@ -223,6 +223,177 @@ export function OpenRouterQuery(
 }
 
 // ============================================================================
+// OpenRouterToolTurn — one streamed model call that may request tool calls
+// ============================================================================
+
+/** A function the model may call. `parameters` is sent exactly as written. */
+export type ToolDefinition = {
+	name: string;
+	description: string;
+	parameters: Record<string, unknown>;
+};
+
+/**
+ * One item of the model input in Responses API format: a message
+ * (`{ role, content }`), a call result (`{ type: "function_call_output",
+ * callId, output }`), or an output item of an earlier call, replayed as
+ * returned (reasoning and function calls included).
+ */
+export type ToolTurnItem = Record<string, unknown>;
+
+export type ToolCallRequest = { id: string; name: string; arguments: string };
+
+export type ToolTurnEvent =
+	// The provider answered the request (HTTP 200): from here on the call is billed
+	| { type: "accepted" }
+	| { type: "text"; delta: string }
+	| {
+			type: "completed";
+			// Output items, to replay in the next call's input
+			output: ToolTurnItem[];
+			toolCalls: ToolCallRequest[];
+			usage: AIUsage | null;
+			// Why the response is incomplete (e.g. "max_output_tokens"), when it is
+			finishReason?: string;
+	  };
+
+type StreamEvent = { type: string; [k: string]: unknown };
+
+const camelCase = (key: string): string =>
+	key.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+
+/** Wire (snake_case) JSON to the SDK's camelCase shape. */
+const camelizeKeys = (value: unknown): unknown =>
+	Array.isArray(value)
+		? value.map(camelizeKeys)
+		: value && typeof value === "object"
+			? Object.fromEntries(
+					Object.entries(value).map(([k, v]) => [camelCase(k), camelizeKeys(v)]),
+				)
+			: value;
+
+/**
+ * The SDK turns an event or item its schema does not know (e.g. a field
+ * OpenRouter added or dropped) into `{ type: "UNKNOWN", raw }` instead of
+ * throwing. Read those from the raw wire JSON so schema drift does not break
+ * every call.
+ */
+const known = <T>(value: T): T => {
+	const v = value as { type?: unknown; raw?: unknown } | null;
+	return v && v.type === "UNKNOWN" && v.raw && typeof v.raw === "object"
+		? (camelizeKeys(v.raw) as T)
+		: value;
+};
+type CompletedResponse = {
+	output?: ToolTurnItem[];
+	usage?: { inputTokens?: number; outputTokens?: number } | null;
+	incompleteDetails?: { reason?: string | null } | null;
+	error?: { code?: string | null } | null;
+};
+
+/**
+ * Streams one model call with function tools the caller runs itself (nothing
+ * is executed here). Uses the Responses endpoint directly so tool schemas are
+ * sent as written, at most one call per turn (parallel tool calls off).
+ *
+ * Yields text deltas, then one `completed` event with the output items, the
+ * requested calls and the usage of `response.completed`. A stream that fails
+ * or ends without completing throws. Events are never logged: they carry the
+ * call arguments.
+ */
+export async function* OpenRouterToolTurn(
+	settings: Omit<AISettings, "stream">,
+	input: ToolTurnItem[],
+	tools: ToolDefinition[],
+	toolChoice: "auto" | "none",
+): AsyncGenerator<ToolTurnEvent> {
+	if (input.length === 0) throw new Error("Input is required");
+
+	const stream = await getClient().responses.send({
+		responsesRequest: {
+			// Our items are valid Responses input; the SDK validates them on send
+			input: input as never,
+			model: settings.model || DEFAULT_AI_SETTINGS.model,
+			temperature: settings.temperature ?? DEFAULT_AI_SETTINGS.temperature,
+			topP: settings.topP ?? DEFAULT_AI_SETTINGS.topP,
+			maxOutputTokens: settings.maxTokens || DEFAULT_AI_SETTINGS.maxTokens,
+			reasoning: {
+				enabled: settings.reasoning
+					? settings.reasoning !== "none"
+					: DEFAULT_AI_SETTINGS.reasoning !== "none",
+				effort: settings.reasoning || DEFAULT_AI_SETTINGS.reasoning,
+			},
+			...(tools.length > 0 && {
+				tools: tools.map((t) => ({
+					type: "function" as const,
+					name: t.name,
+					description: t.description,
+					parameters: t.parameters,
+					strict: null,
+				})),
+				toolChoice,
+				parallelToolCalls: false,
+			}),
+			stream: true,
+		},
+	});
+
+	yield { type: "accepted" };
+	yield* readToolTurnStream(stream);
+}
+
+/**
+ * Turns Responses stream events into text deltas and one `completed` event.
+ * Throws on a failed response, an error event, or a stream that ends early.
+ */
+export async function* readToolTurnStream(
+	stream: AsyncIterable<unknown>,
+): AsyncGenerator<ToolTurnEvent> {
+	for await (const raw of stream) {
+		const event = known(raw) as StreamEvent;
+		switch (event.type) {
+			case "response.output_text.delta":
+				if (typeof event.delta === "string" && event.delta) {
+					yield { type: "text", delta: event.delta };
+				}
+				break;
+			case "response.completed":
+			case "response.incomplete": {
+				const response = event.response as CompletedResponse;
+				const output = (response.output ?? []).map(known);
+				const inputTokens = response.usage?.inputTokens ?? 0;
+				const outputTokens = response.usage?.outputTokens ?? 0;
+				yield {
+					type: "completed",
+					output,
+					toolCalls: output
+						.filter((item) => item.type === "function_call")
+						.map((item) => ({
+							id: String(item.callId),
+							name: String(item.name),
+							arguments: typeof item.arguments === "string" ? item.arguments : "",
+						})),
+					usage: response.usage
+						? { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens }
+						: null,
+					finishReason: response.incompleteDetails?.reason ?? undefined,
+				};
+				return;
+			}
+			case "response.failed": {
+				const response = event.response as CompletedResponse;
+				throw new Error(
+					`Model response failed (${response.error?.code ?? "unknown"})`,
+				);
+			}
+			case "error":
+				throw new Error(`Model stream error (${String(event.code ?? "unknown")})`);
+		}
+	}
+	throw new Error("Model stream ended before the response completed");
+}
+
+// ============================================================================
 // OpenRouterEmbed — returns usage alongside embeddings
 // ============================================================================
 
