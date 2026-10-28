@@ -10,6 +10,7 @@ Multi-tenant RAG monorepo (pnpm workspaces, Turborepo). Read [README.md](README.
 - `packages/db`: Drizzle schema (`src/models`), committed migrations (`drizzle/`), migrate script (`src/migrate.ts`).
 - `packages/llm`: OpenRouter client and the static model list (`src/data/openrouter_models.ts`), the fallback for chat models and the allow-list for embedding models.
 - `packages/qdrant`: Qdrant helpers.
+- `packages/rag-eval`: RAG evaluation harness, an HTTP client of a deployed API (`src/cli.ts`). No DB, Redis or Qdrant access.
 - `packages/eslint-config`, `packages/tsconfig`: shared lint and TS config.
 
 ## Commands
@@ -29,6 +30,7 @@ Run from the repository root.
 | `pnpm db:migrate` | Apply migrations |
 | `pnpm auth:generate` | Regenerate Better Auth tables |
 | `pnpm models:generate` | Refresh prices in the static model list |
+| `pnpm rag:eval --file cases.jsonl` | Retrieval metrics of a deployed API; `--answers` also judges answers (spends credits) |
 
 Run one workspace: `pnpm --filter @repo/api test`. There is no format script. Match the existing style.
 
