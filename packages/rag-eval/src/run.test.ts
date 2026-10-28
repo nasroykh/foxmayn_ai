@@ -280,3 +280,46 @@ test("--compare warns when k changed and lists added and removed cases", async (
 	assert.match(report, /k changed from 2 to 6/);
 	assert.match(report, /Cases added: 0, removed: 1/);
 });
+
+test("a case's source scope goes to both search and query", async () => {
+	const [scoped] = parseCases(
+		JSON.stringify({
+			id: "intl",
+			lang: "en",
+			question: "Prices?",
+			expected: ["https://x.com/en/pricing"],
+			options: { sourcePrefix: "https://x.com/en", excludeSourcePrefixes: ["https://x.com/en/dz"] },
+		}),
+	);
+	const { fetch, calls } = mockFetch((url) =>
+		url.endsWith("/chat/search")
+			? json({ results: [passage("https://x.com/en/pricing")] })
+			: json({ answer: "Pro is 10.", sources: [passage("https://x.com/en/pricing")] }),
+	);
+	const client = createFoxmaynClient({ baseUrl: "https://ai.example.com", apiKey: KEY, fetch, retry: noWait });
+	await runEval([scoped], {
+		client,
+		k: 6,
+		concurrency: 1,
+		judge: async () => ({ ok: true, verdict: { supported: "yes", citationsCorrect: true, answered: true, notes: "" } }),
+	});
+	const options = calls.map(
+		(c) => (JSON.parse(String(c.init.body)) as { options: Record<string, unknown> }).options,
+	);
+	assert.equal(options.length, 2);
+	for (const o of options) {
+		assert.equal(o.sourcePrefix, "https://x.com/en");
+		assert.deepEqual(o.excludeSourcePrefixes, ["https://x.com/en/dz"]);
+	}
+	assert.throws(
+		() =>
+			parseCases(
+				JSON.stringify({ ...scoped, options: { excludeSourcePrefixes: Array(9).fill("https://x.com/a") } }),
+			),
+		/Line 1: options\.excludeSourcePrefixes/,
+	);
+	assert.throws(
+		() => parseCases(JSON.stringify({ ...scoped, options: { excludeSourcePrefixes: [""] } })),
+		/Line 1: options\.excludeSourcePrefixes\.0/,
+	);
+});

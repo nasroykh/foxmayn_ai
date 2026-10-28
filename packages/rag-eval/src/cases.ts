@@ -14,6 +14,8 @@ const caseSchema = z
 		options: z
 			.object({
 				sourcePrefix: z.string().min(1).optional(),
+				// Same bounds as the API
+				excludeSourcePrefixes: z.array(z.string().min(1).max(512)).max(8).optional(),
 				limit: z.number().int().min(1).max(20).optional(),
 			})
 			.optional(),

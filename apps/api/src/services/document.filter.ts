@@ -1,4 +1,4 @@
-import { and, eq, isNull, like, or } from "@repo/db/drizzle-orm";
+import { and, eq, isNull, like, notLike, or } from "@repo/db/drizzle-orm";
 import { document } from "@repo/db/schema";
 import { escapeLike } from "../utils/sql";
 
@@ -21,7 +21,9 @@ export const profileDocumentsFilter = (
 /**
  * Documents a search may read: the profile's (or, without a profile, all of
  * the owner's), indexed with one embedding model. Every condition is AND-ed,
- * so `documentId` and `sourcePrefix` can only narrow the scope, never widen it.
+ * so `documentId`, `sourcePrefix` and `excludeSourcePrefixes` can only narrow
+ * the scope, never widen it. A document without a source matches no excluded
+ * prefix, so it stays (a bare NOT LIKE on NULL would drop it).
  */
 export const searchableDocumentsFilter = (options: {
 	userId: string;
@@ -30,6 +32,7 @@ export const searchableDocumentsFilter = (options: {
 	strictProfile?: boolean;
 	documentId?: string;
 	sourcePrefix?: string;
+	excludeSourcePrefixes?: string[];
 }) =>
 	and(
 		options.profile
@@ -46,4 +49,10 @@ export const searchableDocumentsFilter = (options: {
 		options.sourcePrefix
 			? like(document.source, `${escapeLike(options.sourcePrefix)}%`)
 			: undefined,
+		...(options.excludeSourcePrefixes ?? []).map((prefix) =>
+			or(
+				isNull(document.source),
+				notLike(document.source, `${escapeLike(prefix)}%`),
+			),
+		),
 	);

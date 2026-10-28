@@ -100,6 +100,8 @@ Browser users sign in with a session cookie. Programmatic clients send an API ke
 
 A chat-only key is bound to one knowledge base (choose "Chat only" when creating it). It can call `POST /chat/query`, `POST /chat/query/stream` and `POST /chat/search`, always with that profile, and every other route refuses it. It reads only the documents in that profile and continues only the conversations it started. A document uploaded without a profile goes to the default profile at upload time. Keep it on a server: a key in browser code can be copied and spend the organization's credits. Each key is rate limited to 100 requests per 5 minutes.
 
+The chat and search routes can narrow retrieval by document source in `options`. `sourcePrefix` keeps only documents whose source starts with it, for example `"https://example.com/en"`. `excludeSourcePrefixes` (up to 8 prefixes) drops documents whose source starts with any of them, for example `["https://example.com/en/dz"]`. Both are prefix matches with `%` and `_` taken literally, and they combine. Documents without a source are never excluded. These options only narrow the knowledge base; they never reach documents outside it.
+
 To keep a knowledge base in sync with a published file (for example `llms-full.txt`), call `POST /documents/import` with a full-access key and `{ "url": "https://...", "profileId": "...", "replace": true }`. The new document is indexed first. Older documents with the same source (the URL by default) in the same profile are deleted only after that succeeds. URL imports accept public https URLs only.
 
 ## Supported upload types

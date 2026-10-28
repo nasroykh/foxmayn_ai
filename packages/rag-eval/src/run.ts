@@ -42,7 +42,11 @@ const evaluateCase = async (c: EvalCase, deps: EvalDeps): Promise<CaseResult> =>
 		outOfScope: c.outOfScope,
 		failures: [],
 	};
-	const options = { sourcePrefix: c.options?.sourcePrefix, limit: c.options?.limit ?? deps.k };
+	const scope = {
+		sourcePrefix: c.options?.sourcePrefix,
+		excludeSourcePrefixes: c.options?.excludeSourcePrefixes,
+	};
+	const options = { ...scope, limit: c.options?.limit ?? deps.k };
 
 	// 1. Retrieval
 	if (!c.outOfScope) {
@@ -66,10 +70,7 @@ const evaluateCase = async (c: EvalCase, deps: EvalDeps): Promise<CaseResult> =>
 	// 2. Answer
 	let response;
 	try {
-		response = await deps.client.query(c.question, {
-			sourcePrefix: c.options?.sourcePrefix,
-			limit: c.options?.limit,
-		});
+		response = await deps.client.query(c.question, { ...scope, limit: c.options?.limit });
 	} catch (err) {
 		result.answer = { outcome: "error", error: message(err) };
 		result.failures.push(`answer: ${message(err)}`);
