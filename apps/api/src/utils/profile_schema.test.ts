@@ -1,11 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
+import { OPENROUTER_AI_MODELS } from "@repo/llm/openrouter/models";
 import {
+	DEFAULT_REASONING_EFFORT,
 	isAcceptableModelChange,
 	isValidChunkOverlap,
 	profileSettingsShape,
+	withProfileDefaults,
 } from "./profile_schema";
+import { DEFAULT_CHAT_MODEL } from "../services/model-catalog.service";
 
 const schema = z.object(profileSettingsShape);
 const ok = (v: unknown) => schema.safeParse(v).success;
@@ -71,3 +75,29 @@ test("chunk overlap must be smaller than chunk size", () => {
 	assert.equal(isValidChunkOverlap(100, 600), false);
 });
 
+
+test("new profiles default to Haiku 5.5 with low reasoning", () => {
+	assert.equal(DEFAULT_CHAT_MODEL, "anthropic/claude-haiku-5.5");
+	assert.equal(DEFAULT_REASONING_EFFORT, "low");
+	// The default must resolve even before the first OpenRouter fetch
+	assert.ok(OPENROUTER_AI_MODELS.some((m) => m.id === DEFAULT_CHAT_MODEL));
+
+	const bare: { name: string; model?: string } = { name: "kb" };
+	assert.deepEqual(withProfileDefaults(bare), {
+		name: "kb",
+		model: "anthropic/claude-haiku-5.5",
+		reasoningEffort: "low",
+	});
+	const unset: { name: string; model?: string; reasoningEffort: string | null } =
+		{ name: "kb", model: undefined, reasoningEffort: null };
+	assert.deepEqual(withProfileDefaults(unset), {
+		name: "kb",
+		model: "anthropic/claude-haiku-5.5",
+		reasoningEffort: "low",
+	});
+	// Explicit choices are kept, "none" included
+	assert.deepEqual(
+		withProfileDefaults({ model: "openai/gpt-6-luna", reasoningEffort: "none" }),
+		{ model: "openai/gpt-6-luna", reasoningEffort: "none" },
+	);
+});

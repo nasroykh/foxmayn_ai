@@ -64,8 +64,11 @@ type StoredCatalog = { fetchedAt: number; models: ChatModel[] };
 // Constants
 // ============================================================================
 
-/** Chat model of a profile that does not choose one (the `rag_profile.model` default). */
-export const DEFAULT_CHAT_MODEL = "google/gemini-2.5-flash-lite";
+/**
+ * Chat model of a new profile that does not choose one, and of chat without a
+ * profile. Must stay in the static list so it always resolves.
+ */
+export const DEFAULT_CHAT_MODEL = "anthropic/claude-haiku-5.5";
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const REDIS_KEY = "openrouter:model_catalog";

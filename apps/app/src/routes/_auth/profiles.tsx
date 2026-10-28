@@ -71,6 +71,8 @@ type Profile = RouterOutputs["profiles"]["listProfiles"]["profiles"][number];
 type CreateProfileInput = RouterInputs["profiles"]["createProfile"];
 type ModelInfo = RouterOutputs["chat"]["getModels"]["models"][number];
 
+const DEFAULT_CHAT_MODEL = "anthropic/claude-haiku-5.5";
+
 // Bounds mirror apps/api/src/utils/profile_schema.ts
 const profileFormSchema = z
 	.object({
@@ -432,7 +434,9 @@ function ProfileFormDialog({
 		defaultValues: {
 			name: defaultValues?.name ?? "",
 			description: defaultValues?.description ?? "",
-			model: defaultValues?.model ?? undefined,
+			// New profiles start on the API default (DEFAULT_CHAT_MODEL in
+			// apps/api/src/services/model-catalog.service.ts); reasoning defaults to low there
+			model: defaultValues?.model ?? DEFAULT_CHAT_MODEL,
 			embeddingModel: defaultValues?.embeddingModel ?? undefined,
 			systemPrompt: defaultValues?.systemPrompt ?? "",
 			language: defaultValues?.language ?? "auto",

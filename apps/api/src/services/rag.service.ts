@@ -57,6 +57,7 @@ import {
 } from "../utils/cost";
 import { buildRetrievalQuery } from "../utils/history";
 import { DEFAULT_CHAT_MODEL } from "./model-catalog.service";
+import { DEFAULT_REASONING_EFFORT } from "../utils/profile_schema";
 import { estimateTokens } from "./chunking.service";
 
 const DEFAULT_MAX_TOKENS = 2048;
@@ -695,7 +696,9 @@ const prepareChat = async (
 		maxTokens,
 		temperature: profile?.temperature ?? 1.0,
 		topP: profile?.topP,
-		reasoning: (profile?.reasoningEffort as ReasoningEffort | undefined) ?? "none",
+		reasoning:
+			(profile?.reasoningEffort as ReasoningEffort | undefined) ??
+			DEFAULT_REASONING_EFFORT,
 		systemPrompt,
 		messages,
 		sources,

@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
-import { isListedChatModel } from "../services/model-catalog.service";
+import {
+	DEFAULT_CHAT_MODEL,
+	isListedChatModel,
+} from "../services/model-catalog.service";
 
 /**
  * Bounds for the user-editable RAG profile settings. These are spread over the
@@ -35,6 +38,24 @@ export const PROFILE_REASONING_EFFORTS = [
 	"high",
 	"xhigh",
 ] as const;
+
+// Reasoning effort of a new profile that does not choose one
+export const DEFAULT_REASONING_EFFORT: (typeof PROFILE_REASONING_EFFORTS)[number] =
+	"low";
+
+/**
+ * Values a new profile gets when the caller leaves them out. Set here, not as
+ * column defaults, so the defaults can change without a migration.
+ */
+export const withProfileDefaults = <
+	T extends { model?: string | null; reasoningEffort?: string | null },
+>(
+	data: T,
+): T & { model: string; reasoningEffort: string } => ({
+	...data,
+	model: data.model ?? DEFAULT_CHAT_MODEL,
+	reasoningEffort: data.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+});
 
 export const profileSettingsShape = {
 	name: z.string().trim().min(1).max(100).optional(),
