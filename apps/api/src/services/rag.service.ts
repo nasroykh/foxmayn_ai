@@ -61,10 +61,12 @@ import {
 } from "../utils/cost";
 import { buildRetrievalQuery } from "../utils/history";
 import { DEFAULT_CHAT_MODEL } from "./model-catalog.service";
-import { DEFAULT_REASONING_EFFORT } from "../utils/profile_schema";
+import {
+	DEFAULT_MAX_TOKENS,
+	DEFAULT_REASONING_EFFORT,
+} from "../utils/profile_schema";
 import { estimateTokens } from "./chunking.service";
 
-const DEFAULT_MAX_TOKENS = 2048;
 // Per-message framing overhead of chat formats, in tokens
 const MESSAGE_OVERHEAD_TOKENS = 4;
 // How long to wait for the provider to report usage after a stream ended

@@ -19,13 +19,18 @@ import { ragProfileInsertSchema, ragProfileUpdateSchema } from "@repo/db/types";
 import {
 	DEFAULT_CHUNK_OVERLAP,
 	DEFAULT_CHUNK_SIZE,
+	DEFAULT_MAX_TOKENS,
+	DEFAULT_REASONING_EFFORT,
 	isAcceptableModelChange,
 	isValidChunkOverlap,
+	isValidReasoningLimit,
+	MIN_REASONING_BUDGET_TOKENS,
 	profileSettingsShape,
 } from "../../utils/profile_schema";
 
 const OVERLAP_MESSAGE = "chunkOverlap must be smaller than chunkSize";
 const UNSUPPORTED_MODEL_MESSAGE = "Unsupported model";
+const REASONING_LIMIT_MESSAGE = `With reasoning on, maxTokens must be above ${MIN_REASONING_BUDGET_TOKENS}`;
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
@@ -60,7 +65,15 @@ export const profileRoutes = {
 				.refine((p) => isAcceptableModelChange(p.model), {
 					message: UNSUPPORTED_MODEL_MESSAGE,
 					path: ["model"],
-				}),
+				})
+				.refine(
+					(p) =>
+						isValidReasoningLimit(
+							p.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+							p.maxTokens ?? DEFAULT_MAX_TOKENS,
+						),
+					{ message: REASONING_LIMIT_MESSAGE, path: ["maxTokens"] },
+				),
 		)
 		.handler(async ({ input, context }) => {
 			const profile = await createProfile({
@@ -155,6 +168,18 @@ export const profileRoutes = {
 				)
 			) {
 				throw new ORPCError("BAD_REQUEST", { message: OVERLAP_MESSAGE });
+			}
+
+			// Reasoning vs token limit must hold for the values the profile will end up with
+			const { maxTokens, reasoningEffort } = input.data;
+			if (
+				(maxTokens !== undefined || reasoningEffort !== undefined) &&
+				!isValidReasoningLimit(
+					reasoningEffort ?? existing.reasoningEffort,
+					maxTokens ?? existing.maxTokens,
+				)
+			) {
+				throw new ORPCError("BAD_REQUEST", { message: REASONING_LIMIT_MESSAGE });
 			}
 
 			// Only a changed model is checked: one OpenRouter has since delisted

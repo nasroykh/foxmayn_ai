@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import { useForm, Controller } from "react-hook-form";
+import { useForm, useWatch, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { orpc, type RouterInputs, type RouterOutputs } from "@/lib/orpc";
@@ -45,6 +45,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
+import {
 	IconPlus,
 	IconDots,
 	IconEdit,
@@ -73,6 +80,26 @@ type ModelInfo = RouterOutputs["chat"]["getModels"]["models"][number];
 
 const DEFAULT_CHAT_MODEL = "anthropic/claude-haiku-5.5";
 
+// Mirror PROFILE_REASONING_EFFORTS and the reasoning limits in
+// apps/api/src/utils/profile_schema.ts
+const REASONING_EFFORTS = [
+	"none",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+] as const;
+type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+const DEFAULT_REASONING_EFFORT: ReasoningEffort = "low";
+// Claude's smallest thinking budget: the token limit must be above it
+const MIN_REASONING_BUDGET_TOKENS = 1024;
+// Below this, thinking may leave too little room for the answer
+const LOW_ANSWER_ROOM_TOKENS = 1536;
+
+const toReasoningEffort = (value: string | undefined): ReasoningEffort =>
+	REASONING_EFFORTS.find((e) => e === value) ?? DEFAULT_REASONING_EFFORT;
+
 // Bounds mirror apps/api/src/utils/profile_schema.ts
 const profileFormSchema = z
 	.object({
@@ -100,12 +127,31 @@ const profileFormSchema = z
 			.number("Enter a number")
 			.min(0, "At least 0")
 			.max(2, "At most 2"),
+		scoreThreshold: z.coerce
+			.number("Enter a number")
+			.min(0, "At least 0")
+			.max(1, "At most 1"),
+		reasoningEffort: z.enum(REASONING_EFFORTS),
+		maxTokens: z.coerce
+			.number("Enter a number")
+			.int("Whole number")
+			.min(1, "At least 1")
+			.max(32000, "At most 32000"),
 		isDefault: z.boolean(),
 	})
 	.refine((v) => v.chunkOverlap < v.chunkSize, {
 		message: "Overlap must be smaller than the chunk size",
 		path: ["chunkOverlap"],
-	});
+	})
+	.refine(
+		(v) =>
+			v.reasoningEffort === "none" ||
+			v.maxTokens > MIN_REASONING_BUDGET_TOKENS,
+		{
+			message: `With reasoning on, use more than ${MIN_REASONING_BUDGET_TOKENS}`,
+			path: ["maxTokens"],
+		},
+	);
 
 type ProfileFormInput = z.input<typeof profileFormSchema>;
 type ProfileFormValues = z.output<typeof profileFormSchema>;
@@ -163,6 +209,9 @@ function toPayload(values: ProfileFormValues): CreateProfileInput {
 		chunkOverlap: values.chunkOverlap,
 		topK: values.topK,
 		temperature: values.temperature,
+		scoreThreshold: values.scoreThreshold,
+		reasoningEffort: values.reasoningEffort,
+		maxTokens: values.maxTokens,
 		isDefault: values.isDefault,
 	};
 }
@@ -342,6 +391,12 @@ function ProfilesPage() {
 										<span className="text-muted-foreground">Temperature</span>
 										<span>{profile.temperature}</span>
 									</div>
+									<div className="flex justify-between text-xs">
+										<span className="text-muted-foreground">Reasoning</span>
+										<span>
+											{profile.reasoningEffort} / {profile.maxTokens} tokens
+										</span>
+									</div>
 								</CardContent>
 							</Card>
 						))}
@@ -444,9 +499,20 @@ function ProfileFormDialog({
 			chunkOverlap: defaultValues?.chunkOverlap ?? 50,
 			topK: defaultValues?.topK ?? 5,
 			temperature: defaultValues?.temperature ?? 0.7,
+			scoreThreshold: defaultValues?.scoreThreshold ?? 0.3,
+			reasoningEffort: toReasoningEffort(defaultValues?.reasoningEffort),
+			maxTokens: defaultValues?.maxTokens ?? 2048,
 			isDefault: defaultValues?.isDefault ?? false,
 		},
 	});
+
+	// Thinking shares the token limit with the answer
+	const reasoningEffort = useWatch({ control, name: "reasoningEffort" });
+	const maxTokens = Number(useWatch({ control, name: "maxTokens" }));
+	const lowAnswerRoom =
+		reasoningEffort !== "none" &&
+		maxTokens > MIN_REASONING_BUDGET_TOKENS &&
+		maxTokens <= LOW_ANSWER_ROOM_TOKENS;
 
 	const { data: llmModelsData } = useQuery(
 		orpc.chat.getModels.queryOptions({ input: { type: "chat" } }),
@@ -619,6 +685,74 @@ function ProfileFormDialog({
 								max="2"
 							/>
 							{fieldError("temperature")}
+						</div>
+						<div className="space-y-2">
+							<Label htmlFor="profile-reasoning">Reasoning effort</Label>
+							<Controller
+								name="reasoningEffort"
+								control={control}
+								render={({ field }) => (
+									<Select
+										value={field.value}
+										onValueChange={(v) =>
+											field.onChange(toReasoningEffort(v ?? undefined))
+										}
+									>
+										<SelectTrigger id="profile-reasoning" className="w-full">
+											<SelectValue />
+										</SelectTrigger>
+										<SelectContent>
+											{REASONING_EFFORTS.map((effort) => (
+												<SelectItem key={effort} value={effort}>
+													{effort}
+												</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
+								)}
+							/>
+							<p className="text-xs text-muted-foreground">
+								Thinking uses part of the token limit; on Claude, low reserves
+								about 1024 tokens.
+							</p>
+						</div>
+						<div className="space-y-2">
+							<Label htmlFor="profile-max-tokens">Max tokens (1-32000)</Label>
+							<Input
+								id="profile-max-tokens"
+								{...register("maxTokens")}
+								type="number"
+								min={1}
+								max={32000}
+							/>
+							<p className="text-xs text-muted-foreground">
+								Limit for one answer, thinking included.
+							</p>
+							{lowAnswerRoom && (
+								<p className="text-xs text-orange-600">
+									Little room is left for the answer after thinking, so answers
+									may come back empty. Use at least 2048.
+								</p>
+							)}
+							{fieldError("maxTokens")}
+						</div>
+						<div className="space-y-2">
+							<Label htmlFor="profile-score-threshold">
+								Score threshold (0-1)
+							</Label>
+							<Input
+								id="profile-score-threshold"
+								{...register("scoreThreshold")}
+								type="number"
+								step="0.05"
+								min="0"
+								max="1"
+							/>
+							<p className="text-xs text-muted-foreground">
+								Minimum match score for a source. Try 0.15-0.2 when questions
+								and documents are in different languages.
+							</p>
+							{fieldError("scoreThreshold")}
 						</div>
 						<div className="col-span-2 space-y-2">
 							<Label htmlFor="profile-language">Answer language</Label>
