@@ -53,6 +53,7 @@ import {
 	resolveChatCost,
 	CREDIT_EPSILON,
 } from "../utils/cost";
+import { buildRetrievalQuery } from "../utils/history";
 import { estimateTokens } from "./chunking.service";
 
 const DEFAULT_CHAT_MODEL = "google/gemini-2.5-flash-lite";
@@ -657,11 +658,17 @@ const prepareChat = async (
 			message: `Unsupported model: ${modelId}`,
 		});
 
-	const sources = await searchWithProfile(query, profile, options);
+	const messages = options.messages ?? [];
+
+	// A follow-up is searched together with the previous question
+	const sources = await searchWithProfile(
+		buildRetrievalQuery(query, messages),
+		profile,
+		options,
+	);
 
 	const context = sources.map((r, i) => `[${i + 1}] ${r.content}`).join("\n\n");
 	const systemPrompt = buildSystemPrompt(profile, context);
-	const messages = options.messages ?? [];
 
 	// Tokenize the full prompt that will be sent
 	const promptTokens =
