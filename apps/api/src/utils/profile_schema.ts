@@ -39,6 +39,23 @@ export const PROFILE_REASONING_EFFORTS = [
 	"xhigh",
 ] as const;
 
+// Answer token limit of a profile that does not set one (the column default)
+export const DEFAULT_MAX_TOKENS = 2048;
+
+// Smallest thinking budget OpenRouter asks Claude for, whatever the effort
+export const MIN_REASONING_BUDGET_TOKENS = 1024;
+
+/**
+ * With reasoning on, the token limit must leave room past the thinking budget:
+ * on Claude the budget is at least 1024 tokens and must stay below maxTokens,
+ * so a lower limit can never produce an answer.
+ */
+export const isValidReasoningLimit = (
+	reasoningEffort: string,
+	maxTokens: number,
+): boolean =>
+	reasoningEffort === "none" || maxTokens > MIN_REASONING_BUDGET_TOKENS;
+
 // Reasoning effort of a new profile that does not choose one
 export const DEFAULT_REASONING_EFFORT: (typeof PROFILE_REASONING_EFFORTS)[number] =
 	"low";

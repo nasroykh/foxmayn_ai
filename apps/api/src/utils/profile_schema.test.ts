@@ -6,6 +6,7 @@ import {
 	DEFAULT_REASONING_EFFORT,
 	isAcceptableModelChange,
 	isValidChunkOverlap,
+	isValidReasoningLimit,
 	profileSettingsShape,
 	withProfileDefaults,
 } from "./profile_schema";
@@ -100,4 +101,22 @@ test("new profiles default to Haiku 5.5 with low reasoning", () => {
 		withProfileDefaults({ model: "openai/gpt-6-luna", reasoningEffort: "none" }),
 		{ model: "openai/gpt-6-luna", reasoningEffort: "none" },
 	);
+});
+
+test("reasoning needs a token limit above the 1024-token thinking floor", () => {
+	assert.equal(isValidReasoningLimit("none", 1), true);
+	assert.equal(isValidReasoningLimit("none", 1024), true);
+	for (const effort of ["minimal", "low", "medium", "high", "xhigh"]) {
+		assert.equal(isValidReasoningLimit(effort, 1024), false, effort);
+		assert.equal(isValidReasoningLimit(effort, 1025), true, effort);
+	}
+	assert.equal(isValidReasoningLimit("low", 2048), true);
+});
+
+test("the shape enforces the token limit and score threshold bounds", () => {
+	assert.equal(ok({ maxTokens: 1, scoreThreshold: 0 }), true);
+	assert.equal(ok({ maxTokens: 32000, scoreThreshold: 1 }), true);
+	assert.equal(ok({ maxTokens: 1536.5 }), false);
+	assert.equal(ok({ scoreThreshold: 1.05 }), false);
+	assert.equal(ok({ scoreThreshold: -0.05 }), false);
 });
