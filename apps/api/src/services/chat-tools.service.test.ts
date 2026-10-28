@@ -11,6 +11,7 @@ import {
 import {
 	appendToolResults,
 	claimContinuation,
+	continuationRef,
 	continueToolTurn,
 	CONTINUATION_TTL_SECONDS,
 	MAX_MODEL_CALLS_PER_TURN,
@@ -73,6 +74,7 @@ const newState = (): ToolTurnState => ({
 		organizationId: OWNER.organizationId,
 		userId: OWNER.userId,
 		apiKeyId: OWNER.apiKeyId,
+		apiKeyProfileId: OWNER.apiKeyProfileId,
 		profileId: "kb-1",
 	},
 	settings: {
@@ -101,7 +103,12 @@ const newState = (): ToolTurnState => ({
 const USAGE = { inputTokens: 100, outputTokens: 20, totalTokens: 120 };
 
 type Reply =
-	| { text?: string; call?: { id: string; name: string; arguments: string }; usage?: typeof USAGE | null }
+	| {
+			text?: string;
+			call?: { id: string; name: string; arguments: string };
+			calls?: { id: string; name: string; arguments: string }[];
+			usage?: typeof USAGE | null;
+	  }
 	| { reject: true }
 	| { failAfterText: string }
 	// Accepted (HTTP 200), then the stream breaks before any text
@@ -139,13 +146,14 @@ const fakeDeps = (replies: Reply[], redis = new FakeRedis()) => {
 					yield { type: "text", delta: part } satisfies ToolTurnEvent;
 				}
 			}
+			const calls = reply.calls ?? (reply.call ? [reply.call] : []);
 			const output: ToolTurnItem[] = [];
 			if (reply.text) output.push({ type: "message", role: "assistant", content: reply.text });
-			if (reply.call) output.push(callItem(reply.call));
+			output.push(...calls.map(callItem));
 			yield {
 				type: "completed",
 				output,
-				toolCalls: reply.call ? [reply.call] : [],
+				toolCalls: calls,
 				usage: reply.usage === undefined ? USAGE : reply.usage,
 			} satisfies ToolTurnEvent;
 		},
@@ -333,6 +341,66 @@ test(`call ${MAX_MODEL_CALLS_PER_TURN} of a turn runs with tools off, across con
 	);
 });
 
+test("arguments that overflow a recursive schema are invalid, not a 500", async () => {
+	const nested = enabledTools([
+		{
+			name: "walk",
+			description: "Walk a tree",
+			parameters: {
+				type: "object",
+				definitions: { n: { type: "array", items: { $ref: "#/definitions/n" } } },
+				properties: { tree: { $ref: "#/definitions/n" } },
+			},
+			enabled: true,
+		},
+	]);
+	const deep = `{"tree":${"[".repeat(5000)}${"]".repeat(5000)}}`;
+	assert.ok(deep.length < 16_000);
+	const state = { ...newState(), tools: nested };
+	const { deps, requests } = fakeDeps([
+		{ call: { id: "c1", name: "walk", arguments: deep } },
+		{ text: "I could not walk that tree." },
+	]);
+	const { events, outcome } = await drain(runToolLoop(state, deps, null));
+	assert.equal(events.some((e) => e.type === "tool_calls"), false);
+	assert.equal(outcome.finishReason, "stop");
+	const error = JSON.parse(String(requests[1].input.at(-1)!.output)) as { error: string };
+	assert.equal(error.error, "invalid_arguments");
+});
+
+for (const [label, calls] of [
+	[
+		"more calls than /chat/continue accepts",
+		Array.from({ length: 17 }, (_, i) => ({
+			id: `c${i}`,
+			name: "lookup_order",
+			arguments: '{"orderId":"A-1"}',
+		})),
+	],
+	["a call id longer than 200 characters", [{ id: "c".repeat(201), name: "lookup_order", arguments: '{"orderId":"A-1"}' }]],
+	[
+		"two calls with the same id",
+		[
+			{ id: "c1", name: "lookup_order", arguments: '{"orderId":"A-1"}' },
+			{ id: "c1", name: "lookup_order", arguments: '{"orderId":"A-2"}' },
+		],
+	],
+] as const) {
+	test(`${label}: never stored, the model gets an error result`, async () => {
+		const { deps, requests, redis } = fakeDeps([
+			{ calls: [...calls] },
+			{ text: "Here is what I know." },
+		]);
+		const { events, outcome } = await drain(runToolLoop(newState(), deps, null));
+		assert.equal(events.some((e) => e.type === "tool_calls"), false);
+		assert.equal(redis.entries.size, 0);
+		assert.equal(outcome.finishReason, "stop");
+		const result = requests[1].input.at(-1)!;
+		assert.equal(result.type, "function_call_output");
+		assert.equal((JSON.parse(String(result.output)) as { error: string }).error, "invalid_call");
+	});
+}
+
 test("invalid calls count as rounds: the third call answers in text", async () => {
 	const bad = { call: { id: "c", name: "lookup_order", arguments: "{}" } };
 	const { deps, requests } = fakeDeps([bad, bad, { text: "Sorry, I could not look it up." }]);
@@ -499,6 +567,8 @@ for (const [label, caller] of [
 	["the same user's browser session", { ...OWNER, apiKeyId: null, apiKeyProfileId: null }],
 	["another user", { ...OWNER, userId: "user-2" }],
 	["another organization", { ...OWNER, organizationId: "org-2" }],
+	["a chat-only key of another knowledge base", { ...OWNER, apiKeyProfileId: "kb-2" }],
+	["the key without its knowledge base binding", { ...OWNER, apiKeyProfileId: null }],
 ] as const) {
 	test(`${label} cannot claim (and does not use up) the continuation`, async () => {
 		const { redis, continuationId } = await saved();
@@ -507,10 +577,21 @@ for (const [label, caller] of [
 	});
 }
 
-test("a chat-only key cannot continue a turn of another knowledge base", async () => {
-	const { redis, continuationId } = await saved();
-	const otherKb = { ...OWNER, apiKeyProfileId: "kb-2" };
-	assert.equal(await claimContinuation(redis, continuationId, otherKb), null);
+test("a Redis failure while claiming is a 503", async () => {
+	const redis = new FakeRedis();
+	redis.getdel = async () => {
+		throw new Error("Connection is closed.");
+	};
+	await assert.rejects(claimContinuation(redis, "id", OWNER), {
+		code: "SERVICE_UNAVAILABLE",
+	});
+});
+
+test("usage logs get a hash of the continuation id, never the id", () => {
+	const ref = continuationRef("secret-id");
+	assert.match(ref, /^[0-9a-f]{32}$/);
+	assert.equal(ref.includes("secret"), false);
+	assert.equal(continuationRef("secret-id"), ref);
 });
 
 test("a chat-only key never reaches another profile (and so its tools)", () => {
@@ -637,6 +718,30 @@ test("continue: a provider rejection keeps the turn; a failure after acceptance 
 	await assert.rejects(continueWith(broken.redis, broken.continuationId, b.deps), {
 		code: "NOT_FOUND",
 	});
+});
+
+test("continue: a deleted profile is a 404 and the turn is used up", async () => {
+	const { redis, continuationId } = await saved();
+	const { deps, requests } = fakeDeps([{ text: "never" }], redis);
+	const gone = async () => {
+		throw new ORPCError("NOT_FOUND", { message: "Continuation not found" });
+	};
+	await assert.rejects(
+		drain(
+			continueToolTurn({
+				redis,
+				continuationId,
+				toolResults: RESULT,
+				caller: OWNER,
+				deps,
+				checkState: gone,
+				now: () => new Date(redis.now),
+			}),
+		),
+		{ code: "NOT_FOUND" },
+	);
+	assert.equal(requests.length, 0);
+	assert.equal(redis.entries.size, 0);
 });
 
 test("continue: a restored turn keeps its original expiry", async () => {

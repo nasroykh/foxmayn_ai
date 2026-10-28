@@ -7,7 +7,11 @@ import type {
 	ToolDefinition,
 } from "@repo/llm/openrouter";
 import { describeErrorBrief } from "../config/redact";
-import { checkToolCall, type ToolSpec } from "../utils/profile_tools";
+import {
+	checkToolCall,
+	MAX_PROFILE_TOOLS,
+	type ToolSpec,
+} from "../utils/profile_tools";
 import { noAnswerError, toChatProviderError } from "../utils/provider-error";
 
 /**
@@ -24,6 +28,9 @@ import { noAnswerError, toChatProviderError } from "../utils/provider-error";
 export const MAX_MODEL_CALLS_PER_TURN = 3;
 export const CONTINUATION_TTL_SECONDS = 15 * 60;
 export const TOOL_RESULT_MAX_CHARS = 8000;
+// Bounds of /chat/continue: calls a client could not answer are never sent
+export const TOOL_CALL_ID_MAX_CHARS = 200;
+export const MAX_TOOL_RESULTS = MAX_PROFILE_TOOLS;
 
 // Per-message framing overhead of chat formats, in tokens
 const MESSAGE_OVERHEAD_TOKENS = 4;
@@ -36,11 +43,16 @@ export interface ModelSettings {
 	reasoning: string;
 }
 
-/** Who may continue a turn: the same organization, user and API key (or session user). */
+/**
+ * Who may continue a turn: the same organization, user and API key (or
+ * session user), and for a chat-only key the same knowledge base.
+ */
 export interface ContinuationBinding {
 	organizationId: string;
 	userId: string;
 	apiKeyId: string | null;
+	apiKeyProfileId: string | null;
+	// Profile the turn used (its tools and settings are a snapshot)
 	profileId: string | null;
 }
 
@@ -138,6 +150,27 @@ const NOT_RUN_RESULT = {
 };
 
 /**
+ * Calls /chat/continue could never answer (too many, an id too long, empty
+ * or repeated): all of them go back to the model as invalid.
+ */
+const unanswerableCalls = (
+	calls: { id: string }[],
+): { error: string; details: string } | null => {
+	const ids = new Set(calls.map((c) => c.id));
+	if (
+		calls.length > MAX_TOOL_RESULTS ||
+		ids.size !== calls.length ||
+		calls.some((c) => !c.id || c.id.length > TOOL_CALL_ID_MAX_CHARS)
+	) {
+		return {
+			error: "invalid_call",
+			details: `Make at most ${MAX_TOOL_RESULTS} calls with unique ids`,
+		};
+	}
+	return null;
+};
+
+/**
  * Runs model calls until the turn ends in text or valid tool calls.
  * Invalid calls (unknown tool, bad JSON, schema failure) are never sent to
  * the client: the model gets an error result and is called again, which
@@ -220,9 +253,12 @@ export async function* runToolLoop<TCharge, TLead = never>(
 		}
 
 		state.input.push(...completed.output);
+		const unanswerable = unanswerableCalls(calls);
 		const checks = calls.map((call) => ({
 			call,
-			check: checkToolCall(state.tools, call.name, call.arguments),
+			check: unanswerable
+				? ({ ok: false, error: unanswerable } as const)
+				: checkToolCall(state.tools, call.name, call.arguments),
 		}));
 
 		if (checks.every(({ check }) => check.ok)) {
@@ -318,19 +354,27 @@ export interface ContinuationCaller {
 	apiKeyProfileId: string | null;
 }
 
-// The key includes the binding, so a caller with another identity finds
+// The key includes the whole binding, so a caller with another identity finds
 // nothing and cannot use up (claim) someone else's continuation
 const continuationKey = (
 	id: string,
-	binding: { organizationId: string; userId: string; apiKeyId: string | null },
+	binding: Omit<ContinuationBinding, "profileId">,
 ): string =>
 	`chat:continuation:${createHash("sha256")
 		.update(
-			[id, binding.organizationId, binding.userId, binding.apiKeyId ?? "session"].join(
-				"\n",
-			),
+			[
+				id,
+				binding.organizationId,
+				binding.userId,
+				binding.apiKeyId ?? "session",
+				binding.apiKeyProfileId ?? "any",
+			].join("\n"),
 		)
 		.digest("hex")}`;
+
+/** Stable, non-reversible reference to a continuation (for usage logs). */
+export const continuationRef = (continuationId: string): string =>
+	createHash("sha256").update(continuationId).digest("hex").slice(0, 32);
 
 /** Stores the state under a new random id (256 bits) for CONTINUATION_TTL_SECONDS. */
 export const saveContinuation = async (
@@ -388,7 +432,15 @@ export const claimContinuation = async <TSource>(
 	continuationId: string,
 	caller: ContinuationCaller,
 ): Promise<ToolTurnState<TSource> | null> => {
-	const raw = await redis.getdel(continuationKey(continuationId, caller));
+	let raw: string | null;
+	try {
+		raw = await redis.getdel(continuationKey(continuationId, caller));
+	} catch (err) {
+		console.error("[RAG] Could not read a tool continuation:", describeErrorBrief(err));
+		throw new ORPCError("SERVICE_UNAVAILABLE", {
+			message: "Could not load the tool calls. Try again shortly.",
+		});
+	}
 	if (!raw) return null;
 	let state: ToolTurnState<TSource>;
 	try {
@@ -401,7 +453,7 @@ export const claimContinuation = async <TSource>(
 		binding.organizationId === caller.organizationId &&
 		binding.userId === caller.userId &&
 		binding.apiKeyId === caller.apiKeyId &&
-		(!caller.apiKeyProfileId || binding.profileId === caller.apiKeyProfileId);
+		binding.apiKeyProfileId === caller.apiKeyProfileId;
 	return bound ? state : null;
 };
 
@@ -419,6 +471,8 @@ export async function* continueToolTurn<TCharge, TLead = never>(input: {
 	caller: ContinuationCaller;
 	deps: ToolLoopDeps<TCharge>;
 	leadEvents?: (state: ToolTurnState) => readonly TLead[];
+	// Throws (e.g. NOT_FOUND when the profile is gone); the continuation stays used
+	checkState?: (state: ToolTurnState) => Promise<void>;
 	now?: () => Date;
 }): AsyncGenerator<ToolLoopEvent | TLead, TurnOutcome> {
 	const { redis, continuationId, toolResults, caller } = input;
@@ -427,6 +481,7 @@ export async function* continueToolTurn<TCharge, TLead = never>(input: {
 	if (!state) {
 		throw new ORPCError("NOT_FOUND", { message: "Continuation not found" });
 	}
+	await input.checkState?.(state);
 	const claimed = structuredClone(state);
 	if (!toolResultsMatch(state.pendingCallIds, toolResults)) {
 		await restoreContinuation(redis, continuationId, claimed, now());

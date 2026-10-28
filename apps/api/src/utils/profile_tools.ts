@@ -14,6 +14,22 @@ export const MAX_TOOL_PARAMETERS_BYTES = 8 * 1024;
 export const TOOL_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
 // Larger arguments are refused before validation (keeps checks like uniqueItems cheap)
 export const MAX_TOOL_ARGUMENTS_CHARS = 16_000;
+// Deeper arguments are refused: a recursive schema would validate them recursively
+export const MAX_TOOL_ARGUMENTS_DEPTH = 32;
+
+/** Nesting depth of a JSON value, without recursion. */
+const jsonDepth = (value: unknown): number => {
+	let max = 0;
+	const stack: [unknown, number][] = [[value, 0]];
+	while (stack.length > 0) {
+		const [v, depth] = stack.pop()!;
+		if (depth > max) max = depth;
+		if (v && typeof v === "object") {
+			for (const child of Object.values(v)) stack.push([child, depth + 1]);
+		}
+	}
+	return max;
+};
 
 // Keywords whose regular expressions would run tenant input on our CPU (ReDoS)
 const REJECTED_KEYWORDS = ["pattern", "patternProperties"] as const;
@@ -148,6 +164,22 @@ export const checkToolCall = (
 	name: string,
 	rawArguments: string,
 ): ToolCallCheck => {
+	try {
+		return checkToolCallUnsafe(tools, name, rawArguments);
+	} catch {
+		// A schema that no longer compiles, or validation that overflowed: never a 500
+		return {
+			ok: false,
+			error: { error: "invalid_arguments", details: "Arguments could not be validated" },
+		};
+	}
+};
+
+const checkToolCallUnsafe = (
+	tools: ToolSpec[],
+	name: string,
+	rawArguments: string,
+): ToolCallCheck => {
 	const validate = validatorsFor(tools).get(name);
 	if (!validate) {
 		return {
@@ -171,6 +203,15 @@ export const checkToolCall = (
 		return {
 			ok: false,
 			error: { error: "invalid_arguments", details: "Arguments are not valid JSON" },
+		};
+	}
+	if (jsonDepth(args) > MAX_TOOL_ARGUMENTS_DEPTH) {
+		return {
+			ok: false,
+			error: {
+				error: "invalid_arguments",
+				details: `Arguments are nested deeper than ${MAX_TOOL_ARGUMENTS_DEPTH} levels`,
+			},
 		};
 	}
 	if (!validate(args)) {

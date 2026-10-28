@@ -26,11 +26,12 @@ import {
 import { chatProcedure, publicProcedure } from "../middleware";
 import { resolveKnowledgeBase } from "../access";
 import {
+	MAX_TOOL_RESULTS,
+	TOOL_CALL_ID_MAX_CHARS,
 	TOOL_RESULT_MAX_CHARS,
 	type TurnConversation,
 	type TurnOutcome,
 } from "../../services/chat-tools.service";
-import { MAX_PROFILE_TOOLS } from "../../utils/profile_tools";
 import { env } from "../../config/env";
 import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
 import { listChatModels } from "../../services/model-catalog.service";
@@ -90,12 +91,12 @@ const continueBodySchema = z.object({
 	toolResults: z
 		.array(
 			z.object({
-				toolCallId: z.string().min(1).max(200),
+				toolCallId: z.string().min(1).max(TOOL_CALL_ID_MAX_CHARS),
 				content: z.string().max(TOOL_RESULT_MAX_CHARS),
 			}),
 		)
 		.min(1)
-		.max(MAX_PROFILE_TOOLS),
+		.max(MAX_TOOL_RESULTS),
 });
 
 /**
@@ -307,6 +308,7 @@ export const chatRoutes = {
 				userId: context.user.id,
 				strictProfile: Boolean(context.apiKeyProfileId),
 				apiKeyId: context.apiKeyId,
+				apiKeyProfileId: context.apiKeyProfileId,
 				conversation: turnConversation(history, query),
 			});
 
@@ -419,6 +421,7 @@ export const chatRoutes = {
 				userId: context.user.id,
 				strictProfile: Boolean(context.apiKeyProfileId),
 				apiKeyId: context.apiKeyId,
+				apiKeyProfileId: context.apiKeyProfileId,
 				conversation: turnConversation(history, query),
 			});
 

@@ -70,6 +70,7 @@ import { estimateTokens } from "./chunking.service";
 import { redis } from "../config/redis";
 import { enabledTools, type ToolSpec } from "../utils/profile_tools";
 import {
+	continuationRef,
 	continueToolTurn,
 	runToolLoop,
 	saveContinuation,
@@ -122,6 +123,8 @@ export interface QueryOptions {
 /** A chat request: who asks (for a tool continuation) and where the exchange is stored. */
 export interface ChatOptions extends QueryOptions {
 	apiKeyId: string | null;
+	// Set for chat-only keys (bound to one knowledge base)
+	apiKeyProfileId: string | null;
 	conversation: TurnConversation;
 }
 
@@ -868,7 +871,12 @@ const toolLoopDeps = (
 			providerCalled: outcome.providerCalled,
 			usage: outcome.usage,
 			context,
-			metadata: { round: outcome.round, continuationId: outcome.continuationId },
+			metadata: {
+				round: outcome.round,
+				// A hash: the id itself is a bearer secret while it lives
+				continuationId:
+					outcome.continuationId && continuationRef(outcome.continuationId),
+			},
 		}),
 	saveContinuation: (state) => saveContinuation(redis, state),
 	countTokens: estimateTokens,
@@ -884,6 +892,7 @@ const startToolTurn = (
 		organizationId: options.organizationId,
 		userId: options.userId,
 		apiKeyId: options.apiKeyId,
+		apiKeyProfileId: options.apiKeyProfileId,
 		profileId: context.profileId,
 	},
 	settings: context.settings,
@@ -1105,6 +1114,17 @@ const storedSources = (state: ToolTurnState) => [
 ];
 
 /**
+ * A turn whose profile was deleted meanwhile is gone (404). Otherwise the
+ * turn keeps the tools and settings it started with, for its 15 minutes.
+ */
+const profileStillExists = async (state: ToolTurnState): Promise<void> => {
+	const { profileId, userId } = state.binding;
+	if (profileId && !(await getProfile(profileId, userId))) {
+		throw new ORPCError("NOT_FOUND", { message: "Continuation not found" });
+	}
+};
+
+/**
  * Continue a tool turn with the client's results (non-streaming). No
  * retrieval: the sources and prompt come from the stored turn.
  */
@@ -1122,6 +1142,7 @@ export const continueRAG = async (
 			caller,
 			deps: toolLoopDeps(caller, "continue"),
 			leadEvents: storedSources,
+			checkState: profileStillExists,
 		}),
 	);
 };
@@ -1139,5 +1160,6 @@ export async function* continueRAGStream(
 		caller,
 		deps: toolLoopDeps(caller, "continue_stream"),
 		leadEvents: storedSources,
+		checkState: profileStillExists,
 	});
 }

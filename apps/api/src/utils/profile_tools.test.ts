@@ -191,6 +191,27 @@ test("checkToolCall refuses oversized arguments before validating", () => {
 	assert.match(!result.ok ? result.error.details : "", /longer than 16000 characters/);
 });
 
+test("checkToolCall refuses deep nesting and never throws", () => {
+	const tools = enabledTools([
+		tool({
+			parameters: {
+				type: "object",
+				definitions: { n: { type: "array", items: { $ref: "#/definitions/n" } } },
+				properties: { tree: { $ref: "#/definitions/n" } },
+			},
+		}),
+	]);
+	const at = (depth: number) => `{"tree":${"[".repeat(depth)}${"]".repeat(depth)}}`;
+	assert.equal(checkToolCall(tools, "lookup_order", at(10)).ok, true);
+	const deep = checkToolCall(tools, "lookup_order", at(5000));
+	assert.equal(deep.ok, false);
+	assert.match(!deep.ok ? deep.error.details : "", /nested deeper than 32/);
+	// A stored schema that no longer compiles is an invalid call, not a throw
+	const broken = [{ name: "x", description: "d", parameters: { type: "object", foo: 1 } }];
+	const result = checkToolCall(broken, "x", "{}");
+	assert.equal(result.ok, false);
+});
+
 test("checkToolCall errors never echo argument values", () => {
 	const tools = enabledTools([tool()]);
 	const secret = "jane.doe@example.com";
