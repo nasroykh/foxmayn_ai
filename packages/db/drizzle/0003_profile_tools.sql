@@ -1,0 +1,1 @@
+ALTER TABLE "rag_profile" ADD COLUMN "tools" jsonb DEFAULT '[]'::jsonb NOT NULL;

@@ -27,6 +27,15 @@ export const messageRoleEnum = pgEnum("message_role", [
 	"system",
 ]);
 
+// A function the model may call; the API client runs it and sends the result back
+export type ProfileTool = {
+	name: string;
+	description: string;
+	// JSON Schema of the arguments (type "object")
+	parameters: Record<string, unknown>;
+	enabled: boolean;
+};
+
 // RAG Profile table - stores all settings for the pipeline
 export const ragProfile = pgTable(
 	"rag_profile",
@@ -76,6 +85,9 @@ export const ragProfile = pgTable(
 			.$type<string[]>()
 			.default([])
 			.notNull(),
+
+		// Tools (client-executed function calls). Validated by the API on every write.
+		tools: jsonb("tools").$type<ProfileTool[]>().default([]).notNull(),
 
 		createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 		updatedAt: timestamp("updated_at", { withTimezone: true })

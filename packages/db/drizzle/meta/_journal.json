@@ -22,6 +22,13 @@
       "when": 1793112332351,
       "tag": "0002_profile_language_auto",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793186452799,
+      "tag": "0003_profile_tools",
+      "breakpoints": true
     }
   ]
 }
