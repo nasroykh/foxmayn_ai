@@ -4,8 +4,6 @@ import { searchVectors } from "@repo/qdrant";
 import {
 	eq,
 	and,
-	or,
-	isNull,
 	inArray,
 	desc,
 	count,
@@ -41,6 +39,10 @@ import { fetchUrlAsFile } from "../utils/url_fetch";
 import { buildSystemPrompt } from "../utils/system_prompts";
 import { qdrant, ensureCollection, type VectorPayload } from "./qdrant.shared";
 import { buildChunkFilter } from "./qdrant.filter";
+import {
+	profileDocumentsFilter,
+	searchableDocumentsFilter,
+} from "./document.filter";
 import { logUsageAndDeduct, recordUsage } from "./usage.service";
 import {
 	reserveCredits,
@@ -81,6 +83,8 @@ export interface QueryOptions {
 	filter?: {
 		documentId?: string;
 		source?: string;
+		// Only documents whose source starts with this
+		sourcePrefix?: string;
 	};
 	// Organization billed for the call
 	organizationId: string;
@@ -381,18 +385,6 @@ export const deleteDocument = async (
  * profile when that profile is deleted, and must not join what a chat-only key
  * bound to the default profile can read.
  */
-const profileDocumentsFilter = (
-	profile: { id: string; isDefault: boolean },
-	userId: string,
-	strict = false,
-) =>
-	and(
-		eq(document.userId, userId),
-		profile.isDefault && !strict
-			? or(eq(document.profileId, profile.id), isNull(document.profileId))
-			: eq(document.profileId, profile.id),
-	);
-
 /** Number of documents a re-index of this profile would process. */
 export const countProfileDocuments = async (
 	profile: { id: string; isDefault: boolean },
@@ -529,19 +521,19 @@ const searchWithProfile = async (
 	// Documents indexed with another embedding model live in another collection.
 	const scopeToProfile =
 		profile !== null && (options.strictProfile || !filter?.documentId);
+	// A source prefix narrows that set further (e.g. one language of a site)
 	const searchable = await db
 		.select({ id: document.id, title: document.title, source: document.source })
 		.from(document)
 		.where(
-			and(
-				scopeToProfile
-					? profileDocumentsFilter(profile, userId, options.strictProfile)
-					: eq(document.userId, userId),
-				eq(document.embeddingModel, embeddingModelId),
-				filter?.documentId
-					? eq(document.id, filter.documentId)
-					: eq(document.status, "indexed"),
-			),
+			searchableDocumentsFilter({
+				userId,
+				embeddingModel: embeddingModelId,
+				profile: scopeToProfile ? profile : null,
+				strictProfile: options.strictProfile,
+				documentId: filter?.documentId,
+				sourcePrefix: filter?.sourcePrefix,
+			}),
 		);
 	// Early exit: nothing indexed here yet, skip the embedding API call
 	if (searchable.length === 0) return [];
@@ -567,7 +559,10 @@ const searchWithProfile = async (
 	const qdrantFilter = buildChunkFilter({
 		userId,
 		documentId: filter?.documentId,
-		documentIds: scopeToProfile ? searchable.map((d) => d.id) : undefined,
+		documentIds:
+			scopeToProfile || filter?.sourcePrefix
+				? searchable.map((d) => d.id)
+				: undefined,
 		source: filter?.source,
 	});
 

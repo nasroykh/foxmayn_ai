@@ -41,6 +41,8 @@ const queryOptionsSchema = z
 		scoreThreshold: z.number().min(0).max(1).optional(),
 		documentId: z.string().optional(),
 		source: z.string().optional(),
+		// Only documents whose source starts with this, e.g. "https://example.com/en/"
+		sourcePrefix: z.string().min(1).max(512).optional(),
 		profileId: z.string().optional(),
 	})
 	.optional();
@@ -260,6 +262,7 @@ export const chatRoutes = {
 				filter: {
 					documentId: options?.documentId,
 					source: options?.source,
+					sourcePrefix: options?.sourcePrefix,
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
@@ -316,6 +319,7 @@ export const chatRoutes = {
 				filter: {
 					documentId: options?.documentId,
 					source: options?.source,
+					sourcePrefix: options?.sourcePrefix,
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
@@ -369,6 +373,7 @@ export const chatRoutes = {
 				filter: {
 					documentId: options?.documentId,
 					source: options?.source,
+					sourcePrefix: options?.sourcePrefix,
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
