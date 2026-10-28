@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { isValidChunkOverlap, profileSettingsShape } from "./profile_schema";
+import {
+	isAcceptableModelChange,
+	isValidChunkOverlap,
+	profileSettingsShape,
+} from "./profile_schema";
 
 const schema = z.object(profileSettingsShape);
 const ok = (v: unknown) => schema.safeParse(v).success;
@@ -49,9 +53,12 @@ test("accepts the boundary values", () => {
 });
 
 test("rejects unknown models and enum values", () => {
-	assert.equal(ok({ model: "evil/expensive-model" }), false);
+	// Chat models are checked against the live list by isAcceptableModelChange
+	assert.equal(isAcceptableModelChange("evil/expensive-model"), false);
+	assert.equal(isAcceptableModelChange("openai/text-embedding-3-small"), false);
+	assert.equal(isAcceptableModelChange("anthropic/claude-haiku-5.5"), true);
+	assert.equal(ok({ model: "" }), false);
 	assert.equal(ok({ embeddingModel: "openai/gpt-5" }), false);
-	assert.equal(ok({ model: "openai/text-embedding-3-small" }), false);
 	assert.equal(ok({ tone: "angry" }), false);
 	assert.equal(ok({ responseLength: "huge" }), false);
 	assert.equal(ok({ reasoningEffort: "extreme" }), false);
@@ -64,9 +71,3 @@ test("chunk overlap must be smaller than chunk size", () => {
 	assert.equal(isValidChunkOverlap(100, 600), false);
 });
 
-test("accepts only chat models in the current list", () => {
-	assert.equal(ok({ model: "anthropic/claude-haiku-5.5" }), true);
-	assert.equal(ok({ model: "evil/expensive-model" }), false);
-	assert.equal(ok({ model: "openai/text-embedding-3-small" }), false);
-	assert.equal(ok({ model: "" }), false);
-});

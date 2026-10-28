@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
-import { isKnownChatModel } from "./cost";
+import { isListedChatModel } from "../services/model-catalog.service";
 
 /**
  * Bounds for the user-editable RAG profile settings. These are spread over the
@@ -51,13 +51,8 @@ export const profileSettingsShape = {
 	topK: z.number().int().min(1).max(50).optional(),
 
 	// Generation
-	// Any priced chat model in the current OpenRouter list
-	model: z
-		.string()
-		.trim()
-		.max(200)
-		.refine(isKnownChatModel, { message: "Unsupported model" })
-		.optional(),
+	// Checked against the model list with isAcceptableModelChange
+	model: z.string().trim().min(1).max(200).optional(),
 	temperature: z.number().min(0).max(2).optional(),
 	topP: z.number().min(0).max(1).optional(),
 	maxTokens: z.number().int().min(1).max(32000).optional(),
@@ -73,6 +68,16 @@ export const profileSettingsShape = {
 	systemPrompt: z.string().max(8000).nullish(),
 	customInstructions: z.array(z.string().max(500)).max(20).optional(),
 };
+
+/**
+ * A profile may newly choose only a model OpenRouter lists now. Keeping the
+ * stored model is always allowed, so a delisted model never blocks other edits.
+ */
+export const isAcceptableModelChange = (
+	model: string | undefined,
+	storedModel?: string,
+): boolean =>
+	model === undefined || model === storedModel || isListedChatModel(model);
 
 /** Overlap must leave room for new text in every chunk. */
 export const isValidChunkOverlap = (
