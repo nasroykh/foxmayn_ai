@@ -243,8 +243,10 @@ const isValidChatModel = (m: ChatModel): boolean =>
  *
  * - Throws, so the current list stays, when the fetched one drops more than
  *   30% of the listed models.
- * - A price cut of more than 10x is not applied: the model keeps its previous,
- *   higher price (a rise is applied: keeping the old price would undercharge).
+ * - A price cut of more than 10x is not applied, per field: that price stays at
+ *   the previous, higher one. Everything else is the fetched data, tiers
+ *   included (raised to the kept base price). A billed price is therefore never
+ *   below the fetched one; a rise is always applied.
  * - A model no longer listed keeps working with its last prices for 14 days.
  */
 export const mergeChatModels = (
@@ -267,22 +269,32 @@ export const mergeChatModels = (
 	const currentById = new Map(current.map((m) => [m.id, m]));
 	const models = fetched.map((m) => {
 		const previous = currentById.get(m.id);
-		if (
-			previous &&
-			(m.inputPrice * MAX_PRICE_CUT < previous.inputPrice ||
-				m.outputPrice * MAX_PRICE_CUT < previous.outputPrice)
-		) {
-			warnings.push(
-				`${m.id}: price cut over ${MAX_PRICE_CUT}x (${previous.inputPrice}/${previous.outputPrice} to ${m.inputPrice}/${m.outputPrice} per 1M), keeping the previous price`,
-			);
-			return {
-				...m,
-				inputPrice: previous.inputPrice,
-				outputPrice: previous.outputPrice,
-				tiers: previous.tiers,
-			};
-		}
-		return m;
+		if (!previous) return m;
+		const keepInput = m.inputPrice * MAX_PRICE_CUT < previous.inputPrice;
+		const keepOutput = m.outputPrice * MAX_PRICE_CUT < previous.outputPrice;
+		if (!keepInput && !keepOutput) return m;
+
+		const inputPrice = keepInput
+			? Math.max(m.inputPrice, previous.inputPrice)
+			: m.inputPrice;
+		const outputPrice = keepOutput
+			? Math.max(m.outputPrice, previous.outputPrice)
+			: m.outputPrice;
+		warnings.push(
+			`${m.id}: price cut over ${MAX_PRICE_CUT}x (${previous.inputPrice}/${previous.outputPrice} to ${m.inputPrice}/${m.outputPrice} per 1M), billing ${inputPrice}/${outputPrice}`,
+		);
+		return {
+			...m,
+			inputPrice,
+			outputPrice,
+			...(m.tiers && {
+				tiers: m.tiers.map((t) => ({
+					...t,
+					inputPrice: Math.max(t.inputPrice, inputPrice),
+					outputPrice: Math.max(t.outputPrice, outputPrice),
+				})),
+			}),
+		};
 	});
 
 	for (const m of current) {

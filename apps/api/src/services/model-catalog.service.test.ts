@@ -262,6 +262,88 @@ test("mergeChatModels keeps the previous price on a cut over 10x, applies a rise
 	assert.match(warnings[0], /v\/m-0: price cut/);
 });
 
+// Every billed price must be at least the fetched one, per field and tier
+const assertNeverBelowFetched = (billed: ChatModel, fetched: ChatModel) => {
+	assert.ok(billed.inputPrice >= fetched.inputPrice, "input");
+	assert.ok(billed.outputPrice >= fetched.outputPrice, "output");
+	assert.equal(billed.tiers?.length, fetched.tiers?.length, "tier count");
+	fetched.tiers?.forEach((t, i) => {
+		const b = billed.tiers?.[i];
+		assert.equal(b?.minPromptTokens, t.minPromptTokens);
+		assert.ok((b?.inputPrice ?? 0) >= t.inputPrice, `tier ${i} input`);
+		assert.ok((b?.outputPrice ?? 0) >= t.outputPrice, `tier ${i} output`);
+	});
+};
+
+const mergeOne = (previous: ChatModel, next: ChatModel) => {
+	const result = mergeChatModels([...current, previous], [...current, next], {
+		currentIsFetched: true,
+		now: NOW,
+	});
+	const billed = result.models.find((m) => m.id === next.id);
+	assert.ok(billed);
+	assertNeverBelowFetched(billed, next);
+	return { billed, warnings: result.warnings };
+};
+
+test("a cut input with a rising output keeps the input, applies the output", () => {
+	const { billed, warnings } = mergeOne(
+		chatModel("v/x", { inputPrice: 2, outputPrice: 4 }),
+		chatModel("v/x", { inputPrice: 0.1, outputPrice: 8 }),
+	);
+	assert.equal(billed.inputPrice, 2);
+	assert.equal(billed.outputPrice, 8);
+	assert.equal(warnings.length, 1);
+});
+
+test("new tiers are kept, raised to the kept base price, when the old model had none", () => {
+	const { billed } = mergeOne(
+		chatModel("v/x", { inputPrice: 2, outputPrice: 4 }),
+		chatModel("v/x", {
+			inputPrice: 0.1,
+			outputPrice: 4,
+			tiers: [
+				{ minPromptTokens: 100_000, inputPrice: 0.5, outputPrice: 6 },
+				{ minPromptTokens: 200_000, inputPrice: 3, outputPrice: 9 },
+			],
+		}),
+	);
+	assert.equal(billed.inputPrice, 2);
+	assert.deepEqual(billed.tiers, [
+		{ minPromptTokens: 100_000, inputPrice: 2, outputPrice: 6 },
+		{ minPromptTokens: 200_000, inputPrice: 3, outputPrice: 9 },
+	]);
+});
+
+test("old tiers are never taken over", () => {
+	const { billed } = mergeOne(
+		chatModel("v/x", {
+			inputPrice: 2,
+			outputPrice: 4,
+			tiers: [{ minPromptTokens: 100_000, inputPrice: 4, outputPrice: 8 }],
+		}),
+		chatModel("v/x", { inputPrice: 0.1, outputPrice: 0.2 }),
+	);
+	// Both cut over 10x: both previous base prices kept, no tiers
+	assert.equal(billed.inputPrice, 2);
+	assert.equal(billed.outputPrice, 4);
+	assert.equal(billed.tiers, undefined);
+});
+
+test("a cut of at most 10x and any rise are applied as fetched", () => {
+	const next = chatModel("v/x", {
+		inputPrice: 0.2,
+		outputPrice: 40,
+		tiers: [{ minPromptTokens: 100_000, inputPrice: 0.4, outputPrice: 80 }],
+	});
+	const { billed, warnings } = mergeOne(
+		chatModel("v/x", { inputPrice: 2, outputPrice: 4 }),
+		next,
+	);
+	assert.deepEqual(billed, next);
+	assert.deepEqual(warnings, []);
+});
+
 test("mergeChatModels keeps a delisted model for 14 days with its last prices", () => {
 	const gone = chatModel("v/gone", { inputPrice: 3, outputPrice: 4 });
 	const first = mergeChatModels([...current, gone], current, {
