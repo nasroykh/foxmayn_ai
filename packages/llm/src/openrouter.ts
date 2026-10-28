@@ -70,6 +70,8 @@ export type AIUsage = {
 export type QueryResultWithUsage = {
 	text: string;
 	usage: AIUsage;
+	// Why the response is incomplete (e.g. "max_output_tokens"), when it is
+	finishReason?: string;
 };
 
 export type StreamQueryResultWithUsage = {
@@ -204,6 +206,7 @@ export function OpenRouterQuery(
 
 			return {
 				text: text || "",
+				finishReason: response.incompleteDetails?.reason ?? undefined,
 				usage: {
 					inputTokens: response.usage?.inputTokens ?? 0,
 					outputTokens: response.usage?.outputTokens ?? 0,

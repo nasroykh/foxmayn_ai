@@ -16,7 +16,11 @@ import {
 } from "@repo/llm/openrouter";
 import { ORPCError } from "@orpc/server";
 import { describeError } from "../config/redact";
-import { toChatProviderError } from "../utils/provider-error";
+import {
+	requireAnswer,
+	requireStreamedAnswer,
+	toChatProviderError,
+} from "../utils/provider-error";
 import { getProfile, getDefaultProfile } from "./profile.service";
 import {
 	addIndexDocumentJob,
@@ -803,7 +807,7 @@ export const queryRAG = async (
 	let providerCalled = false;
 	let usage: AIUsage | null = null;
 	try {
-		let result: { text: string; usage: AIUsage };
+		let result: { text: string; usage: AIUsage; finishReason?: string };
 		try {
 			result = await OpenRouterQuery(
 				{
@@ -826,7 +830,8 @@ export const queryRAG = async (
 		usage = result.usage;
 
 		return {
-			answer: result.text,
+			// An empty answer is billed (usage is set) and reported as a 502
+			answer: requireAnswer(result.text, result.finishReason),
 			sources: prepared.sources,
 			usage: result.usage,
 		};
@@ -882,15 +887,14 @@ export async function* queryRAGStream(
 			);
 			getUsage = call.getUsage;
 
-			for await (const delta of call.stream) {
-				// First chunk: the provider accepted the request
+			// Any chunk, or the end of the stream, means the provider accepted the
+			// request. An answer without text ends in an error event, still billed.
+			const accepted = () => {
 				providerCalled = true;
-				if (delta) {
-					yield { type: "token", data: delta };
-				}
+			};
+			for await (const delta of requireStreamedAnswer(call.stream, accepted)) {
+				yield { type: "token", data: delta };
 			}
-			// Finished without any chunk (empty answer): still accepted
-			providerCalled = true;
 		} catch (err) {
 			// Consumer abort/close arrives as generator return, not a throw
 			console.error("[RAG] Provider stream failed:", describeError(err));
