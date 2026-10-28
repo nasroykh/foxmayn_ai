@@ -63,3 +63,10 @@ test("chunk overlap must be smaller than chunk size", () => {
 	assert.equal(isValidChunkOverlap(500, 500), false);
 	assert.equal(isValidChunkOverlap(100, 600), false);
 });
+
+test("accepts only chat models in the current list", () => {
+	assert.equal(ok({ model: "anthropic/claude-haiku-5.5" }), true);
+	assert.equal(ok({ model: "evil/expensive-model" }), false);
+	assert.equal(ok({ model: "openai/text-embedding-3-small" }), false);
+	assert.equal(ok({ model: "" }), false);
+});

@@ -1,27 +1,39 @@
 import { ORPCError } from "@orpc/server";
+import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
 import {
-	OPENROUTER_AI_MODELS,
-	OPENROUTER_EMBEDDING_MODELS,
-} from "@repo/llm/openrouter/models";
-import { getCachedModelPricing } from "../services/model-pricing.service";
+	getChatModel,
+	getModelPricing,
+	type ModelPricing,
+} from "../services/model-catalog.service";
 
+/** In the current OpenRouter list (or the static fallback before the first fetch). */
 export const isKnownChatModel = (modelId: string): boolean =>
-	OPENROUTER_AI_MODELS.some((m) => m.id === modelId);
+	getChatModel(modelId) !== undefined;
 
 export const isKnownEmbeddingModel = (modelId: string): boolean =>
 	OPENROUTER_EMBEDDING_MODELS.some((m) => m.id === modelId);
 
+/** Prices for a call: the highest prompt-size tier the input reaches. */
+const pricesFor = (
+	pricing: ModelPricing,
+	inputTokens: number,
+): { inputPrice: number; outputPrice: number } => {
+	const tier = pricing.tiers
+		?.filter((t) => inputTokens >= t.minPromptTokens)
+		.at(-1);
+	return tier ?? pricing;
+};
+
 /**
  * Calculate the cost in credits (USD) for an AI call.
  *
- * Pricing resolution order:
- * 1. Live cached pricing (seeded from static data, refreshed from OpenRouter API every 6h)
- * 2. Static model list fallback (compile-time values)
+ * Prices come from the model catalog at call time: the OpenRouter list
+ * (refreshed daily, last good copy kept in Redis), or the static list in
+ * openrouter_models.ts before the first fetch. Prices are per 1,000,000 tokens.
  *
- * Unknown models are rejected: billing them at a guessed price would let a
- * caller run an expensive model at a cheap rate.
+ * Unknown or unpriced models are rejected: billing them at a guessed price (or
+ * zero) would let a caller run an expensive model at a cheap rate.
  *
- * Prices in openrouter_models.ts are per 1,000,000 tokens.
  * Formula: cost = (inputTokens * inputPrice + outputTokens * outputPrice) / 1_000_000
  */
 export function calculateCost(
@@ -29,35 +41,15 @@ export function calculateCost(
 	inputTokens: number,
 	outputTokens: number,
 ): number {
-	// 1. Live cache (populated from static data at startup, refreshed from OpenRouter API)
-	const cached = getCachedModelPricing(modelId);
-	if (cached) {
-		return (
-			(inputTokens * cached.inputPrice + outputTokens * cached.outputPrice) /
-			1_000_000
-		);
+	const pricing = getModelPricing(modelId);
+	if (!pricing || !(pricing.inputPrice > 0)) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: `Unknown model: ${modelId}`,
+		});
 	}
 
-	// 2. Static fallback — only reached before initModelPricing() completes (very brief window)
-	const chatModel = OPENROUTER_AI_MODELS.find((m) => m.id === modelId);
-	if (chatModel) {
-		return (
-			(inputTokens * chatModel.inputPrice +
-				outputTokens * chatModel.outputPrice) /
-			1_000_000
-		);
-	}
-
-	const embeddingModel = OPENROUTER_EMBEDDING_MODELS.find(
-		(m) => m.id === modelId,
-	);
-	if (embeddingModel) {
-		return (inputTokens * embeddingModel.inputPrice) / 1_000_000;
-	}
-
-	throw new ORPCError("BAD_REQUEST", {
-		message: `Unknown model: ${modelId}`,
-	});
+	const { inputPrice, outputPrice } = pricesFor(pricing, inputTokens);
+	return (inputTokens * inputPrice + outputTokens * outputPrice) / 1_000_000;
 }
 
 /**

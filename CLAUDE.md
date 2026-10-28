@@ -8,7 +8,7 @@ Multi-tenant RAG monorepo (pnpm workspaces, Turborepo). Read [README.md](README.
 - `apps/worker`: thin process that starts the workers defined in `@repo/api/jobs`. It imports the API env schema, so it needs the full API env.
 - `apps/app`: React 19 + Vite SPA. File-based routes in `src/routes` (`_auth` = signed in, `_notauth` = public).
 - `packages/db`: Drizzle schema (`src/models`), committed migrations (`drizzle/`), migrate script (`src/migrate.ts`).
-- `packages/llm`: OpenRouter client and the list of known models (`src/data/openrouter_models.ts`).
+- `packages/llm`: OpenRouter client and the static model list (`src/data/openrouter_models.ts`), the fallback for chat models and the allow-list for embedding models.
 - `packages/qdrant`: Qdrant helpers.
 - `packages/eslint-config`, `packages/tsconfig`: shared lint and TS config.
 
@@ -28,7 +28,7 @@ Run from the repository root.
 | `pnpm db:generate` | New migration from schema changes |
 | `pnpm db:migrate` | Apply migrations |
 | `pnpm auth:generate` | Regenerate Better Auth tables |
-| `pnpm models:generate` | Refresh the OpenRouter model list |
+| `pnpm models:generate` | Refresh prices in the static model list |
 
 Run one workspace: `pnpm --filter @repo/api test`. There is no format script. Match the existing style.
 
@@ -56,7 +56,7 @@ Run one workspace: `pnpm --filter @repo/api test`. There is no format script. Ma
 - Credits belong to an organization. API keys are bound to one organization through key metadata (`organizationId`, plus `profileId` for a chat-only key). The service writes these keys; never copy them from client input.
 - Membership is checked on every `orgProcedure` request. Do not trust the session's active organization alone.
 - Billing is reserve then settle: reserve an estimate before the AI call, settle the real cost in `finally`, and refund the rest. A shortfall is still collected. The optional monthly cap is checked inside `reserveCredits` under a row lock; month-to-date spend counts `usage` and `refund` transactions only. See `apps/api/src/services/credits.service.ts` and `apps/api/src/utils/cost.ts`.
-- Only models listed in `packages/llm/src/data/openrouter_models.ts` are allowed. An unknown model must fail, never fall back to a default price.
+- Chat models come from the OpenRouter `/models` list (`apps/api/src/services/model-catalog.service.ts`): fetched at most daily, last good copy in Redis, static list as the last fallback. Only priced text models are kept. Embedding models are the static allow-list in `packages/llm/src/data/openrouter_models.ts`. An unknown or unpriced model must fail, never fall back to a default price or bill 0.
 - Embeddings use one Qdrant collection per embedding model: `<QDRANT_COLLECTION_NAME>_<model slug>`.
 
 ## Schema changes

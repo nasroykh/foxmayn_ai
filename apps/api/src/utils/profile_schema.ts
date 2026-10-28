@@ -1,8 +1,6 @@
 import { z } from "zod";
-import {
-	OPENROUTER_AI_MODELS,
-	OPENROUTER_EMBEDDING_MODELS,
-} from "@repo/llm/openrouter/models";
+import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
+import { isKnownChatModel } from "./cost";
 
 /**
  * Bounds for the user-editable RAG profile settings. These are spread over the
@@ -13,10 +11,6 @@ import {
 export const DEFAULT_CHUNK_SIZE = 500;
 export const DEFAULT_CHUNK_OVERLAP = 50;
 
-const chatModelIds = OPENROUTER_AI_MODELS.map((m) => m.id) as [
-	string,
-	...string[],
-];
 const embeddingModelIds = OPENROUTER_EMBEDDING_MODELS.map((m) => m.id) as [
 	string,
 	...string[],
@@ -57,7 +51,13 @@ export const profileSettingsShape = {
 	topK: z.number().int().min(1).max(50).optional(),
 
 	// Generation
-	model: z.enum(chatModelIds).optional(),
+	// Any priced chat model in the current OpenRouter list
+	model: z
+		.string()
+		.trim()
+		.max(200)
+		.refine(isKnownChatModel, { message: "Unsupported model" })
+		.optional(),
 	temperature: z.number().min(0).max(2).optional(),
 	topP: z.number().min(0).max(1).optional(),
 	maxTokens: z.number().int().min(1).max(32000).optional(),
