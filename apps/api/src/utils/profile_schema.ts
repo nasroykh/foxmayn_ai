@@ -4,6 +4,7 @@ import {
 	DEFAULT_CHAT_MODEL,
 	isListedChatModel,
 } from "../services/model-catalog.service";
+import { profileToolsSchema } from "./profile_tools";
 
 /**
  * Bounds for the user-editable RAG profile settings. These are spread over the
@@ -105,6 +106,9 @@ export const profileSettingsShape = {
 	language: z.string().trim().min(1).max(50).optional(),
 	systemPrompt: z.string().max(8000).nullish(),
 	customInstructions: z.array(z.string().max(500)).max(20).optional(),
+
+	// Client-executed tools (full replace)
+	tools: profileToolsSchema.optional(),
 };
 
 /**
