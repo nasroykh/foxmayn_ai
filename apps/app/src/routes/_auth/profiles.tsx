@@ -69,6 +69,7 @@ export const Route = createFileRoute("/_auth/profiles")({
 
 type Profile = RouterOutputs["profiles"]["listProfiles"]["profiles"][number];
 type CreateProfileInput = RouterInputs["profiles"]["createProfile"];
+type ModelInfo = RouterOutputs["chat"]["getModels"]["models"][number];
 
 // Bounds mirror apps/api/src/utils/profile_schema.ts
 const profileFormSchema = z
@@ -106,6 +107,43 @@ const profileFormSchema = z
 
 type ProfileFormInput = z.input<typeof profileFormSchema>;
 type ProfileFormValues = z.output<typeof profileFormSchema>;
+
+const formatPrice = (usd: number) =>
+	`$${usd > 0 && usd < 0.01 ? usd.toPrecision(2) : usd.toFixed(2)}`;
+
+const formatContext = (tokens: number) =>
+	tokens >= 1_000_000
+		? `${Number((tokens / 1_000_000).toFixed(1))}M`
+		: `${Math.round(tokens / 1000)}K`;
+
+/** Every word of the query must appear in the model's id or name. */
+function matchesModel(
+	model: ModelInfo | undefined,
+	id: string,
+	query: string,
+): boolean {
+	const haystack = `${id} ${model?.name ?? ""}`.toLowerCase();
+	return query
+		.toLowerCase()
+		.split(/\s+/)
+		.every((word) => haystack.includes(word));
+}
+
+/** Combobox row: name, id, price per 1M tokens (in / out) and context. */
+function ModelOption({ id, model }: { id: string; model?: ModelInfo }) {
+	return (
+		<ComboboxItem value={id}>
+			<div className="flex min-w-0 flex-col">
+				<span className="truncate">{model?.name ?? id}</span>
+				<span className="text-muted-foreground truncate text-xs">
+					{model?.name !== id && <span className="font-mono">{id} · </span>}
+					{model &&
+						`${formatPrice(model.inputPrice)} in / ${formatPrice(model.outputPrice)} out per 1M · ${formatContext(model.contextLength)} context`}
+				</span>
+			</div>
+		</ComboboxItem>
+	);
+}
 
 /** Form values to the API payload (empty model fields keep the server default). */
 function toPayload(values: ProfileFormValues): CreateProfileInput {
@@ -413,8 +451,11 @@ function ProfileFormDialog({
 		orpc.chat.getModels.queryOptions({ input: { type: "embedding" } }),
 	);
 
+	// Chat models arrive newest first, with prices per 1M tokens
 	const llmModels = llmModelsData?.models ?? [];
 	const embeddingModels = embeddingModelsData?.models ?? [];
+	const llmModelsById = new Map(llmModels.map((m) => [m.id, m]));
+	const embeddingModelsById = new Map(embeddingModels.map((m) => [m.id, m]));
 
 	const fieldError = (name: keyof ProfileFormInput) =>
 		errors[name]?.message ? (
@@ -464,6 +505,9 @@ function ProfileFormDialog({
 										value={field.value ?? null}
 										onValueChange={(v) => field.onChange(v ?? undefined)}
 										items={llmModels.map((m) => m.id)}
+										filter={(id: string, query: string) =>
+											matchesModel(llmModelsById.get(id), id, query)
+										}
 									>
 										<ComboboxInput
 											id="profile-model"
@@ -475,9 +519,7 @@ function ProfileFormDialog({
 											<ComboboxEmpty>No models found</ComboboxEmpty>
 											<ComboboxList>
 												{(m: string) => (
-													<ComboboxItem key={m} value={m}>
-														{m}
-													</ComboboxItem>
+													<ModelOption key={m} id={m} model={llmModelsById.get(m)} />
 												)}
 											</ComboboxList>
 										</ComboboxContent>
@@ -497,6 +539,9 @@ function ProfileFormDialog({
 										value={field.value ?? null}
 										onValueChange={(v) => field.onChange(v ?? undefined)}
 										items={embeddingModels.map((m) => m.id)}
+										filter={(id: string, query: string) =>
+											matchesModel(embeddingModelsById.get(id), id, query)
+										}
 									>
 										<ComboboxInput
 											id="profile-embedding"
@@ -508,9 +553,11 @@ function ProfileFormDialog({
 											<ComboboxEmpty>No models found</ComboboxEmpty>
 											<ComboboxList>
 												{(m: string) => (
-													<ComboboxItem key={m} value={m}>
-														{m}
-													</ComboboxItem>
+													<ModelOption
+														key={m}
+														id={m}
+														model={embeddingModelsById.get(m)}
+													/>
 												)}
 											</ComboboxList>
 										</ComboboxContent>
