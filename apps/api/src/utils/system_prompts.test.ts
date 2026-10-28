@@ -50,3 +50,15 @@ test("language auto answers in the question's language; a named language is kept
 	);
 	assert.match(buildSystemPrompt({ language: "French" }, "ctx"), /Language: French\n/);
 });
+
+test("earlier replies are not retracted unless the user says one is wrong", () => {
+	const prompt = buildSystemPrompt(null, CONTEXT);
+	assert.match(prompt, /Earlier replies in this conversation were based on information and tool results you no longer see/);
+	assert.match(prompt, /Do not correct, retract or doubt them unless the user says one is wrong; answer the latest message/);
+	// Generic: the same line under every profile
+	assert.ok(
+		buildSystemPrompt({ tone: "formal", systemPrompt: "Be brief." }, CONTEXT).includes(
+			"Do not correct, retract or doubt them",
+		),
+	);
+});

@@ -23,6 +23,7 @@ export interface QueryResponse {
 
 export interface SearchOptions {
 	sourcePrefix?: string;
+	excludeSourcePrefixes?: string[];
 	limit?: number;
 }
 

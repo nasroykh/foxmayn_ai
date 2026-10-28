@@ -63,3 +63,42 @@ test("without sourcePrefix there is no source condition", () => {
 	const { sql } = render(base);
 	assert.doesNotMatch(sql, /source/);
 });
+
+test("excludeSourcePrefixes drops matching sources and keeps sourceless documents", () => {
+	const { sql, params } = render({
+		...base,
+		excludeSourcePrefixes: ["https://foxmayn.com/en/dz"],
+	});
+	assert.match(
+		sql,
+		/\("document"\."source" is null or "document"\."source" not like \$\d+\)\)$/,
+	);
+	assert.ok(params.includes("https://foxmayn.com/en/dz%"));
+});
+
+test("excludeSourcePrefixes combines with sourcePrefix: both AND-ed", () => {
+	const { sql, params } = render({
+		...base,
+		sourcePrefix: "https://foxmayn.com/en",
+		excludeSourcePrefixes: ["https://foxmayn.com/en/dz", "https://foxmayn.com/en/ma"],
+	});
+	assert.match(
+		sql,
+		/and "document"\."source" like \$\d+ and \("document"\."source" is null or "document"\."source" not like \$\d+\) and \("document"\."source" is null or "document"\."source" not like \$\d+\)\)$/,
+	);
+	// Owner and profile stay required
+	assert.match(sql, /^\(\("document"\."user_id" = \$\d+ and "document"\."profile_id" = \$\d+\) and/);
+	assert.ok(params.includes("https://foxmayn.com/en%"));
+	assert.ok(params.includes("https://foxmayn.com/en/dz%"));
+	assert.ok(params.includes("https://foxmayn.com/en/ma%"));
+});
+
+test("LIKE wildcards in an excluded prefix are matched literally", () => {
+	const { params } = render({ ...base, excludeSourcePrefixes: ["a_b%c\\"] });
+	assert.ok(params.includes("a\\_b\\%c\\\\%"));
+});
+
+test("an empty excludeSourcePrefixes adds no source condition", () => {
+	const { sql } = render({ ...base, excludeSourcePrefixes: [] });
+	assert.doesNotMatch(sql, /source/);
+});

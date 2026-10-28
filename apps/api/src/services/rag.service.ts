@@ -110,6 +110,8 @@ export interface QueryOptions {
 		source?: string;
 		// Only documents whose source starts with this
 		sourcePrefix?: string;
+		// Never documents whose source starts with one of these
+		excludeSourcePrefixes?: string[];
 	};
 	// Organization billed for the call
 	organizationId: string;
@@ -562,7 +564,11 @@ const searchWithProfile = async (
 	// Documents indexed with another embedding model live in another collection.
 	const scopeToProfile =
 		profile !== null && (options.strictProfile || !filter?.documentId);
-	// A source prefix narrows that set further (e.g. one language of a site)
+	// Source prefixes narrow that set further (e.g. one language of a site,
+	// minus one of its regions)
+	const narrowsBySource = Boolean(
+		filter?.sourcePrefix || filter?.excludeSourcePrefixes?.length,
+	);
 	const searchable = await db
 		.select({ id: document.id, title: document.title, source: document.source })
 		.from(document)
@@ -574,6 +580,7 @@ const searchWithProfile = async (
 				strictProfile: options.strictProfile,
 				documentId: filter?.documentId,
 				sourcePrefix: filter?.sourcePrefix,
+				excludeSourcePrefixes: filter?.excludeSourcePrefixes,
 			}),
 		);
 	// Early exit: nothing indexed here yet, skip the embedding API call
@@ -601,7 +608,7 @@ const searchWithProfile = async (
 		userId,
 		documentId: filter?.documentId,
 		documentIds:
-			scopeToProfile || filter?.sourcePrefix
+			scopeToProfile || narrowsBySource
 				? searchable.map((d) => d.id)
 				: undefined,
 		source: filter?.source,

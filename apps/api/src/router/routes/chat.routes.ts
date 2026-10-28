@@ -25,6 +25,7 @@ import {
 } from "../../utils/history";
 import { chatProcedure, publicProcedure } from "../middleware";
 import { resolveKnowledgeBase } from "../access";
+import { queryOptionsSchema } from "../../utils/chat_options";
 import {
 	MAX_TOOL_RESULTS,
 	TOOL_CALL_ID_MAX_CHARS,
@@ -43,19 +44,6 @@ const messageSchema = z.object({
 	role: z.enum(["user", "assistant"]),
 	content: z.string(),
 });
-
-// Base options schema (shared between query endpoints)
-const queryOptionsSchema = z
-	.object({
-		limit: z.number().min(1).max(20).optional(),
-		scoreThreshold: z.number().min(0).max(1).optional(),
-		documentId: z.string().optional(),
-		source: z.string().optional(),
-		// Only documents whose source starts with this, e.g. "https://example.com/en/"
-		sourcePrefix: z.string().min(1).max(512).optional(),
-		profileId: z.string().optional(),
-	})
-	.optional();
 
 // Request schema for query endpoints
 // Supports two modes:
@@ -303,6 +291,7 @@ export const chatRoutes = {
 					documentId: options?.documentId,
 					source: options?.source,
 					sourcePrefix: options?.sourcePrefix,
+					excludeSourcePrefixes: options?.excludeSourcePrefixes,
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
@@ -362,6 +351,7 @@ export const chatRoutes = {
 					documentId: options?.documentId,
 					source: options?.source,
 					sourcePrefix: options?.sourcePrefix,
+					excludeSourcePrefixes: options?.excludeSourcePrefixes,
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
@@ -416,6 +406,7 @@ export const chatRoutes = {
 					documentId: options?.documentId,
 					source: options?.source,
 					sourcePrefix: options?.sourcePrefix,
+					excludeSourcePrefixes: options?.excludeSourcePrefixes,
 				},
 				organizationId: context.organizationId,
 				userId: context.user.id,
