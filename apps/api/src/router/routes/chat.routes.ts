@@ -3,6 +3,8 @@ import { ORPCError } from "@orpc/server";
 import {
 	queryRAG,
 	queryRAGStream,
+	continueRAG,
+	continueRAGStream,
 	searchChunks,
 	getDocument,
 	isDocumentInProfile,
@@ -22,6 +24,13 @@ import {
 	selectHistory,
 } from "../../utils/history";
 import { chatProcedure, publicProcedure } from "../middleware";
+import { resolveKnowledgeBase } from "../access";
+import {
+	TOOL_RESULT_MAX_CHARS,
+	type TurnConversation,
+	type TurnOutcome,
+} from "../../services/chat-tools.service";
+import { MAX_PROFILE_TOOLS } from "../../utils/profile_tools";
 import { env } from "../../config/env";
 import { OPENROUTER_EMBEDDING_MODELS } from "@repo/llm/openrouter/models";
 import { listChatModels } from "../../services/model-catalog.service";
@@ -75,23 +84,19 @@ const queryBodySchema = z
 		"Cannot provide both 'messages' and 'conversationId'. Choose one mode.",
 	);
 
-/**
- * Knowledge base (profile) for a request. A key bound to one knowledge base
- * always uses it and cannot name another; other callers choose freely (and
- * their profile ownership is checked when it is loaded).
- */
-function resolveKnowledgeBase(
-	requestedProfileId: string | undefined,
-	apiKeyProfileId: string | null,
-): string | undefined {
-	if (!apiKeyProfileId) return requestedProfileId;
-	if (requestedProfileId && requestedProfileId !== apiKeyProfileId) {
-		throw new ORPCError("FORBIDDEN", {
-			message: "This API key is limited to another knowledge base",
-		});
-	}
-	return apiKeyProfileId;
-}
+// Results of the tool calls a stream (or response) ended with
+const continueBodySchema = z.object({
+	continuationId: z.string().min(1).max(200),
+	toolResults: z
+		.array(
+			z.object({
+				toolCallId: z.string().min(1).max(200),
+				content: z.string().max(TOOL_RESULT_MAX_CHARS),
+			}),
+		)
+		.min(1)
+		.max(MAX_PROFILE_TOOLS),
+});
 
 /**
  * Rejects a documentId filter that does not belong to the caller, or (for a
@@ -222,6 +227,40 @@ async function persistExchange(input: {
 	return conversationId;
 }
 
+/**
+ * Stores a finished turn of a server-managed conversation. A turn that ended
+ * in tool calls stores nothing yet (its continuation carries the conversation),
+ * and tool messages are never stored. Returns the conversation id, or null.
+ */
+async function persistOutcome(
+	outcome: TurnOutcome,
+	userId: string,
+	apiKeyId: string | null,
+): Promise<string | null> {
+	const { conversation } = outcome;
+	if (!conversation.serverManaged || outcome.finishReason !== "stop" || !outcome.answer) {
+		return null;
+	}
+	return persistExchange({
+		conversationId: conversation.conversationId,
+		userId,
+		profileId: conversation.profileId ?? undefined,
+		apiKeyId,
+		userQuery: conversation.userQuery,
+		assistantResponse: outcome.answer,
+	});
+}
+
+const turnConversation = (
+	history: { isServerManaged: boolean; conversationId: string | null; profileId: string | undefined },
+	query: string,
+): TurnConversation => ({
+	serverManaged: history.isServerManaged,
+	conversationId: history.conversationId,
+	profileId: history.profileId ?? null,
+	userQuery: query,
+});
+
 export const chatRoutes = {
 	query: chatProcedure
 		.route({
@@ -267,19 +306,20 @@ export const chatRoutes = {
 				organizationId: context.organizationId,
 				userId: context.user.id,
 				strictProfile: Boolean(context.apiKeyProfileId),
+				apiKeyId: context.apiKeyId,
+				conversation: turnConversation(history, query),
 			});
 
 			// Store the exchange if server-managed (creates the conversation on first use)
-			const savedConversationId = history.isServerManaged
-				? await persistExchange({
-						conversationId: history.conversationId,
-						userId: context.user.id,
-						profileId: history.profileId,
-						apiKeyId: context.apiKeyId,
-						userQuery: query,
-						assistantResponse: result.answer,
-					})
-				: null;
+			const savedConversationId = await persistOutcome(
+				{
+					finishReason: result.finishReason,
+					answer: result.answer,
+					conversation: turnConversation(history, query),
+				},
+				context.user.id,
+				context.apiKeyId,
+			);
 
 			return {
 				...result,
@@ -362,7 +402,7 @@ export const chatRoutes = {
 
 			// Existing conversation: announce its id first
 			if (history.conversationId) {
-				yield { type: "conversation_id", data: history.conversationId };
+				yield { type: "conversation_id" as const, data: history.conversationId };
 			}
 
 			const stream = queryRAGStream(query, {
@@ -378,34 +418,83 @@ export const chatRoutes = {
 				organizationId: context.organizationId,
 				userId: context.user.id,
 				strictProfile: Boolean(context.apiKeyProfileId),
+				apiKeyId: context.apiKeyId,
+				conversation: turnConversation(history, query),
 			});
 
-			// Collect full response for storage
-			let fullResponse = "";
-
-			for await (const chunk of stream) {
-				yield chunk;
-
-				// Accumulate tokens for storage
-				if (chunk.type === "token") {
-					fullResponse += chunk.data;
-				}
-			}
+			const outcome = yield* stream;
 
 			// Store the exchange only after a complete answer. A new conversation is
 			// created now, so its id is announced at the end of the stream.
-			if (history.isServerManaged && fullResponse) {
-				const savedConversationId = await persistExchange({
-					conversationId: history.conversationId,
+			const savedConversationId = await persistOutcome(
+				outcome,
+				context.user.id,
+				context.apiKeyId,
+			);
+			yield { type: "done" as const, data: { finishReason: outcome.finishReason } };
+			if (savedConversationId && !history.conversationId) {
+				yield { type: "conversation_id" as const, data: savedConversationId };
+			}
+		}),
+
+	continue: chatProcedure
+		.route({
+			method: "POST",
+			path: `${PREFIX}/chat/continue`,
+			description:
+				"Send the results of the tool calls a /chat/query response asked for. Same response as /chat/query; it may ask for tool calls again.",
+		})
+		.input(continueBodySchema)
+		.handler(async ({ input, context }) => {
+			const { result, outcome } = await continueRAG(
+				input.continuationId,
+				input.toolResults,
+				{
+					organizationId: context.organizationId,
 					userId: context.user.id,
-					profileId: history.profileId,
 					apiKeyId: context.apiKeyId,
-					userQuery: query,
-					assistantResponse: fullResponse,
-				});
-				if (!history.conversationId) {
-					yield { type: "conversation_id", data: savedConversationId };
-				}
+					apiKeyProfileId: context.apiKeyProfileId,
+				},
+			);
+			const savedConversationId = await persistOutcome(
+				outcome,
+				context.user.id,
+				context.apiKeyId,
+			);
+			return {
+				...result,
+				conversationId: savedConversationId ?? outcome.conversation.conversationId,
+			};
+		}),
+
+	continueStream: chatProcedure
+		.route({
+			method: "POST",
+			path: `${PREFIX}/chat/continue/stream`,
+			description:
+				"Streaming variant of /chat/continue: sources, tokens, tool_calls (when another round is needed), usage, done.",
+		})
+		.input(continueBodySchema)
+		.handler(async function* ({ input, context }) {
+			const outcome = yield* continueRAGStream(
+				input.continuationId,
+				input.toolResults,
+				{
+					organizationId: context.organizationId,
+					userId: context.user.id,
+					apiKeyId: context.apiKeyId,
+					apiKeyProfileId: context.apiKeyProfileId,
+				},
+			);
+			const savedConversationId = await persistOutcome(
+				outcome,
+				context.user.id,
+				context.apiKeyId,
+			);
+			yield { type: "done" as const, data: { finishReason: outcome.finishReason } };
+			// The turn's conversation, once its exchange is stored
+			if (savedConversationId) {
+				yield { type: "conversation_id" as const, data: savedConversationId };
 			}
 		}),
 

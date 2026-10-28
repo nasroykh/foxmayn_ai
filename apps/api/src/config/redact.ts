@@ -49,3 +49,13 @@ export const describeError = (error: unknown): string => {
 	const safe = redactSecrets(summary);
 	return safe.length > 500 ? `${safe.slice(0, 500)}...` : safe;
 };
+
+/**
+ * Error name and HTTP status only. For calls whose request carries tool
+ * arguments or results (PII): a provider or validation message may echo them.
+ */
+export const describeErrorBrief = (error: unknown): string => {
+	const name = error instanceof Error ? error.name || "Error" : typeof error;
+	const status = errorStatus(error);
+	return `${name}${status ? ` (status ${status})` : ""}`;
+};

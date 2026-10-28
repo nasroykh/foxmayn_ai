@@ -10,6 +10,7 @@ import {
 } from "@repo/db/drizzle-orm";
 import {
 	OpenRouterQuery,
+	OpenRouterToolTurn,
 	DEFAULT_EMBEDDING_MODEL,
 	OpenRouterEmbed,
 	type AIUsage,
@@ -66,6 +67,22 @@ import {
 	DEFAULT_REASONING_EFFORT,
 } from "../utils/profile_schema";
 import { estimateTokens } from "./chunking.service";
+import { redis } from "../config/redis";
+import { enabledTools, type ToolSpec } from "../utils/profile_tools";
+import {
+	continueToolTurn,
+	runToolLoop,
+	saveContinuation,
+	type CallOutcome,
+	type ContinuationCaller,
+	type ModelSettings,
+	type ToolLoopDeps,
+	type ToolLoopEvent,
+	type ToolResult,
+	type ToolTurnState,
+	type TurnConversation,
+	type TurnOutcome,
+} from "./chat-tools.service";
 
 // Per-message framing overhead of chat formats, in tokens
 const MESSAGE_OVERHEAD_TOKENS = 4;
@@ -102,11 +119,25 @@ export interface QueryOptions {
 	strictProfile?: boolean;
 }
 
+/** A chat request: who asks (for a tool continuation) and where the exchange is stored. */
+export interface ChatOptions extends QueryOptions {
+	apiKeyId: string | null;
+	conversation: TurnConversation;
+}
+
 export interface QueryResult {
 	answer: string;
 	sources: SearchResult[];
 	usage?: AIUsage;
+	finishReason: "stop" | "tool_calls";
+	toolCalls?: Extract<ToolLoopEvent, { type: "tool_calls" }>["data"]["calls"];
+	continuationId?: string;
+	expiresAt?: string;
 }
+
+export type ChatStreamEvent =
+	| { type: "sources"; data: SearchResult[] }
+	| ToolLoopEvent;
 
 export interface SearchResult {
 	documentId: string;
@@ -627,32 +658,33 @@ export const isDocumentInProfile = async (
 // Chat
 // ============================================================================
 
-interface PreparedChat {
-	modelId: string;
-	maxTokens: number;
-	temperature: number;
-	topP: number | undefined;
-	reasoning: ReasoningEffort;
+interface ChatContext {
+	settings: ModelSettings;
 	systemPrompt: string;
 	messages: ChatMessage[];
 	sources: SearchResult[];
+	// Enabled tools of the profile; none means a plain chat call
+	tools: ToolSpec[];
+	profileId: string | null;
+}
+
+/** What one model call reserved; settled by `settleChat`. */
+interface ChatCharge {
+	modelId: string;
 	promptTokens: number;
 	reservation: CreditReservation;
 	usageId: string;
 }
 
 /**
- * Everything both chat paths share: load the profile, retrieve context, build
- * the one system prompt, and reserve the worst-case cost of the call.
- * Throws FORBIDDEN (before any LLM spend) when the balance cannot cover it.
+ * Everything both chat paths share: load the profile, retrieve context and
+ * build the one system prompt. Retrieval runs once per user turn.
  */
 const prepareChat = async (
 	query: string,
 	options: QueryOptions,
-): Promise<PreparedChat> => {
-	const { organizationId, userId } = options;
-
-	const profile = await loadProfile(options.profileId, userId);
+): Promise<ChatContext> => {
+	const profile = await loadProfile(options.profileId, options.userId);
 
 	const modelId = profile?.model ?? DEFAULT_CHAT_MODEL;
 	if (!isKnownChatModel(modelId))
@@ -670,48 +702,58 @@ const prepareChat = async (
 	);
 
 	const context = sources.map((r, i) => `[${i + 1}] ${r.content}`).join("\n\n");
-	const systemPrompt = buildSystemPrompt(profile, context);
 
-	// Tokenize the full prompt that will be sent
-	const promptTokens =
-		estimateTokens(systemPrompt) +
-		estimateTokens(query) +
-		messages.reduce(
-			(sum, m) => sum + estimateTokens(m.content) + MESSAGE_OVERHEAD_TOKENS,
-			0,
-		) +
-		2 * MESSAGE_OVERHEAD_TOKENS;
-	const maxTokens = profile?.maxTokens ?? DEFAULT_MAX_TOKENS;
+	return {
+		settings: {
+			modelId,
+			maxTokens: profile?.maxTokens ?? DEFAULT_MAX_TOKENS,
+			temperature: profile?.temperature ?? 1.0,
+			topP: profile?.topP,
+			reasoning: profile?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+		},
+		systemPrompt: buildSystemPrompt(profile, context),
+		messages,
+		sources,
+		tools: enabledTools(profile?.tools),
+		profileId: profile?.id ?? null,
+	};
+};
 
+/** Tokens of the full prompt of a plain chat call. */
+const plainPromptTokens = (context: ChatContext, query: string): number =>
+	estimateTokens(context.systemPrompt) +
+	estimateTokens(query) +
+	context.messages.reduce(
+		(sum, m) => sum + estimateTokens(m.content) + MESSAGE_OVERHEAD_TOKENS,
+		0,
+	) +
+	2 * MESSAGE_OVERHEAD_TOKENS;
+
+/**
+ * Reserve the worst-case cost of one model call.
+ * Throws FORBIDDEN (before any LLM spend) when the balance cannot cover it.
+ */
+const reserveChat = async (
+	settings: ModelSettings,
+	promptTokens: number,
+	options: { organizationId: string; userId: string },
+): Promise<ChatCharge> => {
+	const { modelId } = settings;
 	const estimatedCost = Math.max(
-		estimateChatCost(modelId, promptTokens, maxTokens),
+		estimateChatCost(modelId, promptTokens, settings.maxTokens),
 		CREDIT_EPSILON,
 	);
 
 	const usageId = randomUUID();
 	const reservation = await reserveCredits({
-		orgId: organizationId,
-		userId,
+		orgId: options.organizationId,
+		userId: options.userId,
 		amount: estimatedCost,
 		description: `chat reservation — ${modelId}`,
 		referenceId: usageId,
 	});
 
-	return {
-		modelId,
-		maxTokens,
-		temperature: profile?.temperature ?? 1.0,
-		topP: profile?.topP,
-		reasoning:
-			(profile?.reasoningEffort as ReasoningEffort | undefined) ??
-			DEFAULT_REASONING_EFFORT,
-		systemPrompt,
-		messages,
-		sources,
-		promptTokens,
-		reservation,
-		usageId,
-	};
+	return { modelId, promptTokens, reservation, usageId };
 };
 
 /**
@@ -723,14 +765,15 @@ const prepareChat = async (
  * Never throws; billing problems are logged for reconciliation.
  */
 const settleChat = async (input: {
-	prepared: PreparedChat;
-	options: QueryOptions;
+	charge: ChatCharge;
+	options: { organizationId: string; userId: string };
 	providerCalled: boolean;
 	usage: AIUsage | null;
 	context: string;
+	metadata?: Record<string, unknown>;
 }): Promise<void> => {
-	const { prepared, options, providerCalled, usage, context } = input;
-	const { modelId, reservation, usageId } = prepared;
+	const { charge, options, providerCalled, usage, context } = input;
+	const { modelId, reservation, usageId } = charge;
 
 	let cost = 0;
 	let usageKnown = false;
@@ -765,10 +808,10 @@ const settleChat = async (input: {
 		userId: options.userId,
 		operationType: "chat",
 		model: modelId,
-		inputTokens: usageKnown && usage ? usage.inputTokens : prepared.promptTokens,
+		inputTokens: usageKnown && usage ? usage.inputTokens : charge.promptTokens,
 		outputTokens: usageKnown && usage ? usage.outputTokens : 0,
 		costCredits: cost,
-		metadata: { context, usageEstimated: !usageKnown },
+		metadata: { context, usageEstimated: !usageKnown, ...input.metadata },
 	});
 };
 
@@ -795,15 +838,140 @@ const fetchStreamUsage = async (
 	}
 };
 
+// ============================================================================
+// Chat with tools
+// ============================================================================
+
+/** Provider, billing and Redis for the tool loop. */
+const toolLoopDeps = (
+	options: { organizationId: string; userId: string },
+	context: string,
+): ToolLoopDeps<ChatCharge> => ({
+	callModel: (settings, input, tools, toolChoice) =>
+		OpenRouterToolTurn(
+			{
+				model: settings.modelId,
+				temperature: settings.temperature,
+				topP: settings.topP,
+				maxTokens: settings.maxTokens,
+				reasoning: settings.reasoning as ReasoningEffort,
+			},
+			input,
+			tools,
+			toolChoice,
+		),
+	reserve: (settings, promptTokens) => reserveChat(settings, promptTokens, options),
+	settle: (charge, outcome: CallOutcome) =>
+		settleChat({
+			charge,
+			options,
+			providerCalled: outcome.providerCalled,
+			usage: outcome.usage,
+			context,
+			metadata: { round: outcome.round, continuationId: outcome.continuationId },
+		}),
+	saveContinuation: (state) => saveContinuation(redis, state),
+	countTokens: estimateTokens,
+});
+
+/** State of a new tool turn: the one system prompt, the history and the query. */
+const startToolTurn = (
+	query: string,
+	context: ChatContext,
+	options: ChatOptions,
+): ToolTurnState<SearchResult> => ({
+	binding: {
+		organizationId: options.organizationId,
+		userId: options.userId,
+		apiKeyId: options.apiKeyId,
+		profileId: context.profileId,
+	},
+	settings: context.settings,
+	input: [
+		{ role: "system", content: context.systemPrompt },
+		...context.messages.map((m) => ({ role: m.role, content: m.content })),
+		{ role: "user", content: query },
+	],
+	sources: context.sources,
+	tools: context.tools,
+	modelCalls: 0,
+	pendingCallIds: [],
+	conversation: options.conversation,
+});
+
+const addUsage = (a: AIUsage | undefined, b: AIUsage): AIUsage =>
+	a
+		? {
+				inputTokens: a.inputTokens + b.inputTokens,
+				outputTokens: a.outputTokens + b.outputTokens,
+				totalTokens: a.totalTokens + b.totalTokens,
+			}
+		: b;
+
+/**
+ * Runs a tool loop to the end for the non-streaming routes (usage summed
+ * over its calls). Sources are the loop's `sources` event, else `sources`.
+ */
+const collectToolTurn = async (
+	sources: SearchResult[],
+	loop: AsyncGenerator<ChatStreamEvent, TurnOutcome>,
+): Promise<{ result: QueryResult; outcome: TurnOutcome }> => {
+	let usage: AIUsage | undefined;
+	let toolCalls: Extract<ToolLoopEvent, { type: "tool_calls" }>["data"] | undefined;
+	let step = await loop.next();
+	while (!step.done) {
+		const event = step.value;
+		if (event.type === "sources") sources = event.data;
+		if (event.type === "usage") usage = addUsage(usage, event.data);
+		if (event.type === "tool_calls") toolCalls = event.data;
+		step = await loop.next();
+	}
+	const outcome = step.value;
+	return {
+		result: {
+			answer: outcome.answer,
+			sources,
+			usage,
+			finishReason: outcome.finishReason,
+			...(toolCalls && {
+				toolCalls: toolCalls.calls,
+				continuationId: toolCalls.continuationId,
+				expiresAt: toolCalls.expiresAt,
+			}),
+		},
+		outcome,
+	};
+};
+
+// ============================================================================
+// Chat entry points
+// ============================================================================
+
 /**
  * Query the RAG system (non-streaming).
- * Reserves credits first and settles on actual usage afterwards.
+ * Reserves credits first and settles on actual usage afterwards. With
+ * enabled profile tools the answer may be a tool call request instead.
  */
 export const queryRAG = async (
 	query: string,
-	options: QueryOptions,
+	options: ChatOptions,
 ): Promise<QueryResult> => {
-	const prepared = await prepareChat(query, options);
+	const context = await prepareChat(query, options);
+
+	if (context.tools.length > 0) {
+		const state = startToolTurn(query, context, options);
+		const { result } = await collectToolTurn(
+			context.sources,
+			runToolLoop(state, toolLoopDeps(options, "query_tools"), null),
+		);
+		return result;
+	}
+
+	const charge = await reserveChat(
+		context.settings,
+		plainPromptTokens(context, query),
+		options,
+	);
 
 	// True once the provider accepted the request; a rejected call is refunded
 	let providerCalled = false;
@@ -813,15 +981,15 @@ export const queryRAG = async (
 		try {
 			result = await OpenRouterQuery(
 				{
-					model: prepared.modelId,
-					temperature: prepared.temperature,
-					topP: prepared.topP,
-					maxTokens: prepared.maxTokens,
-					reasoning: prepared.reasoning,
+					model: context.settings.modelId,
+					temperature: context.settings.temperature,
+					topP: context.settings.topP,
+					maxTokens: context.settings.maxTokens,
+					reasoning: context.settings.reasoning as ReasoningEffort,
 					stream: false,
 				},
-				prepared.messages,
-				prepared.systemPrompt,
+				context.messages,
+				context.systemPrompt,
 				query,
 			);
 		} catch (err) {
@@ -834,12 +1002,13 @@ export const queryRAG = async (
 		return {
 			// An empty answer is billed (usage is set) and reported as a 502
 			answer: requireAnswer(result.text, result.finishReason),
-			sources: prepared.sources,
+			sources: context.sources,
 			usage: result.usage,
+			finishReason: "stop",
 		};
 	} finally {
 		await settleChat({
-			prepared,
+			charge,
 			options,
 			providerCalled,
 			usage,
@@ -851,40 +1020,52 @@ export const queryRAG = async (
 /**
  * Query the RAG system with streaming.
  * Reserves credits first; settles in `finally`, so completed, failed and
- * abandoned (client disconnect) streams are all billed.
+ * abandoned (client disconnect) streams are all billed. The caller ends the
+ * stream (`done`) once the outcome is stored.
  */
 export async function* queryRAGStream(
 	query: string,
-	options: QueryOptions,
-): AsyncGenerator<
-	| { type: "sources"; data: SearchResult[] }
-	| { type: "token"; data: string }
-	| { type: "usage"; data: AIUsage }
-	| { type: "done" },
-	void,
-	unknown
-> {
-	const prepared = await prepareChat(query, options);
+	options: ChatOptions,
+): AsyncGenerator<ChatStreamEvent, TurnOutcome, unknown> {
+	const context = await prepareChat(query, options);
+
+	if (context.tools.length > 0) {
+		const state = startToolTurn(query, context, options);
+		// Sources follow the first reservation, as on the plain path
+		return yield* runToolLoop(
+			state,
+			toolLoopDeps(options, "query_stream_tools"),
+			null,
+			[{ type: "sources", data: context.sources }],
+		);
+	}
+
+	const charge = await reserveChat(
+		context.settings,
+		plainPromptTokens(context, query),
+		options,
+	);
 
 	let providerCalled = false;
 	let getUsage: (() => Promise<AIUsage>) | null = null;
 	let usage: AIUsage | null = null;
+	let answer = "";
 
 	try {
-		yield { type: "sources", data: prepared.sources };
+		yield { type: "sources", data: context.sources };
 
 		try {
 			const call = OpenRouterQuery(
 				{
-					model: prepared.modelId,
-					temperature: prepared.temperature,
-					topP: prepared.topP,
-					maxTokens: prepared.maxTokens,
-					reasoning: prepared.reasoning,
+					model: context.settings.modelId,
+					temperature: context.settings.temperature,
+					topP: context.settings.topP,
+					maxTokens: context.settings.maxTokens,
+					reasoning: context.settings.reasoning as ReasoningEffort,
 					stream: true,
 				},
-				prepared.messages,
-				prepared.systemPrompt,
+				context.messages,
+				context.systemPrompt,
 				query,
 			);
 			getUsage = call.getUsage;
@@ -895,6 +1076,7 @@ export async function* queryRAGStream(
 				providerCalled = true;
 			};
 			for await (const delta of requireStreamedAnswer(call.stream, accepted)) {
+				answer += delta;
 				yield { type: "token", data: delta };
 			}
 		} catch (err) {
@@ -905,7 +1087,7 @@ export async function* queryRAGStream(
 	} finally {
 		if (providerCalled) usage = await fetchStreamUsage(getUsage);
 		await settleChat({
-			prepared,
+			charge,
 			options,
 			providerCalled,
 			usage,
@@ -914,5 +1096,48 @@ export async function* queryRAGStream(
 	}
 
 	if (usage) yield { type: "usage", data: usage };
-	yield { type: "done" };
+	return { finishReason: "stop", answer, conversation: options.conversation };
+}
+
+// Sources of the stored turn, re-emitted once the first call is reserved
+const storedSources = (state: ToolTurnState) => [
+	{ type: "sources" as const, data: state.sources as SearchResult[] },
+];
+
+/**
+ * Continue a tool turn with the client's results (non-streaming). No
+ * retrieval: the sources and prompt come from the stored turn.
+ */
+export const continueRAG = async (
+	continuationId: string,
+	toolResults: ToolResult[],
+	caller: ContinuationCaller,
+): Promise<{ result: QueryResult; outcome: TurnOutcome }> => {
+	return collectToolTurn(
+		[],
+		continueToolTurn({
+			redis,
+			continuationId,
+			toolResults,
+			caller,
+			deps: toolLoopDeps(caller, "continue"),
+			leadEvents: storedSources,
+		}),
+	);
+};
+
+/** Continue a tool turn with the client's results, streaming. */
+export async function* continueRAGStream(
+	continuationId: string,
+	toolResults: ToolResult[],
+	caller: ContinuationCaller,
+): AsyncGenerator<ChatStreamEvent, TurnOutcome, unknown> {
+	return yield* continueToolTurn({
+		redis,
+		continuationId,
+		toolResults,
+		caller,
+		deps: toolLoopDeps(caller, "continue_stream"),
+		leadEvents: storedSources,
+	});
 }

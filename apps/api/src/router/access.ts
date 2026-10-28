@@ -3,6 +3,8 @@
  * stay unit-testable).
  */
 
+import { ORPCError } from "@orpc/server";
+
 /** Role check on a user's role (can be comma-separated for multiple roles). */
 export const hasRole = (
 	role: string | null | undefined,
@@ -120,3 +122,21 @@ export const createTtlCache = <V>(
 		},
 	};
 };
+
+/**
+ * Knowledge base (profile) for a request. A key bound to one knowledge base
+ * always uses it and cannot name another; other callers choose freely (and
+ * their profile ownership is checked when it is loaded).
+ */
+export function resolveKnowledgeBase(
+	requestedProfileId: string | undefined,
+	apiKeyProfileId: string | null,
+): string | undefined {
+	if (!apiKeyProfileId) return requestedProfileId;
+	if (requestedProfileId && requestedProfileId !== apiKeyProfileId) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "This API key is limited to another knowledge base",
+		});
+	}
+	return apiKeyProfileId;
+}
