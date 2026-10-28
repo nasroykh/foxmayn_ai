@@ -225,6 +225,12 @@ function ChatPage() {
 					assistantContent += chunk.data;
 					const content = assistantContent;
 					updateAssistant((m) => ({ ...m, content }));
+				} else if (chunk.type === "tool_calls") {
+					// Tools run in the API client, which posts results to /chat/continue
+					const names = chunk.data.calls.map((c) => c.name).join(", ");
+					toast.info(
+						`The model asked to call ${names}. Tools run in your API client; this chat cannot run them.`,
+					);
 				}
 			}
 		} catch (err) {
