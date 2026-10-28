@@ -60,6 +60,13 @@ import {
 	IconBrain,
 	IconStar,
 } from "@tabler/icons-react";
+import { ProfileToolsEditor } from "@/components/profile-tools-editor";
+import {
+	draftsToTools,
+	hasToolErrors,
+	toolsToDrafts,
+	type ToolDraft,
+} from "@/lib/profile-tools";
 import {
 	Combobox,
 	ComboboxInput,
@@ -138,6 +145,10 @@ const profileFormSchema = z
 			.min(1, "At least 1")
 			.max(32000, "At most 32000"),
 		isDefault: z.boolean(),
+		// Per-tool messages show inline in the tools editor; this only blocks save
+		tools: z
+			.custom<ToolDraft[]>()
+			.refine((tools) => !hasToolErrors(tools), "Fix the errors in tools"),
 	})
 	.refine((v) => v.chunkOverlap < v.chunkSize, {
 		message: "Overlap must be smaller than the chunk size",
@@ -213,6 +224,7 @@ function toPayload(values: ProfileFormValues): CreateProfileInput {
 		reasoningEffort: values.reasoningEffort,
 		maxTokens: values.maxTokens,
 		isDefault: values.isDefault,
+		tools: draftsToTools(values.tools),
 	};
 }
 
@@ -503,6 +515,7 @@ function ProfileFormDialog({
 			reasoningEffort: toReasoningEffort(defaultValues?.reasoningEffort),
 			maxTokens: defaultValues?.maxTokens ?? 2048,
 			isDefault: defaultValues?.isDefault ?? false,
+			tools: toolsToDrafts(defaultValues?.tools),
 		},
 	});
 
@@ -776,6 +789,19 @@ function ProfileFormDialog({
 								placeholder="Optional system prompt..."
 							/>
 							{fieldError("systemPrompt")}
+						</div>
+						<div className="col-span-2 space-y-2">
+							<Controller
+								name="tools"
+								control={control}
+								render={({ field }) => (
+									<ProfileToolsEditor
+										value={field.value}
+										onChange={field.onChange}
+									/>
+								)}
+							/>
+							{fieldError("tools")}
 						</div>
 						<div className="col-span-2 flex items-center gap-2">
 							<input
