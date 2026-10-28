@@ -83,15 +83,32 @@ test("buildRetrievalQuery returns the query alone without a previous user turn",
 	assert.equal(buildRetrievalQuery("q", [{ role: "user", content: "   " }]), "q");
 });
 
-test("buildRetrievalQuery caps the text but never cuts the query", () => {
+test("buildRetrievalQuery caps the whole text, the query first", () => {
 	const long = "x".repeat(5000);
 	const result = buildRetrievalQuery("short", [{ role: "user", content: long }]);
 	assert.equal(result.length, RETRIEVAL_QUERY_MAX_CHARS);
 	assert.ok(result.endsWith("\nshort"));
 
+	// A query over the cap is cut for retrieval and used alone
 	const longQuery = "q".repeat(RETRIEVAL_QUERY_MAX_CHARS + 10);
 	assert.equal(
 		buildRetrievalQuery(longQuery, [{ role: "user", content: "prev" }]),
-		longQuery,
+		"q".repeat(RETRIEVAL_QUERY_MAX_CHARS),
 	);
+});
+
+test("buildRetrievalQuery never splits a surrogate pair", () => {
+	// The cut falls between the two halves of the emoji
+	const query = "a".repeat(RETRIEVAL_QUERY_MAX_CHARS - 1) + "😀";
+	const result = buildRetrievalQuery(query, []);
+	assert.equal(result, "a".repeat(RETRIEVAL_QUERY_MAX_CHARS - 1));
+
+	const previous = "😀".repeat(10);
+	// Room for the previous turn: 1000 - 994 - 1 = 5 units, so 2 emoji
+	const withContext = buildRetrievalQuery("b".repeat(994), [
+		{ role: "user", content: previous },
+	]);
+	assert.ok(withContext.startsWith("😀😀\n"));
+	assert.ok(withContext.length <= RETRIEVAL_QUERY_MAX_CHARS);
+	assert.doesNotMatch(withContext, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
 });
