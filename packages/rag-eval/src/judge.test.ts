@@ -99,7 +99,7 @@ test("judgeAnswer calls OpenRouter at temperature 0 and reads the verdict", asyn
 	const result = await judgeAnswer({
 		fetch,
 		apiKey: "sk-or-secret",
-		model: "google/gemini-2.5-flash-lite",
+		model: "openai/gpt-6-luna",
 		question: "q",
 		answer: "a",
 		sources: [],
@@ -110,9 +110,14 @@ test("judgeAnswer calls OpenRouter at temperature 0 and reads the verdict", asyn
 		verdict: VERDICT,
 		usage: { inputTokens: 120, outputTokens: 30 },
 	});
-	const body = JSON.parse(String(calls[0].init.body)) as { temperature: number; model: string };
+	const body = JSON.parse(String(calls[0].init.body)) as {
+		temperature: number;
+		model: string;
+		reasoning: { effort: string };
+	};
 	assert.equal(body.temperature, 0);
-	assert.equal(body.model, "google/gemini-2.5-flash-lite");
+	assert.equal(body.model, "openai/gpt-6-luna");
+	assert.deepEqual(body.reasoning, { effort: "none" });
 });
 
 test("judgeAnswer: an HTTP failure or bad output is a judge_error without the key", async () => {
