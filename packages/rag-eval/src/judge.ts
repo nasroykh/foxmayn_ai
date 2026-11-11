@@ -2,8 +2,9 @@ import { z } from "zod";
 import type { Passage, Usage } from "./client";
 import { HttpError, postJson, type FetchLike, type RetryOptions } from "./http";
 
-// Cheap, fast and reliable at strict JSON; from the known model list
-export const DEFAULT_JUDGE_MODEL = "google/gemini-2.5-flash-lite";
+// Recent, cheap and reliable at strict JSON. A different family from the
+// default chat model (Claude Haiku), so the judge does not grade its own style.
+export const DEFAULT_JUDGE_MODEL = "openai/gpt-6-luna";
 
 const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -28,7 +29,11 @@ export const parseJudgeOutput = (text: string): JudgeResult => {
 	const start = text.indexOf("{");
 	const end = text.lastIndexOf("}");
 	if (start === -1 || end < start) {
-		return { ok: false, error: "judge_error", detail: "no JSON object in the judge output" };
+		return {
+			ok: false,
+			error: "judge_error",
+			detail: `no JSON object in the judge output: ${JSON.stringify(text.slice(0, 160))}`,
+		};
 	}
 	let json: unknown;
 	try {
@@ -121,7 +126,7 @@ export const buildJudgeMessages = (input: {
 	];
 };
 
-/** One judge call on OpenRouter, temperature 0. Failures are judge_errors. */
+/** One judge call on OpenRouter, temperature 0, reasoning off. Failures are judge_errors. */
 export const judgeAnswer = async (config: {
 	fetch: FetchLike;
 	apiKey: string;
@@ -143,7 +148,10 @@ export const judgeAnswer = async (config: {
 			{
 				model: config.model,
 				temperature: 0,
-				max_tokens: 400,
+				// The verdict is short. Reasoning off, with headroom for models
+				// that reason anyway, or the budget runs out before any output.
+				max_tokens: 1000,
+				reasoning: { effort: "none" },
 				messages: buildJudgeMessages(config),
 			},
 			config.retry,
