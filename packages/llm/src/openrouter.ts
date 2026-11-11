@@ -494,14 +494,20 @@ export class TranscribePageError extends Error {
 	}
 }
 
-/** The provider refused the request (non-2xx). Carries the status like SDK errors do. */
+/**
+ * The provider refused the request: a non-2xx status, or an `error` object in
+ * a 2xx body. Carries the status like SDK errors do. `paidUsage` is set only
+ * when the provider reported tokens it charged anyway.
+ */
 export class OpenRouterHttpError extends Error {
 	readonly statusCode: number;
+	readonly paidUsage?: PageUsage;
 
-	constructor(statusCode: number, detail: string) {
+	constructor(statusCode: number, detail: string, paidUsage?: PageUsage) {
 		super(`OpenRouter request failed with status ${statusCode}${detail ? `: ${detail}` : ""}`);
 		this.name = "OpenRouterHttpError";
 		this.statusCode = statusCode;
+		this.paidUsage = paidUsage;
 	}
 }
 
@@ -558,6 +564,61 @@ export const parseChatCompletion = (
 };
 
 /**
+ * Turn a 2xx response body into the page result, or throw the right error:
+ * - an `error` object and no choice: OpenRouterHttpError with the code from the
+ *   body (402, 401, 403... are then permanent), `paidUsage` only if the body has usage;
+ * - nothing readable, or the model stopped with finish_reason "error":
+ *   TranscribePageError carrying the body's usage, else `unreadableUsage`
+ *   (the provider answered, so it may be billed; never 0).
+ */
+export const readTranscribeResponse = (
+	body: unknown,
+	unreadableUsage: PageUsage,
+): TranscribePageResult => {
+	const parsed = parseChatCompletion(body);
+	const reported =
+		parsed && parsed.usage.inputTokens + parsed.usage.outputTokens > 0
+			? parsed.usage
+			: undefined;
+
+	if (
+		isRecord(body) &&
+		isRecord(body.error) &&
+		!(Array.isArray(body.choices) && body.choices.length > 0)
+	) {
+		const code = Number(body.error.code);
+		// A 2xx body carries the real status in error.code; anything else is a gateway error
+		const status = Number.isInteger(code) && code >= 400 && code < 600 ? code : 502;
+		const message = typeof body.error.message === "string" ? body.error.message.slice(0, 200) : "";
+		const usage = isRecord(body.usage)
+			? {
+					inputTokens: tokenCount(body.usage.prompt_tokens),
+					outputTokens: tokenCount(body.usage.completion_tokens),
+				}
+			: undefined;
+		throw new OpenRouterHttpError(
+			status,
+			message,
+			usage && usage.inputTokens + usage.outputTokens > 0 ? usage : undefined,
+		);
+	}
+
+	if (!parsed) {
+		throw new TranscribePageError(
+			"The page transcription answer had no choice and no usage",
+			unreadableUsage,
+		);
+	}
+	if (parsed.finishReason === "error") {
+		throw new TranscribePageError(
+			"The model stopped with an error",
+			reported ?? unreadableUsage,
+		);
+	}
+	return parsed;
+};
+
+/**
  * Send one page image (PNG bytes) with an instruction to a vision model and
  * return its answer. Deterministic (temperature 0), no reasoning, output
  * capped at 4000 tokens. Usage is 0 when the provider reports none: the
@@ -568,6 +629,9 @@ export const parseChatCompletion = (
  * or a non-2xx status, is an ordinary error (not billed). Once a 2xx response
  * is there, any failure reading it throws a `TranscribePageError` carrying
  * `unreadableUsage`, the usage to charge for an answer that cannot be read.
+ * Accepted risk: a connection that drops or times out before the response
+ * headers arrive is not billed here, although the provider may have charged
+ * for the call (it cannot be told apart from a request that never ran).
  */
 export async function OpenRouterTranscribePage(options: {
 	model: string;
@@ -628,12 +692,9 @@ export async function OpenRouterTranscribePage(options: {
 		}
 
 		// From here on the provider has answered: whatever fails below may be billed
+		let body: unknown;
 		try {
-			const parsed = parseChatCompletion(await response.json());
-			if (!parsed) {
-				throw new Error("OpenRouter returned no choice and no usage");
-			}
-			return parsed;
+			body = await response.json();
 		} catch (error) {
 			throw new TranscribePageError(
 				"The page transcription answer could not be read",
@@ -641,6 +702,7 @@ export async function OpenRouterTranscribePage(options: {
 				{ cause: error },
 			);
 		}
+		return readTranscribeResponse(body, unreadableUsage);
 	} catch (error) {
 		console.error("[OpenRouter] Page transcription failed:", describeError(error));
 		throw error;

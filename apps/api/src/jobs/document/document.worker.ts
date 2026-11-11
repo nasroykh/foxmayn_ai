@@ -1075,12 +1075,14 @@ async function processTranscribeDocument(
 			throw queueErr;
 		}
 		// The reservation stays held and the pages are unbilled: fail the job so
-		// it shows up (the settlement failure was logged above)
+		// it shows up (the settlement failure was logged above). Unrecoverable: a
+		// retry would find no stored PDF and report success, hiding this.
 		if (outcome === "failed") {
-			throw new Error(
+			const unsettled = new UnrecoverableError(
 				`Transcription settlement failed for ${documentId}: reservation not settled`,
-				{ cause: error },
 			);
+			unsettled.cause = error;
+			throw unsettled;
 		}
 		return result(false, totalPages);
 	}

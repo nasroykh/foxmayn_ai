@@ -336,3 +336,30 @@ test("absurd or unusable page sizes are refused before any canvas is made", () =
 	assert.throws(() => planPageImageWidth(Number.NaN, 100), PageNotRenderableError);
 	assert.throws(() => planPageImageWidth(100, Number.POSITIVE_INFINITY), PageNotRenderableError);
 });
+
+test("huge, tiny and non-finite page boxes are refused, never an Infinity width", () => {
+	// pdf.js accepts exponent numbers in a MediaBox
+	for (const [w, h] of [
+		[1e306, 1e306],
+		[1e306, 1],
+		[1, 1e306],
+		[1e308, 1e-308],
+		[1e-308, 1e308],
+		[1e-300, 1e-300],
+		[0.5, 0.5],
+		[2_000_000, 2_000_000],
+		[Number.NaN, 100],
+		[100, Number.NaN],
+		[-100, 100],
+		[100, -100],
+		[Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
+	]) {
+		assert.throws(() => planPageImageWidth(w, h), PageNotRenderableError, `${w} x ${h}`);
+	}
+	// Whatever is accepted is a finite width within the budget
+	for (const [w, h] of [[1, 1], [14400, 14400], [612, 792], [999_999, 1_000_000], [100, 1000]]) {
+		const imageWidth = planPageImageWidth(w, h);
+		assert.ok(Number.isFinite(imageWidth) && imageWidth >= 1 && imageWidth <= PAGE_IMAGE_WIDTH);
+		assert.ok((imageWidth * h) / w <= MAX_PAGE_IMAGE_HEIGHT);
+	}
+});

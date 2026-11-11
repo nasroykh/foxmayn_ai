@@ -37,6 +37,10 @@ export const MAX_PAGE_IMAGE_HEIGHT = 4000;
 // Below this a page is too thin to read: refuse instead of rendering a sliver
 export const MIN_PAGE_IMAGE_WIDTH = 200;
 export const MIN_PAGE_IMAGE_HEIGHT = 50;
+// A page box outside these sizes (in points) is not a real page: pdf.js accepts
+// exponent numbers in a MediaBox, and scaling those loses all precision
+export const MIN_PAGE_BOX_POINTS = 1;
+export const MAX_PAGE_BOX_POINTS = 1_000_000;
 
 /** A page whose size cannot be rendered into a readable, bounded image. */
 export class PageNotRenderableError extends Error {
@@ -49,20 +53,30 @@ export class PageNotRenderableError extends Error {
 /**
  * Pixel width to render a page of `width` x `height` points at: 1400, or less
  * when the page is so tall that the image would pass 4000 px. Throws
- * PageNotRenderableError for sizes that are not usable (zero, not finite, or
- * an aspect ratio so extreme the image would be a sliver).
+ * PageNotRenderableError for sizes that are not usable (zero, negative, not
+ * finite, absurdly large or small, or an aspect ratio so extreme the image
+ * would be a sliver). Computed with ratios, so no product can overflow.
  */
 export const planPageImageWidth = (width: number, height: number): number => {
-	if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0)
+	const inBounds = (n: number) =>
+		Number.isFinite(n) && n >= MIN_PAGE_BOX_POINTS && n <= MAX_PAGE_BOX_POINTS;
+	if (!inBounds(width) || !inBounds(height))
 		throw new PageNotRenderableError("Page has no usable size");
 
-	let imageWidth = PAGE_IMAGE_WIDTH;
-	let imageHeight = (height * imageWidth) / width;
-	if (imageHeight > MAX_PAGE_IMAGE_HEIGHT) {
+	let imageWidth: number = PAGE_IMAGE_WIDTH;
+	let imageHeight = imageWidth * (height / width);
+	if (!(imageHeight <= MAX_PAGE_IMAGE_HEIGHT)) {
 		imageHeight = MAX_PAGE_IMAGE_HEIGHT;
-		imageWidth = Math.floor((MAX_PAGE_IMAGE_HEIGHT * width) / height);
+		imageWidth = Math.floor(MAX_PAGE_IMAGE_HEIGHT * (width / height));
 	}
-	if (imageWidth < MIN_PAGE_IMAGE_WIDTH || imageHeight < MIN_PAGE_IMAGE_HEIGHT)
+	if (
+		!Number.isFinite(imageWidth) ||
+		!Number.isFinite(imageHeight) ||
+		imageWidth < MIN_PAGE_IMAGE_WIDTH ||
+		imageWidth > PAGE_IMAGE_WIDTH ||
+		imageHeight < MIN_PAGE_IMAGE_HEIGHT ||
+		imageHeight > MAX_PAGE_IMAGE_HEIGHT
+	)
 		throw new PageNotRenderableError("Page shape is too extreme to render");
 	return imageWidth;
 };
