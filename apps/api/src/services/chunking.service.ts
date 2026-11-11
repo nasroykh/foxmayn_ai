@@ -61,6 +61,17 @@ export const estimateTokens = (text: string): number =>
 	calculateTokens(text, "gpt-4o");
 
 /**
+ * Text sent to the embedding model for one chunk: the document title, then
+ * the chunk. A chunk alone often lacks the product or model name (a spec
+ * table, the middle of a datasheet), so near-identical documents would match
+ * the same questions. The stored chunk stays the plain content.
+ */
+export const embeddingInput = (title: string | null | undefined, content: string): string => {
+	const heading = title?.trim();
+	return heading ? `${heading}\n\n${content}` : content;
+};
+
+/**
  * Split text into chunks using LangChain's RecursiveCharacterTextSplitter
  */
 export const chunkText = async (

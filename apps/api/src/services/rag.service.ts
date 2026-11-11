@@ -68,6 +68,7 @@ import {
 } from "../utils/profile_schema";
 import { estimateTokens } from "./chunking.service";
 import { redis } from "../config/redis";
+import { formatContext } from "../utils/context";
 import { enabledTools, type ToolSpec } from "../utils/profile_tools";
 import {
 	continuationRef,
@@ -711,7 +712,7 @@ const prepareChat = async (
 		options,
 	);
 
-	const context = sources.map((r, i) => `[${i + 1}] ${r.content}`).join("\n\n");
+	const context = formatContext(sources);
 
 	return {
 		settings: {
