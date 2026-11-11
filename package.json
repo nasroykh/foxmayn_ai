@@ -19,7 +19,8 @@
 		"db:studio": "turbo run db:studio --filter=@repo/db",
 		"models:generate": "turbo run models:generate --filter=@repo/llm",
 		"models:eval-multilingual": "pnpm --filter @repo/llm models:eval-multilingual",
-		"rag:eval": "pnpm --filter @repo/rag-eval eval"
+		"rag:eval": "pnpm --filter @repo/rag-eval eval",
+		"lead:onboard": "pnpm --filter @repo/onboard onboard"
 	},
 	"devDependencies": {
 		"turbo": "^2.11.10"

@@ -1,0 +1,11 @@
+{
+	"extends": "@repo/tsconfig/node.json",
+	"compilerOptions": {
+		"rootDir": "src",
+		"noEmit": true,
+		"types": ["node"],
+		"tsBuildInfoFile": "./node_modules/.tsbuildinfo"
+	},
+	"include": ["src/**/*"],
+	"exclude": ["node_modules"]
+}

@@ -277,6 +277,8 @@ export const documentRoutes = {
 			z.object({
 				offset: z.coerce.number().min(0).optional(),
 				limit: z.coerce.number().min(1).max(100).optional(),
+				// Only documents stored with this profile id; ownership comes from userId
+				profileId: z.string().min(1).optional(),
 			}),
 		)
 		.output(
@@ -296,11 +298,11 @@ export const documentRoutes = {
 			}),
 		)
 		.handler(async ({ input, context }) => {
-			const { limit = 20, offset = 0 } = input;
+			const { limit = 20, offset = 0, profileId } = input;
 			const userId = context.user.id;
 			const [docs, total] = await Promise.all([
-				listDocuments(limit, offset, userId),
-				countDocuments(userId),
+				listDocuments(limit, offset, userId, profileId),
+				countDocuments(userId, profileId),
 			]);
 
 			return {
