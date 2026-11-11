@@ -5,9 +5,9 @@
  * Run from the repository root:
  *   pnpm lead:onboard --pack <dir> [--topup <usd>] [--reimport] [--wait] [--dry-run]
  *
- * Env (root .env or the shell): FOXMAYN_AI_URL, FOXMAYN_AI_EMAIL,
- * FOXMAYN_AI_PASSWORD (an account that may create organizations; --topup
- * needs a global admin).
+ * Env (root .env or the shell): FOXMAYN_AI_URL, the app's own origin (sign-in
+ * checks the Origin header against it), FOXMAYN_AI_EMAIL and
+ * FOXMAYN_AI_PASSWORD of a global admin (public sites and --topup need one).
  */
 
 import { readFileSync } from "node:fs";
