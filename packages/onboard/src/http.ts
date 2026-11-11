@@ -21,7 +21,13 @@ export class HttpError extends Error {
 	}
 }
 
-const retryable = (status: number) => status === 429 || status >= 500;
+/**
+ * A 429 is refused before any work, so every method retries it. A 5xx or a
+ * dropped connection may come after the server did the work: only methods that
+ * are safe to repeat retry those (a repeated POST could top up twice).
+ */
+const retryable = (method: string, status: number) =>
+	status === 429 || (status >= 500 && method !== "POST");
 
 export interface Client {
 	request: (method: string, path: string, body?: unknown) => Promise<unknown>;
@@ -29,7 +35,8 @@ export interface Client {
 
 /**
  * JSON client of one deployment. Keeps the session cookies in memory only,
- * sends the Origin header the API trusts, retries 429, 5xx and network errors.
+ * sends the Origin header the API trusts, retries 429 always, and 5xx and
+ * network errors on methods other than POST.
  */
 export const createClient = (options: {
 	baseUrl: string;
@@ -66,7 +73,7 @@ export const createClient = (options: {
 					body: body === undefined ? undefined : JSON.stringify(body),
 				});
 			} catch (err) {
-				if (attempt >= retry.retries) {
+				if (method === "POST" || attempt >= retry.retries) {
 					throw new HttpError(0, `Network error: ${err instanceof Error ? err.message : String(err)}`);
 				}
 				await retry.sleep(retry.baseDelayMs * 2 ** attempt);
@@ -75,9 +82,14 @@ export const createClient = (options: {
 			remember(response);
 			if (response.ok) {
 				const text = await response.text();
-				return text ? (JSON.parse(text) as unknown) : null;
+				if (!text) return null;
+				try {
+					return JSON.parse(text) as unknown;
+				} catch {
+					throw new HttpError(response.status, `HTTP ${response.status}: response is not JSON`);
+				}
 			}
-			if (retryable(response.status) && attempt < retry.retries) {
+			if (retryable(method, response.status) && attempt < retry.retries) {
 				await retry.sleep(retry.baseDelayMs * 2 ** attempt);
 				continue;
 			}

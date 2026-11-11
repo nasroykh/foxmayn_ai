@@ -5,6 +5,8 @@
  * Run from the repository root:
  *   pnpm lead:onboard --pack <dir> [--topup <usd>] [--reimport] [--wait] [--dry-run]
  *
+ * Every step is safe to rerun except --topup, which adds credits each time.
+ *
  * Env (root .env or the shell): FOXMAYN_AI_URL, the app's own origin (sign-in
  * checks the Origin header against it), FOXMAYN_AI_EMAIL and
  * FOXMAYN_AI_PASSWORD of a global admin (public sites and --topup need one).
@@ -76,7 +78,10 @@ const main = async () => {
 		wait: values.wait,
 		log: (line) => console.log(redact(line)),
 	});
-	if (result.failed > 0 || result.siteFailures > 0) process.exitCode = 1;
+	const unfinished =
+		result.waitCounts !== undefined &&
+		Object.entries(result.waitCounts).some(([status, n]) => status !== "indexed" && n > 0);
+	if (result.failed > 0 || result.siteFailures > 0 || unfinished) process.exitCode = 1;
 };
 
 main().catch((err: unknown) => {

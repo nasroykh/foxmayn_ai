@@ -77,6 +77,15 @@ const listDocuments = async (client: Client, profileId: string): Promise<Existin
 	}
 };
 
+const findProfile = async (client: Client, name: string) => {
+	for (let offset = 0; ; offset += PAGE) {
+		const body = asRecord(await client.request("GET", `${API}/profiles?limit=${PAGE}&offset=${offset}`));
+		const page = (body.profiles ?? []) as { id: string; name: string }[];
+		const match = page.find((p) => p.name === name);
+		if (match || page.length < PAGE) return match;
+	}
+};
+
 export const runOnboard = async (opts: OnboardOptions): Promise<OnboardResult> => {
 	const { client, pack, log } = opts;
 	const sleep = opts.sleep ?? defaultSleep;
@@ -126,9 +135,7 @@ export const runOnboard = async (opts: OnboardOptions): Promise<OnboardResult> =
 	}
 
 	// 5. Profile
-	const profilesBody = asRecord(await client.request("GET", `${API}/profiles?limit=${PAGE}`));
-	const profiles = (profilesBody.profiles ?? []) as { id: string; name: string }[];
-	const found = profiles.find((p) => p.name === pack.profile.name);
+	const found = await findProfile(client, pack.profile.name);
 	let profileId: string;
 	if (found) {
 		await client.request("PUT", `${API}/profiles/${q(found.id)}`, { data: pack.profile });
@@ -208,8 +215,10 @@ export const runOnboard = async (opts: OnboardOptions): Promise<OnboardResult> =
 						error: typeof error === "string" ? error : undefined,
 					});
 				} catch (err) {
-					// A poll error is not a verdict on the document; try again
 					if (!(err instanceof HttpError)) throw err;
+					// Deleted while indexing: it will never finish
+					if (err.status === 404) state.set(id, { status: "failed", error: "document not found" });
+					// Any other poll error is not a verdict on the document; try again
 				}
 			});
 			const pending = [...state.values()].filter((s) => s.status !== "indexed" && s.status !== "failed");
@@ -224,6 +233,9 @@ export const runOnboard = async (opts: OnboardOptions): Promise<OnboardResult> =
 				.join(", ")}`,
 		);
 		for (const s of state.values()) if (s.error) log(`  document error: ${s.error}`);
+		if ((waitCounts.indexed ?? 0) < state.size && !waitCounts.failed) {
+			log("wait: timed out before every document finished");
+		}
 	}
 
 	return {

@@ -526,14 +526,14 @@ export const getDocument = async (documentId: string, userId: string) => {
 	return doc || null;
 };
 
-/**
- * List documents (scoped to user). Never selects the document text.
- */
 const documentListFilter = (userId: string, profileId?: string) =>
 	profileId
 		? and(eq(document.userId, userId), eq(document.profileId, profileId))
 		: eq(document.userId, userId);
 
+/**
+ * List documents (scoped to user). Never selects the document text.
+ */
 export const listDocuments = async (
 	limit: number,
 	offset: number,

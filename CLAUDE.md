@@ -32,7 +32,7 @@ Run from the repository root.
 | `pnpm auth:generate` | Regenerate Better Auth tables |
 | `pnpm models:generate` | Refresh prices in the static model list |
 | `pnpm rag:eval --file cases.jsonl` | Retrieval metrics of a deployed API; `--answers` also judges answers (spends credits) |
-| `pnpm lead:onboard --pack <dir>` | Set up a lead demo from `<dir>/pack.json`; safe to rerun. `--topup <usd>`, `--reimport`, `--wait`, `--dry-run` |
+| `pnpm lead:onboard --pack <dir>` | Set up a lead demo from `<dir>/pack.json`; safe to rerun except `--topup`. `--topup <usd>`, `--reimport`, `--wait`, `--dry-run` |
 
 Run one workspace: `pnpm --filter @repo/api test`. There is no format script. Match the existing style.
 
