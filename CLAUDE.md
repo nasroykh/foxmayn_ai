@@ -11,6 +11,7 @@ Multi-tenant RAG monorepo (pnpm workspaces, Turborepo). Read [README.md](README.
 - `packages/llm`: OpenRouter client and the static model list (`src/data/openrouter_models.ts`), the fallback for chat models and the allow-list for embedding models.
 - `packages/qdrant`: Qdrant helpers.
 - `packages/rag-eval`: RAG evaluation harness, an HTTP client of a deployed API (`src/cli.ts`). No DB, Redis or Qdrant access.
+- `packages/onboard`: lead onboarding, an HTTP client of a deployed API (`src/cli.ts`). Turns a lead folder (`pack.json`) into an organization, a profile, imported documents and public sites. Signs in as a global admin. No company data in code.
 - `packages/eslint-config`, `packages/tsconfig`: shared lint and TS config.
 
 ## Commands
@@ -31,6 +32,7 @@ Run from the repository root.
 | `pnpm auth:generate` | Regenerate Better Auth tables |
 | `pnpm models:generate` | Refresh prices in the static model list |
 | `pnpm rag:eval --file cases.jsonl` | Retrieval metrics of a deployed API; `--answers` also judges answers (spends credits) |
+| `pnpm lead:onboard --pack <dir>` | Set up a lead demo from `<dir>/pack.json`; safe to rerun except `--topup`. `--topup <usd>`, `--reimport`, `--wait`, `--dry-run` |
 
 Run one workspace: `pnpm --filter @repo/api test`. There is no format script. Match the existing style.
 

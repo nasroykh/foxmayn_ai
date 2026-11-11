@@ -158,6 +158,16 @@ If the newer release applied a migration that the older code cannot work with, r
 - `make clean` also removes built images, after a prompt. Volumes are kept.
 - `make clean-all` also deletes all data volumes. It asks you to type `delete`.
 
+## Public sites (lead demos)
+
+A public site serves a no-sign-in chat over one knowledge base on its own hostname, billed to an organization.
+
+1. Point the hostname's DNS at the server.
+2. Route it in the proxy to the same app container as `APP_URL`, passing the original `Host` header.
+3. Create the site from a lead folder: `pnpm lead:onboard --pack <dir> --wait`, with `FOXMAYN_AI_URL` set to `APP_URL` and the email and password of a global admin. Only a global admin can create or delete public sites.
+
+The `APP_URL` host itself can never be a public site.
+
 ## Troubleshooting
 
 | Symptom | Check |

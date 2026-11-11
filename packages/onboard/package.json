@@ -1,0 +1,25 @@
+{
+	"name": "@repo/onboard",
+	"version": "0.0.0",
+	"description": "Lead onboarding: turns a pack folder into a demo on a deployed Foxmayn AI, over HTTP",
+	"private": true,
+	"license": "MIT",
+	"scripts": {
+		"onboard": "tsx src/cli.ts",
+		"typecheck": "tsc --noEmit",
+		"lint": "eslint .",
+		"test": "tsx --test \"src/**/*.test.ts\""
+	},
+	"dependencies": {
+		"dotenv": "^18.0.9",
+		"zod": "^4.6.7"
+	},
+	"devDependencies": {
+		"@repo/eslint-config": "workspace:*",
+		"@repo/tsconfig": "workspace:*",
+		"@types/node": "^24.19.2",
+		"eslint": "^10.13.0",
+		"tsx": "^4.23.15",
+		"typescript": "~6.0.3"
+	}
+}

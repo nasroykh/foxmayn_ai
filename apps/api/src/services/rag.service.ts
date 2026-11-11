@@ -526,6 +526,11 @@ export const getDocument = async (documentId: string, userId: string) => {
 	return doc || null;
 };
 
+const documentListFilter = (userId: string, profileId?: string) =>
+	profileId
+		? and(eq(document.userId, userId), eq(document.profileId, profileId))
+		: eq(document.userId, userId);
+
 /**
  * List documents (scoped to user). Never selects the document text.
  */
@@ -533,11 +538,12 @@ export const listDocuments = async (
 	limit: number,
 	offset: number,
 	userId: string,
+	profileId?: string,
 ) => {
 	return await db
 		.select(documentSummaryColumns)
 		.from(document)
-		.where(eq(document.userId, userId))
+		.where(documentListFilter(userId, profileId))
 		.orderBy(desc(document.createdAt))
 		.limit(limit)
 		.offset(offset);
@@ -546,11 +552,11 @@ export const listDocuments = async (
 /**
  * Count total documents (scoped to user)
  */
-export const countDocuments = async (userId: string) => {
+export const countDocuments = async (userId: string, profileId?: string) => {
 	const [result] = await db
 		.select({ count: count() })
 		.from(document)
-		.where(eq(document.userId, userId));
+		.where(documentListFilter(userId, profileId));
 	return result?.count ?? 0;
 };
 
