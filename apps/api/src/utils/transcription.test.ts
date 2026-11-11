@@ -9,6 +9,10 @@ import {
 	emptyUsage,
 	estimateTranscriptionCost,
 	joinTranscribedPages,
+	MAX_PAGE_IMAGE_HEIGHT,
+	PAGE_IMAGE_WIDTH,
+	PageNotRenderableError,
+	planPageImageWidth,
 	resolvePageUsage,
 	transcribePages,
 	transcriptionCost,
@@ -143,7 +147,7 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 test("transcribePages returns the texts in page order and sums the usage", async () => {
 	const usage = emptyUsage();
 	const rendered: number[] = [];
-	const texts = await transcribePages({
+	const { texts } = await transcribePages({
 		total: 6,
 		usage,
 		render: async (page) => {
@@ -249,4 +253,86 @@ test("a page that cannot be rendered fails the run without calling the model for
 	);
 	assert.ok(!called.includes(3));
 	assert.ok(!called.includes(4));
+});
+
+test("a failed call that carries paidUsage is still counted", async () => {
+	const usage = emptyUsage();
+	await assert.rejects(
+		transcribePages({
+			total: 3,
+			usage,
+			render: async (page) => png(page),
+			transcribe: async (_image, page) => {
+				if (page === 2) {
+					// The provider answered but the body could not be read: billed anyway
+					throw Object.assign(new Error("unreadable"), {
+						paidUsage: { inputTokens: 4000, outputTokens: 1500 },
+					});
+				}
+				await delay(10);
+				return { text: "x", usage: { inputTokens: 100, outputTokens: 10 } };
+			},
+		}),
+		{ message: "unreadable" },
+	);
+	// Page 2 at the estimate, plus the calls that finished while it failed
+	assert.ok(usage.pages >= 1);
+	assert.ok(usage.inputTokens >= 4000);
+	assert.ok(usage.outputTokens >= 1500);
+});
+
+test("transcribePages lists the pages cut off by the output cap, in page order", async () => {
+	const { truncatedPages } = await transcribePages({
+		total: 6,
+		usage: emptyUsage(),
+		render: async (page) => png(page),
+		transcribe: async (_image, page) => {
+			await delay((7 - page) * 2);
+			return {
+				text: "x",
+				usage: { inputTokens: 1, outputTokens: 1 },
+				truncated: page === 5 || page === 2,
+			};
+		},
+	});
+	assert.deepEqual(truncatedPages, [2, 5]);
+});
+
+test("blank pages do not fail a document that has text elsewhere", () => {
+	assert.equal(joinTranscribedPages(["", "text", ""]).text, "text");
+});
+
+// ============================================================================
+// Page image budget
+// ============================================================================
+
+test("a normal page is rendered 1400 px wide", () => {
+	assert.equal(planPageImageWidth(612, 792), PAGE_IMAGE_WIDTH); // US letter
+	assert.equal(planPageImageWidth(595, 842), PAGE_IMAGE_WIDTH); // A4
+	assert.equal(planPageImageWidth(842, 595), PAGE_IMAGE_WIDTH); // A4 landscape
+	assert.equal(planPageImageWidth(10, 10), PAGE_IMAGE_WIDTH); // tiny pages scale up
+});
+
+test("a very tall page is scaled down to at most 4000 px high", () => {
+	// 1:3 page would be 4200 px at 1400 wide
+	const width = planPageImageWidth(100, 300);
+	assert.ok(width < PAGE_IMAGE_WIDTH);
+	assert.ok((300 * width) / 100 <= MAX_PAGE_IMAGE_HEIGHT);
+	// Never more than the pixel budget, whatever the shape
+	for (const [w, h] of [[100, 300], [50, 1000], [612, 10000], [1, 20]]) {
+		const imageWidth = planPageImageWidth(w, h);
+		assert.ok(imageWidth <= PAGE_IMAGE_WIDTH);
+		assert.ok(imageWidth * ((h * imageWidth) / w) <= PAGE_IMAGE_WIDTH * MAX_PAGE_IMAGE_HEIGHT);
+	}
+});
+
+test("absurd or unusable page sizes are refused before any canvas is made", () => {
+	// MediaBox [0 0 1 100000]
+	assert.throws(() => planPageImageWidth(1, 100_000), PageNotRenderableError);
+	assert.throws(() => planPageImageWidth(100_000, 1), PageNotRenderableError);
+	assert.throws(() => planPageImageWidth(0, 100), PageNotRenderableError);
+	assert.throws(() => planPageImageWidth(100, 0), PageNotRenderableError);
+	assert.throws(() => planPageImageWidth(-5, 100), PageNotRenderableError);
+	assert.throws(() => planPageImageWidth(Number.NaN, 100), PageNotRenderableError);
+	assert.throws(() => planPageImageWidth(100, Number.POSITIVE_INFINITY), PageNotRenderableError);
 });

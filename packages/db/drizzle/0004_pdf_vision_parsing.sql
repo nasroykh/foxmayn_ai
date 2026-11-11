@@ -1,3 +1,7 @@
+-- ALTER TYPE ... ADD VALUE cannot be used by a later migration in the same migrate run:
+-- the migrator applies all pending files in one transaction, and Postgres rejects a new
+-- enum value inside the transaction that added it. Do not insert or compare 'transcription'
+-- in migrations applied together with this one.
 ALTER TYPE "public"."operation_type" ADD VALUE 'transcription';--> statement-breakpoint
 CREATE TABLE "document_file" (
 	"document_id" text PRIMARY KEY NOT NULL,

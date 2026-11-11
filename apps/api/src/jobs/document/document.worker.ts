@@ -59,6 +59,10 @@ import {
 	TRANSCRIPTION_PROVIDER_REFUSED_REASON,
 	TRANSCRIPTION_UNPRICED_REASON,
 	TRANSCRIPTION_UNREADABLE_REASON,
+	TRANSCRIPTION_EMPTY_REASON,
+	ESTIMATED_INPUT_TOKENS_PER_PAGE,
+	ESTIMATED_OUTPUT_TOKENS_PER_PAGE,
+	TRANSCRIPTION_SAVE_EVERY_PAGES,
 	emptyUsage,
 	estimateTranscriptionCost,
 	joinTranscribedPages,
@@ -693,25 +697,46 @@ async function processTranscribeDocument(
 		};
 	};
 
+	/** Remember in the job data what was paid for, so a retry (or crash recovery) bills it. */
+	const saveUsage = () => {
+		const paid = paidTotal();
+		return job
+			.updateData({
+				...job.data,
+				transcribedPages: paid.pages,
+				transcribedInputTokens: paid.inputTokens,
+				transcribedOutputTokens: paid.outputTokens,
+			})
+			.catch((err) =>
+				console.error(
+					`[Document Worker] Failed to persist transcription usage for ${documentId}:`,
+					describeError(err),
+				),
+			);
+	};
+
 	/**
 	 * Settle the reservation on the pages paid for. The usage log row is the
 	 * "already settled" marker and is written in the same transaction as the
-	 * refund/charge and `finalize`. Returns false when nothing was settled
-	 * (the transaction rolled back, or the marker was already there).
+	 * refund/charge and `finalize`. Never throws. "failed": the transaction
+	 * rolled back (or the cost could not be priced), nothing was settled and the
+	 * reservation stays held. "already": the marker was there, an earlier
+	 * attempt settled.
 	 */
 	const settle = async (
 		usage: TranscriptionUsage,
 		context: Record<string, unknown>,
 		finalize: (tx: DbTransaction) => Promise<void>,
-	): Promise<boolean> => {
-		const actualCost = transcriptionCost(usage);
+	): Promise<"done" | "already" | "failed"> => {
 		const noReservation = {
 			orgId: organizationId,
 			userId,
 			amount: 0,
 			transactionId: "",
 		};
+		let actualCost = NaN;
 		try {
+			actualCost = transcriptionCost(usage);
 			const done = await settleReservation(
 				reservation ?? noReservation,
 				actualCost,
@@ -749,14 +774,14 @@ async function processTranscribeDocument(
 				},
 			);
 			await invalidateUsageStats(organizationId);
-			return done;
+			return done ? "done" : "already";
 		} catch (err) {
 			// Rolled back as a whole: nothing was settled, the marker is absent
 			console.error(
 				`[Document Worker] TRANSCRIPTION SETTLEMENT FAILED for ${documentId} (org ${organizationId}, reserved ${reservation?.amount ?? 0}, actual ${actualCost}):`,
 				describeError(err),
 			);
-			return false;
+			return "failed";
 		}
 	};
 
@@ -827,6 +852,11 @@ async function processTranscribeDocument(
 				model: PAGE_TRANSCRIPTION_MODEL,
 				png,
 				prompt: PAGE_TRANSCRIPTION_PROMPT,
+				// An answer that cannot be read was still paid for: bill the estimate
+				unreadableUsage: {
+					inputTokens: ESTIMATED_INPUT_TOKENS_PER_PAGE,
+					outputTokens: ESTIMATED_OUTPUT_TOKENS_PER_PAGE,
+				},
 			});
 		} catch (err) {
 			// Bad key, unknown model, no provider credit: a retry cannot succeed
@@ -838,6 +868,7 @@ async function processTranscribeDocument(
 		return {
 			text: answered.text,
 			usage: resolvePageUsage(answered.usage, estimateTokens(answered.text)),
+			truncated: answered.finishReason === "length",
 		};
 	};
 
@@ -893,35 +924,59 @@ async function processTranscribeDocument(
 			await job.updateProgress(5);
 
 			// Step 2: Transcribe page by page (rendering one at a time, 4 model calls at once)
-			const pageTexts = await transcribePages({
+			const { texts: pageTexts, truncatedPages } = await transcribePages({
 				total: totalPages,
-				render: renderer.render,
+				// A page that cannot be rendered cannot be rendered on a retry either
+				render: (page) =>
+					renderer.render(page).catch((err) => {
+						console.error(
+							`[Document Worker] Document ${documentId}: Cannot render page ${page}:`,
+							describeError(err),
+						);
+						throw new UnrecoverableError(TRANSCRIPTION_UNREADABLE_REASON);
+					}),
 				transcribe: transcribeOnePage,
 				usage: attemptUsage,
-				onPageDone: (done, total) =>
-					job.updateProgress(5 + Math.floor((done / total) * 85)),
+				onPageDone: async (done, total) => {
+					await job.updateProgress(5 + Math.floor((done / total) * 85));
+					// A crash must not lose what was paid for: a retry bills these pages
+					if (done % TRANSCRIPTION_SAVE_EVERY_PAGES === 0) await saveUsage();
+				},
 			});
 
+			// Blank pages are legitimate (an empty scan page); only a document with no
+			// text on any page fails, and a retry would pay for the same blank pages
 			const { text, truncated } = joinTranscribedPages(pageTexts);
-			if (!text) throw new Error("Page transcription returned no text");
+			if (!text) throw new UnrecoverableError(TRANSCRIPTION_EMPTY_REASON);
 			if (truncated)
 				console.warn(
 					`[Document Worker] Document ${documentId}: Transcription cut at the size limit`,
 				);
+			if (truncatedPages.length > 0)
+				console.warn(
+					`[Document Worker] Document ${documentId}: Page(s) ${truncatedPages.join(", ")} hit the output limit and are cut off`,
+				);
 
 			// Step 3: Settle on the pages paid for (including failed attempts), store the
 			// transcription and drop the PDF in the same transaction as the marker.
-			const settledOk = await settle(paidTotal(), { truncated }, async (tx) => {
-				await tx
-					.update(document)
-					.set({ content: text })
-					.where(eq(document.id, documentId));
-				await tx
-					.delete(documentFile)
-					.where(eq(documentFile.documentId, documentId));
-			});
-			// Rolled back: let the retry settle once
-			if (!settledOk) throw new Error("Transcription settlement failed");
+			const outcome = await settle(
+				paidTotal(),
+				{ truncated, truncatedPages },
+				async (tx) => {
+					await tx
+						.update(document)
+						.set({ content: text })
+						.where(eq(document.id, documentId));
+					if (truncatedPages.length > 0)
+						await addMetadata(tx, { truncatedPages });
+					await tx
+						.delete(documentFile)
+						.where(eq(documentFile.documentId, documentId));
+				},
+			);
+			// Rolled back, or an earlier attempt settled: the retry settles once or
+			// finds the marker
+			if (outcome !== "done") throw new Error("Transcription settlement failed");
 			committed = true;
 		} finally {
 			await renderer.destroy().catch(() => undefined);
@@ -948,19 +1003,7 @@ async function processTranscribeDocument(
 
 		if (!terminal) {
 			// Keep the reservation for the retry and remember what was already paid for
-			await job
-				.updateData({
-					...job.data,
-					transcribedPages: paid.pages,
-					transcribedInputTokens: paid.inputTokens,
-					transcribedOutputTokens: paid.outputTokens,
-				})
-				.catch((err) =>
-					console.error(
-						`[Document Worker] Failed to persist transcription usage for ${documentId}:`,
-						describeError(err),
-					),
-				);
+			await saveUsage();
 			throw error;
 		}
 
@@ -994,15 +1037,21 @@ async function processTranscribeDocument(
 				describeError(err),
 			);
 		}
-		let settledOk = false;
+		let outcome: "done" | "already" | "failed" | "none" = "none";
 		if (reservation || paid.pages > 0) {
-			settledOk = await settle(paid, { failed: true }, (tx) =>
+			outcome = await settle(paid, { failed: true }, (tx) =>
 				keepTextLayer(reason, tx),
-			);
+			).catch((err) => {
+				console.error(
+					`[Document Worker] Failed to settle failed job ${documentId}:`,
+					describeError(err),
+				);
+				return "failed" as const;
+			});
 		}
-		if (!settledOk) {
-			// Nothing to settle, or settling failed (logged above): the document must
-			// still move on to indexing. keepTextLayer is idempotent.
+		if (outcome !== "done") {
+			// Nothing to settle, or settling did not complete (logged above): the
+			// document must still move on to indexing. keepTextLayer is idempotent.
 			await keepTextLayer(reason).catch((err) =>
 				console.error(
 					`[Document Worker] Failed to keep the text layer of ${documentId}:`,
@@ -1024,6 +1073,14 @@ async function processTranscribeDocument(
 				{ status: "failed" },
 			).catch(() => undefined);
 			throw queueErr;
+		}
+		// The reservation stays held and the pages are unbilled: fail the job so
+		// it shows up (the settlement failure was logged above)
+		if (outcome === "failed") {
+			throw new Error(
+				`Transcription settlement failed for ${documentId}: reservation not settled`,
+				{ cause: error },
+			);
 		}
 		return result(false, totalPages);
 	}
