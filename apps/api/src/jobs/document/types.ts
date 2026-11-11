@@ -27,6 +27,17 @@ export interface IndexDocumentJobData {
 
 export type ReindexDocumentJobData = IndexDocumentJobData;
 
+/**
+ * Transcribe payload: the index payload, so the index job can follow with the
+ * same data. The original PDF is read from the document_file row.
+ */
+export interface TranscribeDocumentJobData extends IndexDocumentJobData {
+	// Page-transcription usage already paid for by failed attempts (billed on terminal failure)
+	transcribedPages?: number;
+	transcribedInputTokens?: number;
+	transcribedOutputTokens?: number;
+}
+
 export interface DeleteDocumentJobData {
 	documentId: string;
 	userId: string;
@@ -42,6 +53,15 @@ export interface IndexDocumentJobResult {
 	processingTimeMs: number;
 }
 
+export interface TranscribeDocumentJobResult {
+	documentId: string;
+	// Pages of the PDF (0 when the job did nothing)
+	pages: number;
+	// False when the text layer was kept
+	transcribed: boolean;
+	processingTimeMs: number;
+}
+
 // ============================================================================
 // Job Names (for type-safe job.name checks)
 // ============================================================================
@@ -50,6 +70,7 @@ export const DocumentJobNames = {
 	INDEX: "document:index",
 	DELETE: "document:delete",
 	REINDEX: "document:reindex",
+	TRANSCRIBE: "document:transcribe",
 } as const;
 
 export type DocumentJobName =

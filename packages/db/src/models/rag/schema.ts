@@ -10,6 +10,7 @@ import {
 	boolean,
 	real,
 	uniqueIndex,
+	customType,
 } from "drizzle-orm/pg-core";
 import { user } from "../auth/schema";
 
@@ -26,6 +27,13 @@ export const messageRoleEnum = pgEnum("message_role", [
 	"assistant",
 	"system",
 ]);
+
+// Raw bytes (Postgres bytea), read and written as a Buffer
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+	dataType() {
+		return "bytea";
+	},
+});
 
 // A function the model may call; the API client runs it and sends the result back
 export type ProfileTool = {
@@ -59,6 +67,8 @@ export const ragProfile = pgTable(
 			.$type<string[]>()
 			.default(["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""])
 			.notNull(),
+		// How PDFs are read: "text" (text layer) or "vision" (a model transcribes each page)
+		pdfParsing: text("pdf_parsing").default("text").notNull(),
 
 		// Retrieval Settings
 		scoreThreshold: real("score_threshold").default(0.3).notNull(),
@@ -134,6 +144,16 @@ export const document = pgTable(
 		index("document_userId_idx").on(table.userId),
 	]
 );
+
+// Original file of a document while its pages are transcribed (the worker deletes it after)
+export const documentFile = pgTable("document_file", {
+	documentId: text("document_id")
+		.primaryKey()
+		.references(() => document.id, { onDelete: "cascade" }),
+	mimeType: text("mime_type").notNull(),
+	data: bytea("data").notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
 
 // Document chunks table - stores chunked content with vector references
 export const documentChunk = pgTable(

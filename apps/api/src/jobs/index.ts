@@ -2,6 +2,7 @@
 export {
 	documentQueue,
 	addIndexDocumentJob,
+	addTranscribeDocumentJob,
 	addDeleteDocumentJob,
 	addReindexDocumentJob,
 	getDocumentJobStatus,

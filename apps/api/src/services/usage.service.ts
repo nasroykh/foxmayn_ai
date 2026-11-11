@@ -275,7 +275,7 @@ export async function getUsageHistory(
 	options: {
 		limit?: number;
 		offset?: number;
-		operationType?: "chat" | "embedding";
+		operationType?: "chat" | "embedding" | "transcription";
 		userId?: string;
 	} = {},
 ) {

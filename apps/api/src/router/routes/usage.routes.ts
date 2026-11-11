@@ -48,7 +48,7 @@ export const usageRoutes = {
 			z.object({
 				limit: z.coerce.number().min(1).max(100).optional(),
 				offset: z.coerce.number().min(0).optional(),
-				operationType: z.enum(["chat", "embedding"]).optional(),
+				operationType: z.enum(["chat", "embedding", "transcription"]).optional(),
 				userId: z.string().optional(),
 			}),
 		)

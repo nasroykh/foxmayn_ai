@@ -31,6 +31,8 @@ export const PROFILE_RESPONSE_LENGTHS = [
 	"balanced",
 	"detailed",
 ] as const;
+// How a PDF is read: its text layer, or a vision model transcribing each page
+export const PDF_PARSING_MODES = ["text", "vision"] as const;
 export const PROFILE_REASONING_EFFORTS = [
 	"none",
 	"minimal",
@@ -84,6 +86,7 @@ export const profileSettingsShape = {
 	chunkSize: z.number().int().min(100).max(4000).optional(),
 	chunkOverlap: z.number().int().min(0).max(3999).optional(),
 	separators: z.array(z.string().max(20)).max(20).optional(),
+	pdfParsing: z.enum(PDF_PARSING_MODES).optional(),
 
 	// Retrieval
 	scoreThreshold: z.number().min(0).max(1).optional(),

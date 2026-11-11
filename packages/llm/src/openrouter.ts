@@ -459,3 +459,83 @@ export const OpenRouterEmbed = async (
 		throw error;
 	}
 };
+
+// ============================================================================
+// OpenRouterTranscribePage — one page image to text
+// ============================================================================
+
+export type TranscribePageResult = {
+	text: string;
+	usage: { inputTokens: number; outputTokens: number };
+	// Why the model stopped (e.g. "length" when the page output hit the cap)
+	finishReason?: string;
+};
+
+const TRANSCRIBE_MAX_TOKENS = 4000;
+
+/**
+ * Send one page image (PNG bytes) with an instruction to a vision model and
+ * return its answer. Deterministic (temperature 0), no reasoning, output
+ * capped at 4000 tokens. Usage is 0 when the provider reports none: the
+ * caller decides what to bill then.
+ */
+export async function OpenRouterTranscribePage(options: {
+	model: string;
+	png: Uint8Array;
+	prompt: string;
+}): Promise<TranscribePageResult> {
+	const { model, png, prompt } = options;
+	if (!prompt.trim()) throw new Error("Prompt is required");
+	if (png.length === 0) throw new Error("Image is required");
+
+	try {
+		const response = await getClient().chat.send({
+			chatRequest: {
+				model,
+				stream: false,
+				temperature: 0,
+				maxTokens: TRANSCRIBE_MAX_TOKENS,
+				reasoning: { effort: "none" },
+				messages: [
+					{
+						role: "user",
+						content: [
+							{ type: "text", text: prompt },
+							{
+								type: "image_url",
+								imageUrl: {
+									url: `data:image/png;base64,${Buffer.from(png).toString("base64")}`,
+								},
+							},
+						],
+					},
+				],
+			},
+		});
+
+		const choice = response.choices?.[0];
+		const content = choice?.message?.content;
+		const text =
+			typeof content === "string"
+				? content
+				: Array.isArray(content)
+					? content
+							.map((part) =>
+								part.type === "text" && "text" in part ? part.text : "",
+							)
+							.join("")
+					: "";
+
+		return {
+			text,
+			usage: {
+				inputTokens: response.usage?.promptTokens ?? 0,
+				outputTokens: response.usage?.completionTokens ?? 0,
+			},
+			finishReason: choice?.finishReason ?? undefined,
+		};
+	} catch (error) {
+		console.error("[OpenRouter] Page transcription failed:", describeError(error));
+		throw error;
+	}
+}

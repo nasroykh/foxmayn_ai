@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { db, document } from "@repo/db";
+import { db, document, documentFile } from "@repo/db";
 import { searchVectors } from "@repo/qdrant";
 import {
 	eq,
@@ -25,9 +25,15 @@ import {
 import { getProfile, getDefaultProfile } from "./profile.service";
 import {
 	addIndexDocumentJob,
+	addTranscribeDocumentJob,
 	addDeleteDocumentJob,
 	addReindexDocumentJob,
 } from "../jobs";
+import {
+	PDF_MIME,
+	queueDocumentProcessing,
+	type IntakeDeps,
+} from "./document.intake";
 import { parseDocx, parseHTML, parsePDF } from "../utils/parsers";
 import {
 	DOCX_MIME,
@@ -180,8 +186,11 @@ const documentSummaryColumns = {
  * Validate an upload and extract its text.
  * Checks type allowlist, size, file signature, and bounds the extracted text.
  * Throws BAD_REQUEST for anything unacceptable.
+ * `pdf` holds the original bytes of a PDF (a vision profile transcribes them later).
  */
-export const extractTextFromDocument = async (file: File): Promise<string> => {
+const extractDocument = async (
+	file: File,
+): Promise<{ text: string; pdf?: Buffer }> => {
 	if (!file || !file.name || !file.type)
 		throw new ORPCError("BAD_REQUEST", {
 			message: "File is required",
@@ -253,16 +262,31 @@ export const extractTextFromDocument = async (file: File): Promise<string> => {
 			message: `Document text is too long (max ${MAX_EXTRACTED_CHARS.toLocaleString("en-US")} characters)`,
 		});
 
-	return text;
+	return { text, pdf: file.type === PDF_MIME ? buffer : undefined };
+};
+
+/** Validate an upload and extract its text (see `extractDocument`). */
+export const extractTextFromDocument = async (file: File): Promise<string> =>
+	(await extractDocument(file)).text;
+
+const intakeDeps: IntakeDeps = {
+	storeFile: async (documentId, file) => {
+		await db.insert(documentFile).values({ documentId, ...file });
+	},
+	queueIndex: addIndexDocumentJob,
+	queueTranscribe: addTranscribeDocumentJob,
 };
 
 /**
- * Create the document row and queue its indexing. Shared by the file upload
- * and the import path. The caller has already extracted `content` and checked
- * that `profileId` belongs to the owner.
+ * Create the document row and queue its processing: indexing, or page
+ * transcription first for a PDF in a "vision" profile. Shared by the file
+ * upload and the import path. The caller has already extracted `content` and
+ * checked that `profileId` belongs to the owner.
  */
 const createAndQueueDocument = async (options: {
 	content: string;
+	// Original bytes of a PDF
+	pdf?: Buffer;
 	title: string;
 	source?: string;
 	profileId?: string;
@@ -273,6 +297,7 @@ const createAndQueueDocument = async (options: {
 }): Promise<{ documentId: string; jobId: string | undefined }> => {
 	const {
 		content,
+		pdf,
 		title,
 		source,
 		profileId,
@@ -282,17 +307,20 @@ const createAndQueueDocument = async (options: {
 		organizationId,
 	} = options;
 
-	if (!content.trim())
+	// A document without a profile goes to the current default profile, so it
+	// belongs to one knowledge base explicitly (a chat-only key only reads those)
+	const profile = profileId
+		? await getProfile(profileId, userId)
+		: await getDefaultProfile(userId);
+	const resolvedProfileId = profileId ?? profile?.id ?? undefined;
+
+	// A scanned PDF has no text layer: a vision profile reads it from the page images
+	if (!content.trim() && !(pdf && profile?.pdfParsing === "vision"))
 		throw new ORPCError("BAD_REQUEST", {
 			message: "File is empty",
 		});
 
 	const documentId = randomUUID();
-
-	// A document without a profile goes to the current default profile, so it
-	// belongs to one knowledge base explicitly (a chat-only key only reads those)
-	const resolvedProfileId =
-		profileId ?? (await getDefaultProfile(userId))?.id ?? undefined;
 
 	// Create document record with status "processing"
 	await db.insert(document).values({
@@ -308,16 +336,19 @@ const createAndQueueDocument = async (options: {
 
 	// Add job to queue - returns immediately. The worker reads the content from the row.
 	try {
-		const { jobId } = await addIndexDocumentJob({
+		const { jobId } = await queueDocumentProcessing(intakeDeps, {
 			documentId,
 			profileId: resolvedProfileId,
 			organizationId,
 			userId,
 			replaceSource,
+			pdf,
+			profile,
 		});
 		return { documentId, jobId };
 	} catch (err) {
 		// Without a job the document would stay "processing" forever
+		// (the stored file goes with the row)
 		await db.delete(document).where(eq(document.id, documentId));
 		throw err;
 	}
@@ -346,11 +377,12 @@ export const indexDocument = async (options: {
 	// before parsing so a bad id costs nothing.
 	if (rest.profileId) await loadProfile(rest.profileId, rest.userId);
 
-	const content = await extractTextFromDocument(file);
+	const { text: content, pdf } = await extractDocument(file);
 
 	return createAndQueueDocument({
 		...rest,
 		content,
+		pdf,
 		title: title || file.name || "Untitled",
 	});
 };
@@ -382,10 +414,11 @@ export const importDocument = async (options: {
 	if (rest.profileId) await loadProfile(rest.profileId, rest.userId);
 
 	let content: string;
+	let pdf: Buffer | undefined;
 	let defaultTitle: string;
 	if (url !== undefined) {
 		const file = await fetchUrlAsFile(url);
-		content = await extractTextFromDocument(file);
+		({ text: content, pdf } = await extractDocument(file));
 		defaultTitle = file.name;
 	} else {
 		content = text ?? "";
@@ -405,6 +438,7 @@ export const importDocument = async (options: {
 	return createAndQueueDocument({
 		...rest,
 		content,
+		pdf,
 		title: title || defaultTitle || "Untitled",
 		source: source ?? url,
 		replaceSource: replace,
