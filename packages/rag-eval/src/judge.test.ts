@@ -51,6 +51,13 @@ test("judge output: anything else is a judge_error, never dropped", () => {
 	}
 });
 
+test("judge output: a missing object shows the start of the raw output", () => {
+	const prose = parseJudgeOutput("I think it is supported.");
+	assert.equal(!prose.ok && prose.detail, 'no JSON object in the judge output: "I think it is supported."');
+	const long = parseJudgeOutput("x".repeat(300));
+	assert.equal(!long.ok && long.detail, `no JSON object in the judge output: "${"x".repeat(160)}"`);
+});
+
 test("citedPassages maps [n] and [n, m] markers to the returned sources", () => {
 	const sources = [passage("https://x.com/a", "A"), passage("https://x.com/b", "B")];
 	const cited = citedPassages("Price is 10 [2]. Also [1, 2] and [5].", sources);
@@ -113,9 +120,11 @@ test("judgeAnswer calls OpenRouter at temperature 0 and reads the verdict", asyn
 	const body = JSON.parse(String(calls[0].init.body)) as {
 		temperature: number;
 		model: string;
+		max_tokens: number;
 		reasoning: { effort: string };
 	};
 	assert.equal(body.temperature, 0);
+	assert.equal(body.max_tokens, 1000);
 	assert.equal(body.model, "openai/gpt-6-luna");
 	assert.deepEqual(body.reasoning, { effort: "none" });
 });
