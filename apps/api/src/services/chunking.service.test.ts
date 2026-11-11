@@ -11,3 +11,8 @@ test("embeddingInput keeps the chunk alone without a title", () => {
 		assert.equal(embeddingInput(title, "chunk"), "chunk");
 	}
 });
+
+test("embeddingInput bounds the title to one line of 200 characters", () => {
+	assert.equal(embeddingInput("Line one\nline two", "chunk"), "Line one line two\n\nchunk");
+	assert.equal(embeddingInput("t".repeat(300), "chunk"), `${"t".repeat(200)}\n\nchunk`);
+});

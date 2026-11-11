@@ -60,6 +60,13 @@ export const calculateTokens = (
 export const estimateTokens = (text: string): number =>
 	calculateTokens(text, "gpt-4o");
 
+// Titles are user input with no length limit: one line, bounded, because the
+// title is repeated in every chunk's embedding and in every prompt passage
+export const MAX_TITLE_CHARS = 200;
+
+export const titleLine = (title: string | null | undefined): string =>
+	(title ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_TITLE_CHARS).trim();
+
 /**
  * Text sent to the embedding model for one chunk: the document title, then
  * the chunk. A chunk alone often lacks the product or model name (a spec
@@ -67,7 +74,7 @@ export const estimateTokens = (text: string): number =>
  * the same questions. The stored chunk stays the plain content.
  */
 export const embeddingInput = (title: string | null | undefined, content: string): string => {
-	const heading = title?.trim();
+	const heading = titleLine(title);
 	return heading ? `${heading}\n\n${content}` : content;
 };
 

@@ -1,3 +1,5 @@
+import { titleLine } from "../services/chunking.service";
+
 /**
  * The numbered passages the model answers from. Each passage starts with its
  * document title: a spec table or a page from the middle of a datasheet rarely
@@ -8,7 +10,7 @@ export const formatContext = (
 ): string =>
 	sources
 		.map((r, i) => {
-			const title = r.title?.trim();
+			const title = titleLine(r.title);
 			return title ? `[${i + 1}] ${title}\n${r.content}` : `[${i + 1}] ${r.content}`;
 		})
 		.join("\n\n");
