@@ -14,6 +14,31 @@ export type RateLimitRedis = {
 const KEY_PREFIX = "auth:rl:";
 
 /**
+ * One fixed-window hit: INCR, set the TTL on the first hit. `retryAfter` is
+ * the seconds left in the window (what the caller waits when blocked).
+ * Throws when Redis fails; each caller picks fail open or closed.
+ */
+export const consumeFixedWindow = async (
+	redis: RateLimitRedis,
+	key: string,
+	rule: { window: number; max: number },
+): Promise<{ allowed: boolean; retryAfter: number }> => {
+	const count = await redis.incr(key);
+	let ttl = rule.window;
+	if (count === 1) {
+		await redis.expire(key, rule.window);
+	} else {
+		ttl = await redis.ttl(key);
+		if (ttl < 0) {
+			// Key without expiry (crash between INCR and EXPIRE): repair it
+			await redis.expire(key, rule.window);
+			ttl = rule.window;
+		}
+	}
+	return { allowed: count <= rule.max, retryAfter: ttl };
+};
+
+/**
  * better-auth rate limit storage backed by Redis, so limits are shared across
  * API instances and survive restarts. Fixed window: INCR, set the TTL on the
  * first hit. Fails open (allows the request) when Redis is unavailable so an
@@ -23,23 +48,14 @@ export const createRedisRateLimitStorage = (
 	redis: RateLimitRedis,
 ): RateLimitStorage => ({
 	consume: async (key, rule) => {
-		const redisKey = `${KEY_PREFIX}${key}`;
 		try {
-			const count = await redis.incr(redisKey);
-			let ttl = rule.window;
-			if (count === 1) {
-				await redis.expire(redisKey, rule.window);
-			} else {
-				ttl = await redis.ttl(redisKey);
-				if (ttl < 0) {
-					// Key without expiry (crash between INCR and EXPIRE): repair it
-					await redis.expire(redisKey, rule.window);
-					ttl = rule.window;
-				}
-			}
-
-			if (count <= rule.max) return { allowed: true, retryAfter: null };
-			return { allowed: false, retryAfter: ttl };
+			const result = await consumeFixedWindow(
+				redis,
+				`${KEY_PREFIX}${key}`,
+				rule,
+			);
+			if (result.allowed) return { allowed: true, retryAfter: null };
+			return { allowed: false, retryAfter: result.retryAfter };
 		} catch (error) {
 			console.error(
 				"[auth] rate limit storage unavailable, allowing request:",

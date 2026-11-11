@@ -127,6 +127,8 @@ export interface QueryOptions {
 	// Chat-only API key: only documents explicitly in the profile, never the
 	// profile-less ones the default profile otherwise includes
 	strictProfile?: boolean;
+	// Chat without the profile's tools (public chats: no client runs them)
+	disableTools?: boolean;
 }
 
 /** A chat request: who asks (for a tool continuation) and where the exchange is stored. */
@@ -759,7 +761,7 @@ const prepareChat = async (
 		systemPrompt: buildSystemPrompt(profile, context),
 		messages,
 		sources,
-		tools: enabledTools(profile?.tools),
+		tools: options.disableTools ? [] : enabledTools(profile?.tools),
 		profileId: profile?.id ?? null,
 	};
 };

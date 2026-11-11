@@ -19,7 +19,7 @@ This guide covers a single-VPS production deploy behind a TLS-terminating proxy 
 - Only `app` is published: `${BIND}:${APP_PORT}` on the host, default `127.0.0.1:33460`. Caddy speaks plain HTTP. Your TLS proxy must forward to it.
 - Set `BIND=0.0.0.0` only if the proxy runs on another machine or network. That exposes plain HTTP to that network, so firewall it.
 - Postgres, Redis and Qdrant also bind a host port, but on `127.0.0.1` only (`POSTGRES_HOST_PORT`, `REDIS_HOST_PORT`, `QDRANT_HOST_PORT`). Use them for `psql` over SSH or local tools. Never open them in a firewall.
-- Caddy trusts `X-Forwarded-For` from private address ranges only. The API takes the client IP from `cf-connecting-ip` or `x-forwarded-for` for rate limiting. Keep the API reachable only through `app`, or those headers can be spoofed.
+- Caddy trusts `X-Forwarded-For` from private address ranges only. Caddy resolves the client IP from `X-Forwarded-For` (right to left, past trusted proxies) and sends it to the API as `X-Real-IP`, overwriting any client value. The API reads only `x-real-ip` for rate limiting. Keep the API reachable only through `app`, or that header can be spoofed.
 - The proxy must pass `/api/*` through without stripping the path, and must not buffer streamed responses.
 
 ## Environment

@@ -195,7 +195,7 @@ export const orgManagerProcedure = orgProcedure.use(
  * clearly broke orgs and orgs past their monthly cap. The hard enforcement is reserveCredits(), an atomic
  * conditional debit that fails regardless of what this (non-atomic) check returned.
  */
-const requireCredits = os
+export const requireCredits = os
 	.$context<{ organizationId: string }>()
 	.middleware(async ({ context, next }) => {
 		const gate = await checkSpendGate(

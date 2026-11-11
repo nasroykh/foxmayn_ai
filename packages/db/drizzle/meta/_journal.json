@@ -36,6 +36,13 @@
       "when": 1794437075717,
       "tag": "0004_pdf_vision_parsing",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794438436688,
+      "tag": "0005_public_sites",
+      "breakpoints": true
     }
   ]
 }
