@@ -1,6 +1,8 @@
 import type { Hono } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { onError } from "@orpc/server";
 import { logRpcError } from "./error-log";
+import { isPublicSitePath } from "./public-site-path";
 
 import { router } from "../router/index";
 import { OpenAPIHandler } from "@orpc/openapi/fetch";
@@ -20,6 +22,8 @@ export const registerORPCOpenAPI = (app: Hono) => {
 		});
 
 		if (matched) {
+			const headers = new Headers(response.headers);
+
 			// API key rate limit: expose the wait as a standard header too
 			if (response.status === 429) {
 				const body = (await response
@@ -28,12 +32,16 @@ export const registerORPCOpenAPI = (app: Hono) => {
 					.catch(() => null)) as { data?: { retryAfterSeconds?: unknown } } | null;
 				const retryAfter = body?.data?.retryAfterSeconds;
 				if (typeof retryAfter === "number") {
-					const headers = new Headers(response.headers);
 					headers.set("Retry-After", String(retryAfter));
-					return c.newResponse(response.body, { status: 429, headers });
 				}
 			}
-			return c.newResponse(response.body, response);
+			// Public site routes: keep them out of search engines
+			if (isPublicSitePath(c.req.path)) headers.set("X-Robots-Tag", "noindex");
+
+			return c.newResponse(response.body, {
+				status: response.status as ContentfulStatusCode,
+				headers,
+			});
 		}
 
 		return await next();

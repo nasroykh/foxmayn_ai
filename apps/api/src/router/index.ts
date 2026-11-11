@@ -7,6 +7,8 @@ import { apiKeyRoutes } from "./routes/apikey.routes";
 import { conversationRoutes } from "./routes/conversation.routes";
 import { creditsRoutes } from "./routes/credits.routes";
 import { usageRoutes } from "./routes/usage.routes";
+import { publicSiteRoutes } from "./routes/public-site.routes";
+import { publicRoutes } from "./routes/public.routes";
 
 export const router = {
 	users: userRoutes,
@@ -18,6 +20,8 @@ export const router = {
 	conversations: conversationRoutes,
 	credits: creditsRoutes,
 	usage: usageRoutes,
+	publicSites: publicSiteRoutes,
+	public: publicRoutes,
 };
 
 export type AppRouter = typeof router;
