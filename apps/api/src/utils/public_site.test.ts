@@ -13,6 +13,9 @@ import {
 	resolveSiteWith,
 	upsertSiteWith,
 	UNKNOWN_IP,
+	appHostOf,
+	assertPublicSiteAdmin,
+	toPublicChatError,
 } from "./public_site";
 
 const rejectsWith = async (promise: Promise<unknown>, code: string) =>
@@ -148,6 +151,8 @@ test("resolveSiteWith looks the site up by normalized Host", async () => {
 			return hostname === "2mp.foxmayn.com" ? site() : null;
 		},
 		getMemberRole: async () => "owner",
+		isUserBanned: async () => false,
+		appHost: "app.example.com",
 	};
 	assert.equal((await resolveSiteWith(deps, "2MP.foxmayn.com:443")).organizationId, "o1");
 	assert.deepEqual(seen, ["2mp.foxmayn.com"]);
@@ -155,17 +160,38 @@ test("resolveSiteWith looks the site up by normalized Host", async () => {
 	await rejectsWith(resolveSiteWith(deps, null), "NOT_FOUND");
 });
 
+const okDeps = {
+	findSite: async () => site(),
+	getMemberRole: async () => "owner",
+	isUserBanned: async () => false,
+	appHost: "app.example.com",
+};
+
+test("resolveSiteWith: banned owner is 404", async () => {
+	await rejectsWith(
+		resolveSiteWith({ ...okDeps, isUserBanned: async () => true }, "2mp.foxmayn.com"),
+		"NOT_FOUND",
+	);
+});
+
+test("resolveSiteWith: the app's own host is 404 even with a stored row", async () => {
+	await rejectsWith(
+		resolveSiteWith(okDeps, "APP.example.com:443"),
+		"NOT_FOUND",
+	);
+});
+
 test("resolveSiteWith: disabled site or removed member is 404", async () => {
 	await rejectsWith(
 		resolveSiteWith(
-			{ findSite: async () => site({ enabled: false }), getMemberRole: async () => "owner" },
+			{ ...okDeps, findSite: async () => site({ enabled: false }) },
 			"2mp.foxmayn.com",
 		),
 		"NOT_FOUND",
 	);
 	await rejectsWith(
 		resolveSiteWith(
-			{ findSite: async () => site(), getMemberRole: async () => null },
+			{ ...okDeps, findSite: async () => site(), getMemberRole: async () => null },
 			"2mp.foxmayn.com",
 		),
 		"NOT_FOUND",
@@ -185,6 +211,7 @@ const upsertInput = {
 	profileId: "p1",
 	userId: "u1",
 	organizationId: "o1",
+	appHost: "app.example.com",
 };
 
 const upsertDeps = (over: Partial<Parameters<typeof upsertSiteWith>[0]> = {}) => {
@@ -271,4 +298,53 @@ test("toPublicSources keeps only title and source, in order, without dropping or
 		assert.deepEqual(Object.keys(entry).sort(), ["source", "title"]);
 	}
 	assert.deepEqual(toPublicSources([]), []);
+});
+
+// --- Admin, app host, visitor errors ---------------------------------------
+
+test("assertPublicSiteAdmin: only the admin role passes", () => {
+	const isAdmin = (role: string | null | undefined) => role === "admin";
+	assertPublicSiteAdmin("admin", isAdmin);
+	throwsWith(() => assertPublicSiteAdmin("user", isAdmin), "FORBIDDEN");
+	throwsWith(() => assertPublicSiteAdmin(null, isAdmin), "FORBIDDEN");
+});
+
+test("appHostOf takes the host of the app URL", () => {
+	assert.equal(appHostOf("https://App.Example.com/"), "app.example.com");
+	assert.equal(appHostOf("http://localhost:33460"), "localhost");
+	assert.equal(appHostOf("not a url"), "");
+});
+
+test("upsertSiteWith: the app's own host is a 400 and nothing is written", async () => {
+	const { deps, saved } = upsertDeps();
+	await rejectsWith(
+		upsertSiteWith(deps, { ...upsertInput, hostname: "app.example.com" }),
+		"BAD_REQUEST",
+	);
+	assert.equal(saved.length, 0);
+});
+
+test("toPublicChatError hides credit, cap and model errors only", () => {
+	const quiet = console.error;
+	console.error = () => {};
+	try {
+		for (const hidden of [
+			new ORPCError("FORBIDDEN", { message: "Insufficient credits to start this request" }),
+			new ORPCError("FORBIDDEN", { message: "Monthly spending cap reached" }),
+			new ORPCError("BAD_REQUEST", { message: "Unsupported model: x/y" }),
+		]) {
+			const mapped = toPublicChatError(hidden);
+			assert.ok(mapped instanceof ORPCError);
+			assert.equal(mapped.code, "SERVICE_UNAVAILABLE");
+			assert.equal(mapped.message, "The assistant is unavailable right now.");
+		}
+	} finally {
+		console.error = quiet;
+	}
+	const notFound = new ORPCError("NOT_FOUND", { message: "Site not found" });
+	assert.equal(toPublicChatError(notFound), notFound);
+	const limited = new ORPCError("TOO_MANY_REQUESTS", { status: 429, message: "x" });
+	assert.equal(toPublicChatError(limited), limited);
+	const plain = new Error("boom");
+	assert.equal(toPublicChatError(plain), plain);
 });

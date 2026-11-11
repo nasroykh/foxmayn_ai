@@ -1,4 +1,13 @@
-import { pgTable, text, timestamp, jsonb, boolean } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import {
+	boolean,
+	check,
+	index,
+	jsonb,
+	pgTable,
+	text,
+	timestamp,
+} from "drizzle-orm/pg-core";
 import { organization, user } from "../auth/schema";
 import { ragProfile } from "../rag/schema";
 
@@ -16,7 +25,9 @@ export type PublicSiteSettings = {
 
 // Public site: a hostname that serves a no-sign-in chat with one knowledge base.
 // The chat runs as `userId` (owner of the profile) and is billed to `organizationId`.
-export const publicSite = pgTable("public_site", {
+export const publicSite = pgTable(
+	"public_site",
+	{
 	// Lowercase, no port
 	hostname: text("hostname").primaryKey(),
 	profileId: text("profile_id")
@@ -40,4 +51,9 @@ export const publicSite = pgTable("public_site", {
 		.defaultNow()
 		.$onUpdate(() => new Date())
 		.notNull(),
-});
+},
+	(table) => [
+		check("public_site_hostname_lower", sql`${table.hostname} = lower(${table.hostname})`),
+		index("public_site_organization_id_idx").on(table.organizationId),
+	],
+);

@@ -64,6 +64,54 @@ export const clientIpFromHeaders = (headers: Pick<Headers, "get">): string => {
 	return ip && ip.length <= MAX_IP_CHARS ? ip : UNKNOWN_IP;
 };
 
+/** Hostname of the app's own public URL (`APP_URL`); a site can never take it. */
+export const appHostOf = (appUrl: string): string => {
+	try {
+		return normalizeHostname(new URL(appUrl).host);
+	} catch {
+		return "";
+	}
+};
+
+export const reservedHostnameError = () =>
+	new ORPCError("BAD_REQUEST", {
+		message: "This hostname is reserved for the app itself",
+	});
+
+/** The app's own host cannot be a public site. */
+export const assertNotAppHost = (hostname: string, appHost: string): void => {
+	if (appHost && hostname === appHost) throw reservedHostnameError();
+};
+
+/** Global admin role check for managing public sites. */
+export const assertPublicSiteAdmin = (
+	role: string | null | undefined,
+	isAdmin: (role: string | null | undefined) => boolean,
+): void => {
+	if (!isAdmin(role)) {
+		throw new ORPCError("FORBIDDEN", { message: "Admin access required" });
+	}
+};
+
+export const PUBLIC_UNAVAILABLE_MESSAGE = "The assistant is unavailable right now.";
+
+/**
+ * Error a visitor may see. Credit, billing and cap refusals (403) and an
+ * unsupported model say too much about the owner's account, so they become one
+ * generic 503. Everything else (404, 429, ...) is kept. Logs the real reason.
+ */
+export const toPublicChatError = (error: unknown): unknown => {
+	if (!(error instanceof ORPCError)) return error;
+	const hidden =
+		error.code === "FORBIDDEN" ||
+		(error.code === "BAD_REQUEST" && /^Unsupported model/.test(error.message));
+	if (!hidden) return error;
+	console.error("[public-chat] refused:", error.code, error.message);
+	return new ORPCError("SERVICE_UNAVAILABLE", {
+		message: PUBLIC_UNAVAILABLE_MESSAGE,
+	});
+};
+
 /** An unknown or disabled site is a plain 404, so hostnames cannot be probed. */
 export const requireEnabledSite = <T extends { enabled: boolean }>(
 	site: T | null | undefined,
@@ -91,8 +139,9 @@ export const assertHostnameAvailable = (
 
 /**
  * The enabled site a Host header names, else 404. The user that runs the chat
- * must still be a member of the billed organization: a removed member's site
- * stops instead of spending the organization's credits.
+ * must still be a member of the billed organization and not banned: a removed
+ * or banned member's site stops instead of spending the organization's credits.
+ * The app's own host is never a site.
  */
 export const resolveSiteWith = async <
 	T extends { enabled: boolean; userId: string; organizationId: string },
@@ -100,12 +149,17 @@ export const resolveSiteWith = async <
 	deps: {
 		findSite: (hostname: string) => Promise<T | null>;
 		getMemberRole: (userId: string, organizationId: string) => Promise<unknown>;
+		/** True when the user is banned (Better Auth `user.banned`). */
+		isUserBanned: (userId: string) => Promise<boolean>;
+		/** Host of the app's own URL; never served as a site. */
+		appHost: string;
 	},
 	hostHeader: string | null | undefined,
 ): Promise<T> => {
-	const site = requireEnabledSite(
-		await deps.findSite(normalizeHostname(hostHeader)),
-	);
+	const hostname = normalizeHostname(hostHeader);
+	if (deps.appHost && hostname === deps.appHost) requireEnabledSite(null);
+	const site = requireEnabledSite(await deps.findSite(hostname));
+	if (await deps.isUserBanned(site.userId)) requireEnabledSite(null);
 	const role = await deps.getMemberRole(site.userId, site.organizationId);
 	return requireEnabledSite(role ? site : null);
 };
@@ -133,10 +187,13 @@ export const upsertSiteWith = async <TSite>(
 		settings?: unknown;
 		userId: string;
 		organizationId: string;
+		/** Host of the app's own URL, which cannot be a site. */
+		appHost: string;
 	},
 ): Promise<TSite> => {
 	const { hostname, userId, organizationId } = input;
 
+	assertNotAppHost(hostname, input.appHost);
 	if (!(await deps.getProfile(input.profileId, userId))) {
 		throw new ORPCError("NOT_FOUND", { message: "Profile not found" });
 	}

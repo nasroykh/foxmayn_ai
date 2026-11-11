@@ -1,18 +1,30 @@
 import { z } from "zod";
 import { ORPCError } from "@orpc/server";
 import { orgManagerProcedure } from "../middleware";
+import { hasAdminRole } from "../access";
 import {
 	deletePublicSite,
 	listPublicSites,
 	upsertPublicSite,
 } from "../../services/public-site.service";
-import { hostnameSchema, publicSiteSettingsSchema } from "../../utils/public_site";
+import {
+	assertPublicSiteAdmin,
+	hostnameSchema,
+	publicSiteSettingsSchema,
+} from "../../utils/public_site";
 import { env } from "../../config/env";
+
+// Hostnames decide which site a Host header serves, so only a global admin may
+// register them (any org owner could otherwise claim a hostname).
+const adminOnly = orgManagerProcedure.use(async ({ context, next }) => {
+	assertPublicSiteAdmin(context.user.role, hasAdminRole);
+	return next();
+});
 
 export const PREFIX = env.API_V1_PREFIX as `/${string}`;
 
 export const publicSiteRoutes = {
-	upsert: orgManagerProcedure
+	upsert: adminOnly
 		.route({
 			method: "PUT",
 			path: `${PREFIX}/public-sites/{hostname}`,
@@ -45,7 +57,7 @@ export const publicSiteRoutes = {
 			sites: await listPublicSites(context.organizationId),
 		})),
 
-	delete: orgManagerProcedure
+	delete: adminOnly
 		.route({
 			method: "DELETE",
 			path: `${PREFIX}/public-sites/{hostname}`,

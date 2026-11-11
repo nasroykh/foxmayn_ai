@@ -1,6 +1,6 @@
 import { redis } from "../config/redis";
 import { resolvePublicSite } from "../services/public-site.service";
-import { clientIpFromHeaders } from "../utils/public_site";
+import { clientIpFromHeaders, toPublicChatError } from "../utils/public_site";
 import { enforcePublicChatLimits } from "../utils/public_rate_limit";
 import { publicProcedure, requireCredits } from "./middleware";
 
@@ -24,6 +24,15 @@ export const publicSiteProcedure = publicProcedure.use(
  * chat. Both run before the stream starts, so refusals keep their HTTP status.
  */
 export const publicChatProcedure = publicSiteProcedure
+	.use(async ({ next }) => {
+		// Outermost: credit and cap refusals of the gate below reach a visitor as
+		// one generic error. Errors while streaming are mapped in the route.
+		try {
+			return await next();
+		} catch (error) {
+			throw toPublicChatError(error);
+		}
+	})
 	.use(async ({ context, next }) => {
 		await enforcePublicChatLimits(
 			redis,

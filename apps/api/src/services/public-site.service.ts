@@ -1,9 +1,11 @@
-import { db, publicSite, type PublicSiteSettings } from "@repo/db";
+import { db, publicSite, user, type PublicSiteSettings } from "@repo/db";
 import { and, desc, eq } from "@repo/db/drizzle-orm";
 import { ORPCError } from "@orpc/server";
 import { getProfile } from "./profile.service";
 import { getMemberRole } from "./organization.service";
-import { resolveSiteWith, upsertSiteWith } from "../utils/public_site";
+import { env } from "../config/env";
+import { isUserBanned } from "../router/access";
+import { appHostOf, resolveSiteWith, upsertSiteWith } from "../utils/public_site";
 
 export type PublicSite = typeof publicSite.$inferSelect;
 
@@ -16,11 +18,26 @@ const findSite = async (hostname: string): Promise<PublicSite | null> => {
 	return site ?? null;
 };
 
+const appHost = appHostOf(env.APP_URL);
+
+const isOwnerBanned = async (userId: string): Promise<boolean> => {
+	const [row] = await db
+		.select({ banned: user.banned, banExpires: user.banExpires })
+		.from(user)
+		.where(eq(user.id, userId))
+		.limit(1);
+	// A missing user cannot run the chat
+	return !row || isUserBanned(row);
+};
+
 /** The enabled site a request's Host header names, else 404 (see `resolveSiteWith`). */
 export const resolvePublicSite = (
 	hostHeader: string | null | undefined,
 ): Promise<PublicSite> =>
-	resolveSiteWith({ findSite, getMemberRole }, hostHeader);
+	resolveSiteWith(
+		{ findSite, getMemberRole, isUserBanned: isOwnerBanned, appHost },
+		hostHeader,
+	);
 
 /** What a visitor may see of a site: its profile's names and the UI text. */
 export const getPublicSiteInfo = async (site: PublicSite) => {
@@ -73,7 +90,7 @@ export const upsertPublicSite = (input: {
 				return row ?? null;
 			},
 		},
-		input,
+		{ ...input, appHost },
 	);
 
 /** Delete a site of the organization. Returns false when it has none by that hostname. */

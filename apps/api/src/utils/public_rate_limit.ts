@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { ORPCError } from "@orpc/server";
 import {
 	consumeFixedWindow,
@@ -10,6 +11,25 @@ export const PUBLIC_CHAT_IP_LIMIT = { window: 10 * 60, max: 20 } as const;
 export const PUBLIC_CHAT_SITE_LIMIT = { window: 24 * 60 * 60, max: 500 } as const;
 
 const KEY_PREFIX = "public:rl:";
+
+/**
+ * Rate limit bucket of a client address. IPv4 stays as is, `::ffff:a.b.c.d`
+ * counts as IPv4, IPv6 is grouped by /64 (one subscriber holds a whole /64, so
+ * per-address buckets are free to dodge). Anything else stays as is.
+ */
+export const ipBucket = (ip: string): string => {
+	const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+	if (mapped) return mapped[1]!;
+	if (!ip.includes(":") || isIP(ip) !== 6) return ip;
+	// Expand "::" to eight 16-bit groups and keep the first four
+	const [head = "", tail] = ip.split("::");
+	const headGroups = head ? head.split(":") : [];
+	const tailGroups = tail ? tail.split(":") : [];
+	const fill = ip.includes("::") ? 8 - headGroups.length - tailGroups.length : 0;
+	const groups = [...headGroups, ...Array<string>(fill).fill("0"), ...tailGroups];
+	const prefix = groups.slice(0, 4).map((g) => parseInt(g, 16).toString(16));
+	return `${prefix.join(":")}::/64`;
+};
 
 const tooManyRequests = (retryAfterSeconds: number) =>
 	new ORPCError("TOO_MANY_REQUESTS", {
@@ -33,7 +53,7 @@ export const enforcePublicChatLimits = async (
 	try {
 		const perIp = await consumeFixedWindow(
 			redis,
-			`${KEY_PREFIX}ip:${hostname}:${ip}`,
+			`${KEY_PREFIX}ip:${hostname}:${ipBucket(ip)}`,
 			PUBLIC_CHAT_IP_LIMIT,
 		);
 		if (!perIp.allowed) throw tooManyRequests(perIp.retryAfter);

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { queryRAGStream } from "../../services/rag.service";
-import { toPublicSources } from "../../utils/public_site";
+import { toPublicChatError, toPublicSources } from "../../utils/public_site";
 import { getPublicSiteInfo } from "../../services/public-site.service";
 import { publicChatProcedure, publicSiteProcedure } from "../public-middleware";
 import { env } from "../../config/env";
@@ -40,7 +40,7 @@ export const publicRoutes = {
 			method: "POST",
 			path: `${PREFIX}/public/chat/stream`,
 			description:
-				"Streaming chat of the public site named by the Host header. Same events as /chat/query/stream. Nothing is stored; tools are not offered. Rate limited per IP and per site.",
+				"Streaming chat of the public site named by the Host header. Same events as /chat/query/stream, except `usage`. Nothing is stored; tools are not offered. Rate limited per IP and per site.",
 		})
 		.input(publicChatBodySchema)
 		.handler(async function* ({ input, context }) {
@@ -74,15 +74,20 @@ export const publicRoutes = {
 				let step = await stream.next();
 				while (!step.done) {
 					const event = step.value;
-					yield event.type === "sources"
-						? { type: "sources" as const, data: toPublicSources(event.data) }
-						: event;
+					// Token counts and cost are for the owner, not for visitors
+					if (event.type !== "usage") {
+						yield event.type === "sources"
+							? { type: "sources" as const, data: toPublicSources(event.data) }
+							: event;
+					}
 					step = await stream.next();
 				}
 				yield {
 					type: "done" as const,
 					data: { finishReason: step.value.finishReason },
 				};
+			} catch (error) {
+				throw toPublicChatError(error);
 			} finally {
 				await stream.return(undefined as never);
 			}

@@ -6,6 +6,7 @@ import {
 	PUBLIC_CHAT_IP_LIMIT,
 	PUBLIC_CHAT_SITE_LIMIT,
 	enforcePublicChatLimits,
+	ipBucket,
 } from "./public_rate_limit";
 
 const createFakeRedis = () => {
@@ -126,4 +127,17 @@ test("fails closed when Redis errors", async () => {
 	} finally {
 		restore();
 	}
+});
+
+test("ipBucket: IPv4 unchanged, mapped IPv4 is IPv4, IPv6 is a /64, invalid stays", () => {
+	assert.equal(ipBucket("203.0.113.9"), "203.0.113.9");
+	assert.equal(ipBucket("::ffff:203.0.113.9"), "203.0.113.9");
+	const a = ipBucket("2001:db8:1:2:aaaa:bbbb:cccc:dddd");
+	assert.equal(a, "2001:db8:1:2::/64");
+	assert.equal(ipBucket("2001:DB8:1:2::1"), a);
+	assert.equal(ipBucket("2001:db8:1:3::1"), "2001:db8:1:3::/64");
+	assert.equal(ipBucket("2001:db8::1"), "2001:db8:0:0::/64");
+	assert.equal(ipBucket("::1"), "0:0:0:0::/64");
+	assert.equal(ipBucket("unknown"), "unknown");
+	assert.equal(ipBucket("not:an:ip"), "not:an:ip");
 });

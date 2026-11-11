@@ -1,5 +1,5 @@
 {
-  "id": "91118dc2-eaee-4dca-909d-c2bf7720ea70",
+  "id": "a787692e-5442-4eba-91fd-d695224fb32d",
   "prevId": "8ac53de1-358c-42b0-a183-1ea4abaab5bb",
   "version": "7",
   "dialect": "postgresql",
@@ -2090,7 +2090,23 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "public_site_organization_id_idx": {
+          "name": "public_site_organization_id_idx",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "public_site_profile_id_rag_profile_id_fk": {
           "name": "public_site_profile_id_rag_profile_id_fk",
@@ -2135,7 +2151,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "public_site_hostname_lower": {
+          "name": "public_site_hostname_lower",
+          "value": "\"public_site\".\"hostname\" = lower(\"public_site\".\"hostname\")"
+        }
+      },
       "isRLSEnabled": false
     }
   },
