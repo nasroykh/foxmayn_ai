@@ -15,7 +15,11 @@ import {
 	type IndexDocumentJobResult,
 	DocumentJobNames,
 } from "./types";
-import { chunkText, estimateTokens } from "../../services/chunking.service";
+import {
+	chunkText,
+	embeddingInput,
+	estimateTokens,
+} from "../../services/chunking.service";
 import { getProfile, getDefaultProfile } from "../../services/profile.service";
 import {
 	qdrant,
@@ -248,6 +252,7 @@ async function processIndexDocument(
 			.select({
 				userId: document.userId,
 				profileId: document.profileId,
+				title: document.title,
 				content: document.content,
 				source: document.source,
 				metadata: document.metadata,
@@ -310,7 +315,10 @@ async function processIndexDocument(
 		);
 
 		const tokenCounts = chunks.map((c) => estimateTokens(c.content));
-		const estimatedTokens = tokenCounts.reduce((sum, n) => sum + n, 0);
+		// The embedding input carries the title: reserve and fall back on that
+		const embedInputs = chunks.map((c) => embeddingInput(doc.title, c.content));
+		const embedTokenCounts = embedInputs.map((text) => estimateTokens(text));
+		const estimatedTokens = embedTokenCounts.reduce((sum, n) => sum + n, 0);
 
 		await job.updateProgress(15);
 
@@ -367,7 +375,7 @@ async function processIndexDocument(
 			try {
 				embedded = await OpenRouterEmbed(
 					embeddingModelId,
-					batch.map((c) => c.content),
+					embedInputs.slice(i, i + batch.length),
 				);
 			} catch (err) {
 				// Bad key, unknown model, no provider credit: a retry cannot succeed
@@ -386,7 +394,7 @@ async function processIndexDocument(
 			attemptTokens +=
 				usage.totalTokens > 0
 					? usage.totalTokens
-					: tokenCounts.slice(i, i + batch.length).reduce((s, n) => s + n, 0);
+					: embedTokenCounts.slice(i, i + batch.length).reduce((s, n) => s + n, 0);
 
 			const points: Point<VectorPayload>[] = [];
 			const chunkRecords = batch.map((chunk, j) => {
