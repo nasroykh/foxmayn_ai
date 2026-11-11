@@ -15,6 +15,7 @@ import { organization, user } from "../auth/schema";
 export const operationTypeEnum = pgEnum("operation_type", [
 	"chat",
 	"embedding",
+	"transcription",
 ]);
 
 export const creditTransactionTypeEnum = pgEnum("credit_transaction_type", [

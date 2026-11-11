@@ -2,8 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
 import { OPENROUTER_AI_MODELS } from "@repo/llm/openrouter/models";
+import { ragProfile } from "@repo/db/schema";
 import {
 	DEFAULT_REASONING_EFFORT,
+	PDF_PARSING_MODES,
 	isAcceptableModelChange,
 	isValidChunkOverlap,
 	isValidReasoningLimit,
@@ -119,4 +121,20 @@ test("the shape enforces the token limit and score threshold bounds", () => {
 	assert.equal(ok({ maxTokens: 1536.5 }), false);
 	assert.equal(ok({ scoreThreshold: 1.05 }), false);
 	assert.equal(ok({ scoreThreshold: -0.05 }), false);
+});
+
+test("pdfParsing accepts text and vision only, and is optional", () => {
+	assert.equal(ok({ pdfParsing: "text" }), true);
+	assert.equal(ok({ pdfParsing: "vision" }), true);
+	assert.equal(ok({}), true);
+	assert.equal(ok({ pdfParsing: "ocr" }), false);
+	assert.equal(ok({ pdfParsing: "" }), false);
+	assert.equal(ok({ pdfParsing: "Vision" }), false);
+	assert.equal(ok({ pdfParsing: null }), false);
+	assert.deepEqual([...PDF_PARSING_MODES], ["text", "vision"]);
+});
+
+test("a profile reads PDFs from the text layer unless it says otherwise", () => {
+	assert.equal(ragProfile.pdfParsing.default, "text");
+	assert.equal(ragProfile.pdfParsing.notNull, true);
 });

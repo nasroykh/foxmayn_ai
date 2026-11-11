@@ -5,6 +5,7 @@ import {
 	type IndexDocumentJobData,
 	type DeleteDocumentJobData,
 	type ReindexDocumentJobData,
+	type TranscribeDocumentJobData,
 	DocumentJobNames,
 } from "./types";
 
@@ -12,10 +13,13 @@ const QUEUE_NAME = "document";
 
 /**
  * Document processing queue
- * Handles: indexing, deletion, re-indexing
+ * Handles: PDF page transcription, indexing, deletion, re-indexing
  */
 export const documentQueue = new Queue<
-	IndexDocumentJobData | DeleteDocumentJobData | ReindexDocumentJobData
+	| IndexDocumentJobData
+	| DeleteDocumentJobData
+	| ReindexDocumentJobData
+	| TranscribeDocumentJobData
 >(QUEUE_NAME, {
 	connection: redisConnection,
 	defaultJobOptions,
@@ -33,6 +37,26 @@ export async function addIndexDocumentJob(
 		...options,
 		// Use documentId as jobId for idempotency
 		jobId: `index-${data.documentId}`,
+	});
+
+	return {
+		jobId: job.id,
+		documentId: data.documentId,
+	};
+}
+
+/**
+ * Add a PDF page transcription job. The worker queues the index job when done.
+ * Returns immediately with jobId - processing happens in background
+ */
+export async function addTranscribeDocumentJob(
+	data: TranscribeDocumentJobData,
+	options?: JobsOptions,
+) {
+	const job = await documentQueue.add(DocumentJobNames.TRANSCRIBE, data, {
+		...options,
+		// Use documentId as jobId for idempotency
+		jobId: `transcribe-${data.documentId}`,
 	});
 
 	return {

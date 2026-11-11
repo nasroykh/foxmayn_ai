@@ -1,18 +1,31 @@
 import { Worker, Job, UnrecoverableError, DelayedError } from "bullmq";
 import { randomUUID } from "crypto";
-import { db, document, documentChunk, aiUsageLog } from "@repo/db";
+import { ORPCError } from "@orpc/server";
+import {
+	db,
+	document,
+	documentChunk,
+	documentFile,
+	aiUsageLog,
+} from "@repo/db";
 import { upsertVectors, deleteVectorsByFilter, type Point } from "@repo/qdrant";
-import { eq, and, ne, lt, isNull, or } from "@repo/db/drizzle-orm";
-import { DEFAULT_EMBEDDING_MODEL, OpenRouterEmbed } from "@repo/llm/openrouter";
+import { eq, and, ne, lt, isNull, or, sql } from "@repo/db/drizzle-orm";
+import {
+	DEFAULT_EMBEDDING_MODEL,
+	OpenRouterEmbed,
+	OpenRouterTranscribePage,
+} from "@repo/llm/openrouter";
 import { redisConnection } from "../connection";
 import { redis } from "../../config/redis";
 import { acquireDocumentLock } from "./document.lock";
-import { addDeleteDocumentJob } from "./document.queue";
+import { addDeleteDocumentJob, addIndexDocumentJob } from "./document.queue";
 import {
 	type IndexDocumentJobData,
 	type DeleteDocumentJobData,
 	type ReindexDocumentJobData,
+	type TranscribeDocumentJobData,
 	type IndexDocumentJobResult,
+	type TranscribeDocumentJobResult,
 	DocumentJobNames,
 } from "./types";
 import {
@@ -37,6 +50,28 @@ import {
 import { invalidateUsageStats } from "../../services/usage.service";
 import { calculateCost, CREDIT_EPSILON } from "../../utils/cost";
 import { describeError } from "../../config/redact";
+import { openPdfPageRenderer } from "../../utils/parsers";
+import { MAX_PDF_PAGES } from "../../utils/file_validation";
+import {
+	PAGE_TRANSCRIPTION_MODEL,
+	PAGE_TRANSCRIPTION_PROMPT,
+	TRANSCRIPTION_FAILED_REASON,
+	TRANSCRIPTION_PROVIDER_REFUSED_REASON,
+	TRANSCRIPTION_UNPRICED_REASON,
+	TRANSCRIPTION_UNREADABLE_REASON,
+	TRANSCRIPTION_EMPTY_REASON,
+	ESTIMATED_INPUT_TOKENS_PER_PAGE,
+	ESTIMATED_OUTPUT_TOKENS_PER_PAGE,
+	TRANSCRIPTION_SAVE_EVERY_PAGES,
+	emptyUsage,
+	estimateTranscriptionCost,
+	joinTranscribedPages,
+	resolvePageUsage,
+	transcribePages,
+	transcriptionCost,
+	type PageCallResult,
+	type TranscriptionUsage,
+} from "../../utils/transcription";
 import {
 	isPermanentProviderError,
 	PROVIDER_REFUSED_INDEXING_REASON,
@@ -557,6 +592,503 @@ async function processIndexDocument(
 }
 
 /**
+ * Transcribe the pages of a PDF with a vision model, replace the document's
+ * text-layer content with the result, then queue the index job.
+ *
+ * The text layer stays the fallback: whatever goes wrong here (credits refused,
+ * provider failure, unreadable PDF) the document is still indexed from it, with
+ * the reason in metadata.transcriptionError.
+ *
+ * Billing mirrors processIndexDocument: the estimate for every page is reserved
+ * before any provider call (keyed by job id, so a retry reuses it), the pages
+ * paid for by failed attempts are remembered in job data, and the settlement,
+ * its usage log marker, the new content and the removal of the stored PDF are
+ * one transaction. A retry that finds the marker only queues the index job.
+ *
+ * The caller (processJob) holds a per-document lock.
+ */
+async function processTranscribeDocument(
+	job: Job<TranscribeDocumentJobData>,
+): Promise<TranscribeDocumentJobResult> {
+	const startTime = Date.now();
+	const { documentId, organizationId, userId } = job.data;
+	const jobId = job.id ?? `transcribe-${documentId}`;
+	const reserveRef = `reserve-${jobId}`;
+	const usageId = `usage-${jobId}`;
+	const isRetry = job.attemptsMade > 0 || job.attemptsStarted > 1;
+	const maxAttempts = job.opts.attempts ?? 1;
+
+	const result = (
+		transcribed: boolean,
+		pages = 0,
+	): TranscribeDocumentJobResult => ({
+		documentId,
+		pages,
+		transcribed,
+		processingTimeMs: Date.now() - startTime,
+	});
+
+	/** The index job takes over with the same data (without the transcription bookkeeping). */
+	const queueIndex = () =>
+		addIndexDocumentJob({
+			documentId,
+			userId,
+			organizationId,
+			profileId: job.data.profileId,
+			replaceSource: job.data.replaceSource,
+		});
+
+	// The document row is the source of truth (owner)
+	const [doc] = await db
+		.select({ userId: document.userId })
+		.from(document)
+		.where(eq(document.id, documentId));
+
+	// Deleted while queued: nothing to transcribe and nothing was spent
+	if (!doc) {
+		console.warn(`[Document Worker] Document ${documentId} no longer exists`);
+		return result(false);
+	}
+	if (doc.userId !== userId) {
+		throw new UnrecoverableError(
+			`Document ${documentId} does not belong to user ${userId}`,
+		);
+	}
+
+	// A retry whose billing already completed must not bill again
+	if (isRetry) {
+		const [log] = await db
+			.select({ id: aiUsageLog.id })
+			.from(aiUsageLog)
+			.where(eq(aiUsageLog.id, usageId));
+		if (log) {
+			// Settlement, new content and file removal committed together: only the
+			// hand-over to indexing is left
+			await queueIndex();
+			return result(true);
+		}
+	}
+
+	let reservation: CreditReservation | null = null;
+	// Set once the settlement (with the new content) committed
+	let committed = false;
+	let totalPages: number | undefined;
+	// Pages paid for by earlier failed attempts, and by this one
+	const paidBefore: TranscriptionUsage = {
+		pages: job.data.transcribedPages ?? 0,
+		inputTokens: job.data.transcribedInputTokens ?? 0,
+		outputTokens: job.data.transcribedOutputTokens ?? 0,
+	};
+	const attemptUsage = emptyUsage();
+	const paidTotal = (): TranscriptionUsage => ({
+		pages: paidBefore.pages + attemptUsage.pages,
+		inputTokens: paidBefore.inputTokens + attemptUsage.inputTokens,
+		outputTokens: paidBefore.outputTokens + attemptUsage.outputTokens,
+	});
+
+	const findReservation = async (): Promise<CreditReservation | null> => {
+		const tx = await findTransactionByReference(organizationId, reserveRef);
+		if (!tx) return null;
+		return {
+			orgId: organizationId,
+			userId,
+			amount: Math.abs(Number(tx.amount)),
+			transactionId: tx.id,
+		};
+	};
+
+	/** Remember in the job data what was paid for, so a retry (or crash recovery) bills it. */
+	const saveUsage = () => {
+		const paid = paidTotal();
+		return job
+			.updateData({
+				...job.data,
+				transcribedPages: paid.pages,
+				transcribedInputTokens: paid.inputTokens,
+				transcribedOutputTokens: paid.outputTokens,
+			})
+			.catch((err) =>
+				console.error(
+					`[Document Worker] Failed to persist transcription usage for ${documentId}:`,
+					describeError(err),
+				),
+			);
+	};
+
+	/**
+	 * Settle the reservation on the pages paid for. The usage log row is the
+	 * "already settled" marker and is written in the same transaction as the
+	 * refund/charge and `finalize`. Never throws. "failed": the transaction
+	 * rolled back (or the cost could not be priced), nothing was settled and the
+	 * reservation stays held. "already": the marker was there, an earlier
+	 * attempt settled.
+	 */
+	const settle = async (
+		usage: TranscriptionUsage,
+		context: Record<string, unknown>,
+		finalize: (tx: DbTransaction) => Promise<void>,
+	): Promise<"done" | "already" | "failed"> => {
+		const noReservation = {
+			orgId: organizationId,
+			userId,
+			amount: 0,
+			transactionId: "",
+		};
+		let actualCost = NaN;
+		try {
+			actualCost = transcriptionCost(usage);
+			const done = await settleReservation(
+				reservation ?? noReservation,
+				actualCost,
+				`transcription ${documentId}`,
+				usageId,
+				async (tx) => {
+					// Nothing reserved and nothing paid: no marker needed
+					if (reservation || usage.pages > 0) {
+						const inserted = await tx
+							.insert(aiUsageLog)
+							.values({
+								id: usageId,
+								organizationId,
+								userId,
+								operationType: "transcription",
+								model: PAGE_TRANSCRIPTION_MODEL,
+								inputTokens: usage.inputTokens,
+								outputTokens: usage.outputTokens,
+								totalTokens: usage.inputTokens + usage.outputTokens,
+								costCredits: actualCost.toFixed(8),
+								metadata: {
+									documentId,
+									pages: totalPages ?? usage.pages,
+									context: "document_transcription",
+									...context,
+								},
+							})
+							.onConflictDoNothing()
+							.returning({ id: aiUsageLog.id });
+						// Marker already present: an earlier attempt settled
+						if (inserted.length === 0) return false;
+					}
+					await finalize(tx);
+					return true;
+				},
+			);
+			await invalidateUsageStats(organizationId);
+			return done ? "done" : "already";
+		} catch (err) {
+			// Rolled back as a whole: nothing was settled, the marker is absent
+			console.error(
+				`[Document Worker] TRANSCRIPTION SETTLEMENT FAILED for ${documentId} (org ${organizationId}, reserved ${reservation?.amount ?? 0}, actual ${actualCost}):`,
+				describeError(err),
+			);
+			return "failed";
+		}
+	};
+
+	/** Merge keys into document.metadata. */
+	const addMetadata = async (
+		conn: Pick<typeof db, "select" | "update">,
+		extra: Record<string, unknown>,
+		set: { status?: "failed" } = {},
+	) => {
+		const [current] = await conn
+			.select({ metadata: document.metadata })
+			.from(document)
+			.where(eq(document.id, documentId));
+		if (!current) return;
+		await conn
+			.update(document)
+			.set({ ...set, metadata: { ...(current.metadata ?? {}), ...extra } })
+			.where(eq(document.id, documentId));
+	};
+
+	/** Keep the text layer: record why vision did not replace it, drop the stored PDF. */
+	const keepTextLayer = async (
+		reason: string,
+		conn: Pick<typeof db, "select" | "update" | "delete"> = db,
+	) => {
+		await addMetadata(conn, { transcriptionError: reason });
+		await conn
+			.delete(documentFile)
+			.where(eq(documentFile.documentId, documentId));
+	};
+
+	/**
+	 * Hand the document to indexing, unless it has no text at all (a scan whose
+	 * transcription did not happen): then it fails with the reason.
+	 */
+	const handOver = async (reason: string) => {
+		const [row] = await db
+			.select({ hasText: sql<boolean>`btrim(${document.content}) <> ''` })
+			.from(document)
+			.where(eq(document.id, documentId));
+		if (!row) return;
+		if (row.hasText) {
+			await queueIndex();
+			return;
+		}
+		await addMetadata(db, { error: reason }, { status: "failed" });
+	};
+
+	const [file] = await db
+		.select({ data: documentFile.data })
+		.from(documentFile)
+		.where(eq(documentFile.documentId, documentId));
+	// Already transcribed (file removed with the settlement) or lost: use what the row holds
+	if (!file) {
+		console.warn(
+			`[Document Worker] Document ${documentId}: No stored PDF, using the current content`,
+		);
+		await handOver("The stored PDF is missing.");
+		return result(false);
+	}
+
+	const transcribeOnePage = async (
+		png: Uint8Array,
+	): Promise<PageCallResult> => {
+		let answered: Awaited<ReturnType<typeof OpenRouterTranscribePage>>;
+		try {
+			answered = await OpenRouterTranscribePage({
+				model: PAGE_TRANSCRIPTION_MODEL,
+				png,
+				prompt: PAGE_TRANSCRIPTION_PROMPT,
+				// An answer that cannot be read was still paid for: bill the estimate
+				unreadableUsage: {
+					inputTokens: ESTIMATED_INPUT_TOKENS_PER_PAGE,
+					outputTokens: ESTIMATED_OUTPUT_TOKENS_PER_PAGE,
+				},
+			});
+		} catch (err) {
+			// Bad key, unknown model, no provider credit: a retry cannot succeed
+			if (isPermanentProviderError(err)) {
+				throw new UnrecoverableError(TRANSCRIPTION_PROVIDER_REFUSED_REASON);
+			}
+			throw err;
+		}
+		return {
+			text: answered.text,
+			usage: resolvePageUsage(answered.usage, estimateTokens(answered.text)),
+			truncated: answered.finishReason === "length",
+		};
+	};
+
+	console.log(
+		`[Document Worker] Starting page transcription for document: ${documentId}`,
+	);
+
+	try {
+		const renderer = await openPdfPageRenderer(Buffer.from(file.data)).catch(
+			(err) => {
+				console.error(
+					`[Document Worker] Document ${documentId}: Cannot open PDF:`,
+					describeError(err),
+				);
+				throw new UnrecoverableError(TRANSCRIPTION_UNREADABLE_REASON);
+			},
+		);
+
+		try {
+			totalPages = renderer.total;
+			if (totalPages > MAX_PDF_PAGES) {
+				throw new UnrecoverableError(TRANSCRIPTION_UNREADABLE_REASON);
+			}
+
+			// Step 1: Reserve the estimate for every page before any provider call.
+			// An unpriced model fails here (never billed as 0).
+			let estimatedCost: number;
+			try {
+				estimatedCost = estimateTranscriptionCost(totalPages);
+			} catch {
+				throw new UnrecoverableError(TRANSCRIPTION_UNPRICED_REASON);
+			}
+			if (isRetry) reservation = await findReservation();
+			if (!reservation && estimatedCost >= CREDIT_EPSILON) {
+				try {
+					reservation = await reserveCredits({
+						orgId: organizationId,
+						userId,
+						amount: estimatedCost,
+						description: `transcription reservation — ${documentId} (${totalPages} pages)`,
+						referenceId: reserveRef,
+					});
+				} catch (err) {
+					// Not enough credits or the monthly cap: retrying cannot help.
+					// The document is still indexed from its text layer.
+					if (!(err instanceof ORPCError)) throw err;
+					await keepTextLayer(err.message);
+					await handOver(err.message);
+					return result(false, totalPages);
+				}
+			}
+
+			await job.updateProgress(5);
+
+			// Step 2: Transcribe page by page (rendering one at a time, 4 model calls at once)
+			const { texts: pageTexts, truncatedPages } = await transcribePages({
+				total: totalPages,
+				// A page that cannot be rendered cannot be rendered on a retry either
+				render: (page) =>
+					renderer.render(page).catch((err) => {
+						console.error(
+							`[Document Worker] Document ${documentId}: Cannot render page ${page}:`,
+							describeError(err),
+						);
+						throw new UnrecoverableError(TRANSCRIPTION_UNREADABLE_REASON);
+					}),
+				transcribe: transcribeOnePage,
+				usage: attemptUsage,
+				onPageDone: async (done, total) => {
+					await job.updateProgress(5 + Math.floor((done / total) * 85));
+					// A crash must not lose what was paid for: a retry bills these pages
+					if (done % TRANSCRIPTION_SAVE_EVERY_PAGES === 0) await saveUsage();
+				},
+			});
+
+			// Blank pages are legitimate (an empty scan page); only a document with no
+			// text on any page fails, and a retry would pay for the same blank pages
+			const { text, truncated } = joinTranscribedPages(pageTexts);
+			if (!text) throw new UnrecoverableError(TRANSCRIPTION_EMPTY_REASON);
+			if (truncated)
+				console.warn(
+					`[Document Worker] Document ${documentId}: Transcription cut at the size limit`,
+				);
+			if (truncatedPages.length > 0)
+				console.warn(
+					`[Document Worker] Document ${documentId}: Page(s) ${truncatedPages.join(", ")} hit the output limit and are cut off`,
+				);
+
+			// Step 3: Settle on the pages paid for (including failed attempts), store the
+			// transcription and drop the PDF in the same transaction as the marker.
+			const outcome = await settle(
+				paidTotal(),
+				{ truncated, truncatedPages },
+				async (tx) => {
+					await tx
+						.update(document)
+						.set({ content: text })
+						.where(eq(document.id, documentId));
+					if (truncatedPages.length > 0)
+						await addMetadata(tx, { truncatedPages });
+					await tx
+						.delete(documentFile)
+						.where(eq(documentFile.documentId, documentId));
+				},
+			);
+			// Rolled back, or an earlier attempt settled: the retry settles once or
+			// finds the marker
+			if (outcome !== "done") throw new Error("Transcription settlement failed");
+			committed = true;
+		} finally {
+			await renderer.destroy().catch(() => undefined);
+		}
+
+		// Step 4: Hand over to indexing. A failure here retries: the retry finds the marker.
+		await queueIndex();
+		await job.updateProgress(100);
+
+		console.log(
+			`[Document Worker] Document ${documentId}: Transcribed ${totalPages} page(s) in ${Date.now() - startTime}ms`,
+		);
+		return result(true, totalPages);
+	} catch (error) {
+		const terminal =
+			error instanceof UnrecoverableError ||
+			job.attemptsMade + 1 >= maxAttempts;
+		const paid = paidTotal();
+
+		console.error(
+			`[Document Worker] Document ${documentId}: Transcription failed (attempt ${job.attemptsMade + 1}/${maxAttempts})`,
+			describeError(error),
+		);
+
+		if (!terminal) {
+			// Keep the reservation for the retry and remember what was already paid for
+			await saveUsage();
+			throw error;
+		}
+
+		// The transcription is stored and billed, only the hand-over failed: the
+		// document would stay "processing" forever
+		if (committed) {
+			await addMetadata(
+				db,
+				{ error: "Indexing could not be started. Try again or contact support." },
+				{ status: "failed" },
+			).catch((markErr) =>
+				console.error(
+					`[Document Worker] Failed to mark ${documentId} as failed:`,
+					describeError(markErr),
+				),
+			);
+			throw error;
+		}
+
+		// Terminal failure: charge what the provider was paid for, refund the rest,
+		// keep the text layer and drop the stored PDF
+		const reason =
+			error instanceof UnrecoverableError
+				? error.message
+				: TRANSCRIPTION_FAILED_REASON;
+		try {
+			reservation ??= await findReservation();
+		} catch (err) {
+			console.error(
+				`[Document Worker] Failed to look up reservation for ${documentId}:`,
+				describeError(err),
+			);
+		}
+		let outcome: "done" | "already" | "failed" | "none" = "none";
+		if (reservation || paid.pages > 0) {
+			outcome = await settle(paid, { failed: true }, (tx) =>
+				keepTextLayer(reason, tx),
+			).catch((err) => {
+				console.error(
+					`[Document Worker] Failed to settle failed job ${documentId}:`,
+					describeError(err),
+				);
+				return "failed" as const;
+			});
+		}
+		if (outcome !== "done") {
+			// Nothing to settle, or settling did not complete (logged above): the
+			// document must still move on to indexing. keepTextLayer is idempotent.
+			await keepTextLayer(reason).catch((err) =>
+				console.error(
+					`[Document Worker] Failed to keep the text layer of ${documentId}:`,
+					describeError(err),
+				),
+			);
+		}
+
+		try {
+			await handOver(reason);
+		} catch (queueErr) {
+			console.error(
+				`[Document Worker] Failed to queue indexing for ${documentId}:`,
+				describeError(queueErr),
+			);
+			await addMetadata(
+				db,
+				{ error: "Indexing could not be started. Try again or contact support." },
+				{ status: "failed" },
+			).catch(() => undefined);
+			throw queueErr;
+		}
+		// The reservation stays held and the pages are unbilled: fail the job so
+		// it shows up (the settlement failure was logged above). Unrecoverable: a
+		// retry would find no stored PDF and report success, hiding this.
+		if (outcome === "failed") {
+			const unsettled = new UnrecoverableError(
+				`Transcription settlement failed for ${documentId}: reservation not settled`,
+			);
+			unsettled.cause = error;
+			throw unsettled;
+		}
+		return result(false, totalPages);
+	}
+}
+
+/**
  * Process document deletion job
  */
 async function processDeleteDocument(
@@ -601,7 +1133,10 @@ async function processReindexDocument(
  */
 async function processJob(
 	job: Job<
-		IndexDocumentJobData | DeleteDocumentJobData | ReindexDocumentJobData
+		| IndexDocumentJobData
+		| DeleteDocumentJobData
+		| ReindexDocumentJobData
+		| TranscribeDocumentJobData
 	>,
 	token?: string,
 ) {
@@ -619,6 +1154,10 @@ async function processJob(
 
 	try {
 		switch (job.name) {
+			case DocumentJobNames.TRANSCRIBE:
+				return await processTranscribeDocument(
+					job as Job<TranscribeDocumentJobData>,
+				);
 			case DocumentJobNames.INDEX:
 				return await processIndexDocument(job as Job<IndexDocumentJobData>);
 			case DocumentJobNames.DELETE:

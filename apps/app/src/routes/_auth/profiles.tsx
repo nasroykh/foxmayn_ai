@@ -107,6 +107,16 @@ const LOW_ANSWER_ROOM_TOKENS = 1536;
 const toReasoningEffort = (value: string | undefined): ReasoningEffort =>
 	REASONING_EFFORTS.find((e) => e === value) ?? DEFAULT_REASONING_EFFORT;
 
+// Mirror PDF_PARSING_MODES in apps/api/src/utils/profile_schema.ts
+const PDF_PARSING_OPTIONS = [
+	{ value: "text", label: "Text layer (fast, free)" },
+	{ value: "vision", label: "Vision (scans, tables; billed per page)" },
+] as const;
+type PdfParsing = (typeof PDF_PARSING_OPTIONS)[number]["value"];
+
+const toPdfParsing = (value: string | undefined): PdfParsing =>
+	PDF_PARSING_OPTIONS.find((o) => o.value === value)?.value ?? "text";
+
 // Bounds mirror apps/api/src/utils/profile_schema.ts
 const profileFormSchema = z
 	.object({
@@ -114,6 +124,7 @@ const profileFormSchema = z
 		description: z.string().max(1000),
 		model: z.string().optional(),
 		embeddingModel: z.string().optional(),
+		pdfParsing: z.enum(["text", "vision"]),
 		systemPrompt: z.string().max(8000, "At most 8000 characters"),
 		language: z.string().trim().min(1, "Language is required").max(50),
 		chunkSize: z.coerce
@@ -214,6 +225,7 @@ function toPayload(values: ProfileFormValues): CreateProfileInput {
 		model: (values.model || undefined) as CreateProfileInput["model"],
 		embeddingModel: (values.embeddingModel ||
 			undefined) as CreateProfileInput["embeddingModel"],
+		pdfParsing: values.pdfParsing,
 		systemPrompt: values.systemPrompt,
 		language: values.language,
 		chunkSize: values.chunkSize,
@@ -505,6 +517,7 @@ function ProfileFormDialog({
 			// apps/api/src/services/model-catalog.service.ts); reasoning defaults to low there
 			model: defaultValues?.model ?? DEFAULT_CHAT_MODEL,
 			embeddingModel: defaultValues?.embeddingModel ?? undefined,
+			pdfParsing: toPdfParsing(defaultValues?.pdfParsing),
 			systemPrompt: defaultValues?.systemPrompt ?? "",
 			language: defaultValues?.language ?? "auto",
 			chunkSize: defaultValues?.chunkSize ?? 500,
@@ -653,6 +666,40 @@ function ProfileFormDialog({
 									documents and uses credits.
 								</p>
 							)}
+						</div>
+
+						{/* PDF reading */}
+						<div className="col-span-2 space-y-2">
+							<Label htmlFor="profile-pdf-parsing">PDF reading</Label>
+							<Controller
+								name="pdfParsing"
+								control={control}
+								render={({ field }) => (
+									<Select
+										value={field.value}
+										items={PDF_PARSING_OPTIONS}
+										onValueChange={(v) =>
+											field.onChange(toPdfParsing(v ?? undefined))
+										}
+									>
+										<SelectTrigger id="profile-pdf-parsing" className="w-full">
+											<SelectValue />
+										</SelectTrigger>
+										<SelectContent>
+											{PDF_PARSING_OPTIONS.map((option) => (
+												<SelectItem key={option.value} value={option.value}>
+													{option.label}
+												</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
+								)}
+							/>
+							<p className="text-xs text-muted-foreground">
+								Vision has a model read every page of a new PDF, so scanned
+								pages and tables come out right. It takes longer and is billed
+								per page. Applies to PDFs added after you save.
+							</p>
 						</div>
 
 						<div className="space-y-2">

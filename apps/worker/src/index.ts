@@ -14,6 +14,7 @@ import {
 	createEmailWorker,
 	documentQueue,
 	closeQueues,
+	initWorkerModelCatalog,
 } from "@repo/api/jobs";
 
 // Log the stack or message only: SDK error objects can carry request
@@ -75,6 +76,9 @@ async function start() {
 	try {
 		await initDB();
 		console.log("✅ Database connected");
+
+		// Page transcription is priced from the live model catalog, like in the API
+		await initWorkerModelCatalog();
 
 		workers.push(createDocumentWorker(), createEmailWorker());
 

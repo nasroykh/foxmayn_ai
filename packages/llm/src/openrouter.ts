@@ -13,6 +13,17 @@ const REQUEST_TIMEOUT_MS = 180_000;
 
 let client: OpenRouter | undefined;
 
+/** The API key, read on first use so that importing this module never throws. */
+function getApiKey(): string {
+	const apiKey = env.OPENROUTER_API_KEY?.trim();
+	if (!apiKey) {
+		throw new Error(
+			"OPENROUTER_API_KEY is not set. Set it in .env to use chat and document embedding.",
+		);
+	}
+	return apiKey;
+}
+
 /**
  * Lazily builds the OpenRouter client so that importing this module never
  * throws (the API/worker can boot and report a clear error on first use).
@@ -20,12 +31,7 @@ let client: OpenRouter | undefined;
 function getClient(): OpenRouter {
 	if (client) return client;
 
-	const apiKey = env.OPENROUTER_API_KEY?.trim();
-	if (!apiKey) {
-		throw new Error(
-			"OPENROUTER_API_KEY is not set. Set it in .env to use chat and document embedding.",
-		);
-	}
+	const apiKey = getApiKey();
 
 	client = new OpenRouter({
 		apiKey,
@@ -459,3 +465,246 @@ export const OpenRouterEmbed = async (
 		throw error;
 	}
 };
+
+// ============================================================================
+// OpenRouterTranscribePage — one page image to text
+// ============================================================================
+
+export type PageUsage = { inputTokens: number; outputTokens: number };
+
+export type TranscribePageResult = {
+	text: string;
+	usage: PageUsage;
+	// Why the model stopped ("length" when the page output hit the cap)
+	finishReason?: string;
+};
+
+/**
+ * The provider answered (HTTP 2xx) but the answer could not be read, or reading
+ * it failed (e.g. the body timed out). The call may be billed, so the caller
+ * must charge `paidUsage` and never treat it as free.
+ */
+export class TranscribePageError extends Error {
+	readonly paidUsage: PageUsage;
+
+	constructor(message: string, paidUsage: PageUsage, options?: { cause?: unknown }) {
+		super(message, options);
+		this.name = "TranscribePageError";
+		this.paidUsage = paidUsage;
+	}
+}
+
+/**
+ * The provider refused the request: a non-2xx status, or an `error` object in
+ * a 2xx body. Carries the status like SDK errors do. `paidUsage` is set only
+ * when the provider reported tokens it charged anyway.
+ */
+export class OpenRouterHttpError extends Error {
+	readonly statusCode: number;
+	readonly paidUsage?: PageUsage;
+
+	constructor(statusCode: number, detail: string, paidUsage?: PageUsage) {
+		super(`OpenRouter request failed with status ${statusCode}${detail ? `: ${detail}` : ""}`);
+		this.name = "OpenRouterHttpError";
+		this.statusCode = statusCode;
+		this.paidUsage = paidUsage;
+	}
+}
+
+const TRANSCRIBE_MAX_TOKENS = 4000;
+const CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null;
+
+const tokenCount = (value: unknown): number =>
+	typeof value === "number" && Number.isFinite(value) && value > 0
+		? Math.round(value)
+		: 0;
+
+/**
+ * Read a chat completion body (wire JSON). Returns null when it holds neither
+ * an answer (a choice) nor any token usage. A missing usage is reported as 0.
+ */
+export const parseChatCompletion = (
+	body: unknown,
+): TranscribePageResult | null => {
+	if (!isRecord(body)) return null;
+
+	const usage = isRecord(body.usage) ? body.usage : undefined;
+	const inputTokens = tokenCount(usage?.prompt_tokens);
+	const outputTokens = tokenCount(usage?.completion_tokens);
+
+	const choice = Array.isArray(body.choices) ? body.choices[0] : undefined;
+	if (!isRecord(choice) && inputTokens + outputTokens === 0) return null;
+
+	const message = isRecord(choice) && isRecord(choice.message) ? choice.message : undefined;
+	const content = message?.content;
+	const text =
+		typeof content === "string"
+			? content
+			: Array.isArray(content)
+				? content
+						.map((part) =>
+							isRecord(part) && part.type === "text" && typeof part.text === "string"
+								? part.text
+								: "",
+						)
+						.join("")
+				: "";
+
+	return {
+		text,
+		usage: { inputTokens, outputTokens },
+		finishReason:
+			isRecord(choice) && typeof choice.finish_reason === "string"
+				? choice.finish_reason
+				: undefined,
+	};
+};
+
+/**
+ * Turn a 2xx response body into the page result, or throw the right error:
+ * - an `error` object and no choice: OpenRouterHttpError with the code from the
+ *   body (402, 401, 403... are then permanent), `paidUsage` only if the body has usage;
+ * - nothing readable, or the model stopped with finish_reason "error":
+ *   TranscribePageError carrying the body's usage, else `unreadableUsage`
+ *   (the provider answered, so it may be billed; never 0).
+ */
+export const readTranscribeResponse = (
+	body: unknown,
+	unreadableUsage: PageUsage,
+): TranscribePageResult => {
+	const parsed = parseChatCompletion(body);
+	const reported =
+		parsed && parsed.usage.inputTokens + parsed.usage.outputTokens > 0
+			? parsed.usage
+			: undefined;
+
+	if (
+		isRecord(body) &&
+		isRecord(body.error) &&
+		!(Array.isArray(body.choices) && body.choices.length > 0)
+	) {
+		const code = Number(body.error.code);
+		// A 2xx body carries the real status in error.code; anything else is a gateway error
+		const status = Number.isInteger(code) && code >= 400 && code < 600 ? code : 502;
+		const message = typeof body.error.message === "string" ? body.error.message.slice(0, 200) : "";
+		const usage = isRecord(body.usage)
+			? {
+					inputTokens: tokenCount(body.usage.prompt_tokens),
+					outputTokens: tokenCount(body.usage.completion_tokens),
+				}
+			: undefined;
+		throw new OpenRouterHttpError(
+			status,
+			message,
+			usage && usage.inputTokens + usage.outputTokens > 0 ? usage : undefined,
+		);
+	}
+
+	if (!parsed) {
+		throw new TranscribePageError(
+			"The page transcription answer had no choice and no usage",
+			unreadableUsage,
+		);
+	}
+	if (parsed.finishReason === "error") {
+		throw new TranscribePageError(
+			"The model stopped with an error",
+			reported ?? unreadableUsage,
+		);
+	}
+	return parsed;
+};
+
+/**
+ * Send one page image (PNG bytes) with an instruction to a vision model and
+ * return its answer. Deterministic (temperature 0), no reasoning, output
+ * capped at 4000 tokens. Usage is 0 when the provider reports none: the
+ * caller decides what to bill then.
+ *
+ * A plain `fetch` (the SDK validates responses and hides whether the provider
+ * had answered when it fails): a failure before the response headers arrive,
+ * or a non-2xx status, is an ordinary error (not billed). Once a 2xx response
+ * is there, any failure reading it throws a `TranscribePageError` carrying
+ * `unreadableUsage`, the usage to charge for an answer that cannot be read.
+ * Accepted risk: a connection that drops or times out before the response
+ * headers arrive is not billed here, although the provider may have charged
+ * for the call (it cannot be told apart from a request that never ran).
+ */
+export async function OpenRouterTranscribePage(options: {
+	model: string;
+	png: Uint8Array;
+	prompt: string;
+	unreadableUsage: PageUsage;
+}): Promise<TranscribePageResult> {
+	const { model, png, prompt, unreadableUsage } = options;
+	if (!prompt.trim()) throw new Error("Prompt is required");
+	if (png.length === 0) throw new Error("Image is required");
+
+	const apiKey = getApiKey();
+
+	try {
+		const response = await fetch(CHAT_COMPLETIONS_URL, {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiKey}`,
+				"Content-Type": "application/json",
+				"HTTP-Referer": env.APP_URL || "https://foxmayn.ai",
+				"X-Title": "Foxmayn AI",
+			},
+			body: JSON.stringify({
+				model,
+				stream: false,
+				temperature: 0,
+				max_tokens: TRANSCRIBE_MAX_TOKENS,
+				reasoning: { effort: "none" },
+				messages: [
+					{
+						role: "user",
+						content: [
+							{ type: "text", text: prompt },
+							{
+								type: "image_url",
+								image_url: {
+									url: `data:image/png;base64,${Buffer.from(png).toString("base64")}`,
+								},
+							},
+						],
+					},
+				],
+			}),
+			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+		});
+
+		if (!response.ok) {
+			// Not billed. Only the provider's short message, never the request.
+			let detail = "";
+			try {
+				const body: unknown = await response.json();
+				const err = isRecord(body) && isRecord(body.error) ? body.error.message : undefined;
+				if (typeof err === "string") detail = err.slice(0, 200);
+			} catch {
+				// No readable error body
+			}
+			throw new OpenRouterHttpError(response.status, detail);
+		}
+
+		// From here on the provider has answered: whatever fails below may be billed
+		let body: unknown;
+		try {
+			body = await response.json();
+		} catch (error) {
+			throw new TranscribePageError(
+				"The page transcription answer could not be read",
+				unreadableUsage,
+				{ cause: error },
+			);
+		}
+		return readTranscribeResponse(body, unreadableUsage);
+	} catch (error) {
+		console.error("[OpenRouter] Page transcription failed:", describeError(error));
+		throw error;
+	}
+}
