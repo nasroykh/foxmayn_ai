@@ -48,34 +48,52 @@ const evaluateCase = async (c: EvalCase, deps: EvalDeps): Promise<CaseResult> =>
 	};
 	const options = { ...scope, limit: c.options?.limit ?? deps.k };
 
+	// A follow-up: only the chat route takes history, so its sources are the retrieval
+	const history = c.messages ?? [];
+	const retrievalFromChat = history.length > 0 && !c.outOfScope;
+	const recordRetrieval = (sources: (string | null)[]) => {
+		const rank = firstHitRank(sources, c.expected);
+		result.retrieval = { rank, sources };
+		if (rank === null || rank > deps.k) {
+			const top = sources[0] ? normalizeUrl(sources[0]) : "nothing";
+			result.failures.push(`retrieval: no expected source in top ${deps.k} (top: ${top})`);
+		}
+	};
+	const retrievalFailed = (err: unknown) => {
+		result.retrieval = { rank: null, sources: [], error: message(err) };
+		result.failures.push(`retrieval: search failed: ${message(err)}`);
+	};
+
 	// 1. Retrieval
-	if (!c.outOfScope) {
+	if (!c.outOfScope && !retrievalFromChat) {
 		try {
 			const passages = await deps.client.search(c.question, options);
-			const sources = passages.map((p) => p.source);
-			const rank = firstHitRank(sources, c.expected);
-			result.retrieval = { rank, sources };
-			if (rank === null || rank > deps.k) {
-				const top = sources[0] ? normalizeUrl(sources[0]) : "nothing";
-				result.failures.push(`retrieval: no expected source in top ${deps.k} (top: ${top})`);
-			}
+			recordRetrieval(passages.map((p) => p.source));
 		} catch (err) {
-			result.retrieval = { rank: null, sources: [], error: message(err) };
-			result.failures.push(`retrieval: search failed: ${message(err)}`);
+			retrievalFailed(err);
 		}
 	}
 
-	if (!deps.judge) return result;
+	if (!deps.judge && !retrievalFromChat) return result;
 
 	// 2. Answer
 	let response;
 	try {
-		response = await deps.client.query(c.question, { ...scope, limit: c.options?.limit });
+		response = await deps.client.query(
+			c.question,
+			retrievalFromChat ? options : { ...scope, limit: c.options?.limit },
+			history,
+		);
 	} catch (err) {
-		result.answer = { outcome: "error", error: message(err) };
-		result.failures.push(`answer: ${message(err)}`);
+		if (retrievalFromChat) retrievalFailed(err);
+		if (deps.judge) {
+			result.answer = { outcome: "error", error: message(err) };
+			result.failures.push(`answer: ${message(err)}`);
+		}
 		return result;
 	}
+	if (retrievalFromChat) recordRetrieval(response.sources.map((s) => s.source));
+	if (!deps.judge) return result;
 	if (response.finishReason === "tool_calls") {
 		// A tool turn is not an answer: recorded, not judged
 		result.answer = { outcome: "tool", tools: (response.toolCalls ?? []).map((t) => t.name) };

@@ -3,7 +3,9 @@ import { z } from "zod";
 /**
  * One evaluation case (one JSONL line). `expected` lists the source URLs that
  * answer the question; `outOfScope` cases have none: a correct answer says it
- * does not know or hands off, and does not invent.
+ * does not know or hands off, and does not invent. `messages` are earlier
+ * turns of the conversation (oldest first): the question is then a follow-up,
+ * and its retrieval is read from the chat call, the only route with history.
  */
 const caseSchema = z
 	.object({
@@ -20,6 +22,16 @@ const caseSchema = z
 			})
 			.optional(),
 		outOfScope: z.boolean().default(false),
+		// Same bounds as a public chat
+		messages: z
+			.array(
+				z.object({
+					role: z.enum(["user", "assistant"]),
+					content: z.string().trim().min(1).max(4000),
+				}),
+			)
+			.max(10)
+			.optional(),
 	})
 	.refine((c) => c.outOfScope || c.expected.length > 0, {
 		message: "expected needs at least one source URL unless outOfScope is true",
