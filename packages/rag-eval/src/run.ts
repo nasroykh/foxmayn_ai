@@ -31,6 +31,20 @@ export interface EvalDeps {
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
+/** The question as the judge reads it: earlier turns first, when there are any. */
+export const questionWithHistory = (
+	question: string,
+	history: ReadonlyArray<{ role: string; content: string }>,
+): string =>
+	history.length === 0
+		? question
+		: [
+				"Earlier turns of the conversation:",
+				...history.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`),
+				"",
+				`Question to grade (the last user message): ${question}`,
+			].join("\n");
+
 /** Out-of-scope pass: the answer declines or hands off (the judge reports answered=false). */
 export const outOfScopePassed = (judge: JudgeResult): boolean => judge.ok && !judge.verdict.answered;
 
@@ -48,34 +62,53 @@ const evaluateCase = async (c: EvalCase, deps: EvalDeps): Promise<CaseResult> =>
 	};
 	const options = { ...scope, limit: c.options?.limit ?? deps.k };
 
+	// A follow-up: only the chat route takes history, so its sources are the
+	// retrieval. That one call is made with the top-k limit, and its answer is
+	// the one judged.
+	const history = c.messages ?? [];
+	const retrievalFromChat = history.length > 0 && !c.outOfScope;
+	const recordRetrieval = (sources: (string | null)[]) => {
+		const rank = firstHitRank(sources, c.expected);
+		result.retrieval = { rank, sources };
+		if (rank === null || rank > deps.k) {
+			const top = sources[0] ? normalizeUrl(sources[0]) : "nothing";
+			result.failures.push(`retrieval: no expected source in top ${deps.k} (top: ${top})`);
+		}
+	};
+	const retrievalFailed = (err: unknown) => {
+		result.retrieval = { rank: null, sources: [], error: message(err) };
+		result.failures.push(`retrieval: search failed: ${message(err)}`);
+	};
+
 	// 1. Retrieval
-	if (!c.outOfScope) {
+	if (!c.outOfScope && !retrievalFromChat) {
 		try {
 			const passages = await deps.client.search(c.question, options);
-			const sources = passages.map((p) => p.source);
-			const rank = firstHitRank(sources, c.expected);
-			result.retrieval = { rank, sources };
-			if (rank === null || rank > deps.k) {
-				const top = sources[0] ? normalizeUrl(sources[0]) : "nothing";
-				result.failures.push(`retrieval: no expected source in top ${deps.k} (top: ${top})`);
-			}
+			recordRetrieval(passages.map((p) => p.source));
 		} catch (err) {
-			result.retrieval = { rank: null, sources: [], error: message(err) };
-			result.failures.push(`retrieval: search failed: ${message(err)}`);
+			retrievalFailed(err);
 		}
 	}
 
-	if (!deps.judge) return result;
+	if (!deps.judge && !retrievalFromChat) return result;
 
 	// 2. Answer
 	let response;
 	try {
-		response = await deps.client.query(c.question, { ...scope, limit: c.options?.limit });
+		response = await deps.client.query(
+			c.question,
+			retrievalFromChat ? options : { ...scope, limit: c.options?.limit },
+			history,
+		);
 	} catch (err) {
-		result.answer = { outcome: "error", error: message(err) };
-		result.failures.push(`answer: ${message(err)}`);
+		// One failed call, one failure line
+		if (deps.judge) result.answer = { outcome: "error", error: message(err) };
+		if (retrievalFromChat) retrievalFailed(err);
+		else result.failures.push(`answer: ${message(err)}`);
 		return result;
 	}
+	if (retrievalFromChat) recordRetrieval(response.sources.map((s) => s.source));
+	if (!deps.judge) return result;
 	if (response.finishReason === "tool_calls") {
 		// A tool turn is not an answer: recorded, not judged
 		result.answer = { outcome: "tool", tools: (response.toolCalls ?? []).map((t) => t.name) };
@@ -90,7 +123,8 @@ const evaluateCase = async (c: EvalCase, deps: EvalDeps): Promise<CaseResult> =>
 
 	// 3. Judge
 	const judge = await deps.judge({
-		question: c.question,
+		// A follow-up is graded with the turns that give it its subject
+		question: questionWithHistory(c.question, history),
 		answer: response.answer,
 		sources: response.sources,
 	});

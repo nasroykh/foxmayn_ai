@@ -21,6 +21,11 @@ export interface QueryResponse {
 	toolCalls?: { name: string }[];
 }
 
+export interface ChatTurn {
+	role: "user" | "assistant";
+	content: string;
+}
+
 export interface SearchOptions {
 	sourcePrefix?: string;
 	excludeSourcePrefixes?: string[];
@@ -49,11 +54,15 @@ export const createFoxmaynClient = (config: {
 			};
 			return body.results ?? [];
 		},
-		/** Client-managed history (empty), so no conversation is stored. */
-		async query(query: string, options: SearchOptions): Promise<QueryResponse> {
+		/** Client-managed history (empty unless given), so no conversation is stored. */
+		async query(
+			query: string,
+			options: SearchOptions,
+			messages: ChatTurn[] = [],
+		): Promise<QueryResponse> {
 			return (await post("/chat/query", {
 				query,
-				messages: [],
+				messages,
 				options,
 			})) as QueryResponse;
 		},

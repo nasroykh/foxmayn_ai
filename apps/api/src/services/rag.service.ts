@@ -66,11 +66,17 @@ import {
 	resolveChatCost,
 	CREDIT_EPSILON,
 } from "../utils/cost";
-import { buildRetrievalQuery } from "../utils/history";
+import {
+	REWRITE_MAX_TOKENS,
+	REWRITE_SYSTEM_PROMPT,
+	REWRITE_TIMEOUT_MS,
+	resolveRetrievalQuery,
+} from "../utils/standalone_query";
 import { DEFAULT_CHAT_MODEL } from "./model-catalog.service";
 import {
 	DEFAULT_MAX_TOKENS,
 	DEFAULT_REASONING_EFFORT,
+	MIN_REASONING_BUDGET_TOKENS,
 } from "../utils/profile_schema";
 import { estimateTokens } from "./chunking.service";
 import { redis } from "../config/redis";
@@ -747,9 +753,19 @@ const prepareChat = async (
 
 	const messages = options.messages ?? [];
 
-	// A follow-up is searched together with the last few questions
+	// A follow-up is rewritten into a standalone query before the search
 	const sources = await searchWithProfile(
-		buildRetrievalQuery(query, messages),
+		await resolveRetrievalQuery(
+			(input) =>
+				rewriteForRetrieval(
+					input,
+					modelId,
+					profile?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+					options,
+				),
+			query,
+			messages,
+		),
 		profile,
 		options,
 	);
@@ -770,6 +786,90 @@ const prepareChat = async (
 		tools: options.disableTools ? [] : enabledTools(profile?.tools),
 		profileId: profile?.id ?? null,
 	};
+};
+
+/**
+ * One small model call that rewrites a follow-up into a standalone search
+ * query (see utils/standalone_query.ts). Billed like any chat call: reserved
+ * first (no credits throws, before any spend), settled in `finally`. A
+ * provider error, a timeout or a cut-off output resolves to null, and the
+ * caller falls back. Uses the profile's own model, so it is always a known,
+ * priced one, and the profile's reasoning effort: some models cannot answer
+ * with reasoning off, and thinking then needs its own token budget.
+ */
+const rewriteForRetrieval = async (
+	input: string,
+	modelId: string,
+	reasoning: string,
+	options: { organizationId: string; userId: string },
+): Promise<string | null> => {
+	const settings: ModelSettings = {
+		modelId,
+		maxTokens:
+			reasoning === "none"
+				? REWRITE_MAX_TOKENS
+				: MIN_REASONING_BUDGET_TOKENS + REWRITE_MAX_TOKENS,
+		temperature: 0,
+		topP: undefined,
+		reasoning,
+	};
+	const charge = await reserveChat(
+		settings,
+		estimateTokens(REWRITE_SYSTEM_PROMPT) +
+			estimateTokens(input) +
+			2 * MESSAGE_OVERHEAD_TOKENS,
+		options,
+	);
+
+	// True once the request was sent: a timeout may still be billed upstream,
+	// so it is charged the reservation like any call without usage
+	let providerCalled = false;
+	let usage: AIUsage | null = null;
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		const call = OpenRouterQuery(
+			{
+				model: modelId,
+				temperature: settings.temperature,
+				maxTokens: settings.maxTokens,
+				reasoning: reasoning as ReasoningEffort,
+				stream: false,
+			},
+			[],
+			REWRITE_SYSTEM_PROMPT,
+			input,
+		);
+		providerCalled = true;
+		const result = await Promise.race([
+			call,
+			new Promise<null>((resolve) => {
+				timer = setTimeout(() => resolve(null), REWRITE_TIMEOUT_MS);
+			}),
+		]);
+		if (!result) {
+			// The losing call may still reject later
+			call.catch(() => {});
+			console.error("[RAG] Query rewrite timed out");
+			return null;
+		}
+		usage = result.usage;
+		// Cut off at the token limit: not a whole query
+		return result.finishReason ? null : result.text;
+	} catch (err) {
+		// Rejected by the provider: refunded
+		providerCalled = false;
+		console.error("[RAG] Query rewrite failed:", describeError(err));
+		return null;
+	} finally {
+		clearTimeout(timer);
+		await settleChat({
+			charge,
+			options,
+			providerCalled,
+			usage,
+			context: "query_rewrite",
+		});
+	}
 };
 
 /** Tokens of the full prompt of a plain chat call. */

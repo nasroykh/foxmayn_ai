@@ -9,7 +9,8 @@
  * key is enough), OPENROUTER_API_KEY (judge, with --answers only).
  *
  * Retrieval costs one embedding per case. --answers adds one chat call and
- * one judge call per case.
+ * one judge call per case. A case with `messages` (a follow-up) always makes
+ * the chat call, with or without --answers: only chat takes history.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";

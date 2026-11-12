@@ -20,7 +20,7 @@ export const RETRIEVAL_QUERY_MAX_CHARS = 1000;
 export const RETRIEVAL_PREVIOUS_TURNS = 3;
 
 /** The first `max` UTF-16 units of `text`, without splitting a surrogate pair. */
-const truncate = (text: string, max: number): string => {
+export const truncate = (text: string, max: number): string => {
 	if (text.length <= max) return text;
 	const last = text.charCodeAt(max - 1);
 	// A high surrogate at the cut would leave half a character

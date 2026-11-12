@@ -5,7 +5,7 @@ import { createFoxmaynClient } from "./client";
 import { postJson, HttpError } from "./http";
 import { judgeAnswer } from "./judge";
 import { compareRuns, formatFailures, formatSummary, type ResultsFile } from "./report";
-import { outOfScopePassed, runEval, summarize, type CaseResult } from "./run";
+import { outOfScopePassed, questionWithHistory, runEval, summarize, type CaseResult } from "./run";
 import { json, mockFetch, noWait } from "./test-helpers";
 
 const KEY = "fx-chat-only-secret";
@@ -321,5 +321,69 @@ test("a case's source scope goes to both search and query", async () => {
 	assert.throws(
 		() => parseCases(JSON.stringify({ ...scoped, options: { excludeSourcePrefixes: [""] } })),
 		/Line 1: options\.excludeSourcePrefixes\.0/,
+	);
+});
+
+test("a follow-up case sends its history to chat and reads retrieval from it", async () => {
+	const messages = [
+		{ role: "user", content: "Tell me about Pro" },
+		{ role: "assistant", content: "Pro is the paid plan." },
+	];
+	const cases = parseCases(
+		[
+			{ id: "f1", lang: "en", question: "How much is it?", expected: ["https://x.com/en/pricing"], messages },
+			{ id: "f2", lang: "en", question: "And its colour?", expected: ["https://x.com/en/colours"], messages },
+		]
+			.map((c) => JSON.stringify(c))
+			.join("\n"),
+	);
+	const { fetch, calls } = mockFetch(() =>
+		json({ answer: "7,900 DZD [1].", sources: [passage("https://x.com/en/faq"), passage("https://x.com/en/pricing")] }),
+	);
+	const client = createFoxmaynClient({ baseUrl: "https://ai.example.com", apiKey: KEY, fetch, retry: noWait });
+
+	// Without --answers: one chat call per case, no search, nothing judged
+	const results = await runEval(cases, { client, k: 6, concurrency: 1 });
+	assert.equal(calls.length, 2);
+	assert.ok(calls.every((c) => c.url.endsWith("/chat/query")));
+	const body = JSON.parse(String(calls[0].init.body)) as { messages: unknown; options: { limit: number } };
+	assert.deepEqual(body.messages, messages);
+	assert.equal(body.options.limit, 6);
+	assert.equal(byId(results, "f1").retrieval?.rank, 2);
+	assert.equal(byId(results, "f1").answer, undefined);
+	assert.deepEqual(byId(results, "f1").failures, []);
+	assert.equal(byId(results, "f2").retrieval?.rank, null);
+	assert.match(byId(results, "f2").failures[0], /^retrieval: no expected source in top 6/);
+
+	// A failed chat call is a retrieval failure for a follow-up
+	const down = mockFetch(() => json({ message: "nope" }, 400));
+	const failed = await runEval([cases[0]], {
+		client: createFoxmaynClient({ baseUrl: "https://ai.example.com", apiKey: KEY, fetch: down.fetch, retry: noWait }),
+		k: 6,
+		concurrency: 1,
+	});
+	assert.match(failed[0].failures[0], /^retrieval: search failed/);
+	assert.equal(failed[0].failures.length, 1);
+
+	// The judge reads the follow-up with its earlier turns
+	const seen: string[] = [];
+	await runEval([cases[0]], {
+		client,
+		k: 6,
+		concurrency: 1,
+		judge: async (input) => {
+			seen.push(input.question);
+			return { ok: true, verdict: { supported: "yes", citationsCorrect: true, answered: true, notes: "" } };
+		},
+	});
+	assert.equal(
+		seen[0],
+		"Earlier turns of the conversation:\nUser: Tell me about Pro\nAssistant: Pro is the paid plan.\n\nQuestion to grade (the last user message): How much is it?",
+	);
+	assert.equal(questionWithHistory("q", []), "q");
+
+	assert.throws(
+		() => parseCases(JSON.stringify({ ...cases[0], messages: [{ role: "system", content: "x" }] })),
+		/Line 1: messages\.0\.role/,
 	);
 });
