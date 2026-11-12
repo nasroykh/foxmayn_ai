@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Markdown } from "@/components/markdown";
 import { orpcClient } from "@/lib/orpc";
+import { citedSources } from "@/lib/cited-sources";
 import { rateLimitMessage, type PublicSiteInfo } from "@/lib/public-site";
 import { cn } from "@/lib/utils";
 
@@ -65,17 +66,19 @@ function httpUrl(value: string | null): string | null {
 	}
 }
 
-function SourceList({ sources }: { sources: Source[] }) {
+function SourceList({ content, sources }: { content: string; sources: Source[] }) {
+	const cited = citedSources(content, sources);
+	if (cited.length === 0) return null;
 	return (
 		<div className="mt-2 border-t border-border/60 pt-2 text-xs text-muted-foreground">
 			<p className="mb-1 font-medium">Sources</p>
-			{/* Every source, numbered like the [n] citations in the answer */}
+			{/* Only cited documents, each with the [n] numbers the answer uses */}
 			<ol className="space-y-0.5">
-				{sources.map((src, index) => {
+				{cited.map((src) => {
 					const href = httpUrl(src.source);
 					return (
-						<li key={index} dir="auto">
-							[{index + 1}]{" "}
+						<li key={src.numbers[0]} dir="auto">
+							{src.numbers.map((n) => `[${n}]`).join("")}{" "}
 							{href ? (
 								<a
 									href={href}
@@ -271,7 +274,7 @@ export function PublicChat({ site }: { site: PublicSiteInfo }) {
 										<span className="inline-block h-4 w-2 animate-pulse rounded bg-current" />
 									) : null}
 									{msg.sources && msg.sources.length > 0 && msg.content ? (
-										<SourceList sources={msg.sources} />
+										<SourceList content={msg.content} sources={msg.sources} />
 									) : null}
 								</div>
 							</div>
