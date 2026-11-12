@@ -747,7 +747,7 @@ const prepareChat = async (
 
 	const messages = options.messages ?? [];
 
-	// A follow-up is searched together with the previous question
+	// A follow-up is searched together with the last few questions
 	const sources = await searchWithProfile(
 		buildRetrievalQuery(query, messages),
 		profile,

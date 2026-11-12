@@ -20,7 +20,8 @@ export function citedSources(
 	const groups = new Map<string, { numbers: number[]; title: string; source: string | null }>();
 	for (const index of [...cited].sort((a, b) => a - b)) {
 		const src = sources[index - 1];
-		const key = src.source ?? `title:${src.title}`;
+		// Without a URL, entries stay apart: equal titles may be different documents
+		const key = src.source ?? `index:${index}`;
 		const group = groups.get(key);
 		if (group) group.numbers.push(index);
 		else groups.set(key, { numbers: [index], title: src.title, source: src.source });
