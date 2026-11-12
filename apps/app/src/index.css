@@ -216,3 +216,17 @@
     @apply font-sans;
   }
 }
+
+/* Public chats use the Foxmayn brand colour of foxmayn.com */
+.public-chat {
+  --primary: oklch(0.52 0.105 223.128);
+  --primary-foreground: oklch(0.984 0.019 200.873);
+  /* The brand colour as text: lighter on the dark background */
+  --brand-text: var(--primary);
+}
+
+.dark .public-chat {
+  --primary: oklch(0.45 0.085 224.283);
+  --primary-foreground: oklch(0.984 0.019 200.873);
+  --brand-text: oklch(0.74 0.1 223);
+}

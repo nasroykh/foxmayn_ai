@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Markdown } from "@/components/markdown";
 import { orpcClient } from "@/lib/orpc";
+import { BRAND } from "@/lib/brand";
 import { citedSources } from "@/lib/cited-sources";
 import { rateLimitMessage, type PublicSiteInfo } from "@/lib/public-site";
 import { cn } from "@/lib/utils";
@@ -98,6 +99,18 @@ function SourceList({ content, sources }: { content: string; sources: Source[] }
 		</div>
 	);
 }
+
+/** The Foxmayn fox. A luminance mask, so it takes the current text colour. */
+function FoxMark({ className }: { className?: string }) {
+	return (
+		<span
+			aria-hidden="true"
+			className={`inline-block aspect-[454/512] shrink-0 bg-current [mask:url(/brand/foxmayn-mark.png)_center/contain_no-repeat] ${className ?? ""}`}
+		/>
+	);
+}
+
+const brandLink = "underline underline-offset-2 hover:text-foreground";
 
 export function PublicChat({ site }: { site: PublicSiteInfo }) {
 	const { settings } = site;
@@ -194,17 +207,29 @@ export function PublicChat({ site }: { site: PublicSiteInfo }) {
 	const showEmpty = messages.length === 0;
 
 	return (
-		<div className="flex h-dvh flex-col bg-background text-foreground">
+		<div className="public-chat flex h-dvh flex-col bg-background text-foreground">
 			<header className="border-b border-border px-4 py-3">
-				<div className="mx-auto w-full max-w-3xl">
-					<h1 className="text-base font-semibold" dir="auto">
-						{title}
-					</h1>
-					{settings.subtitle ? (
-						<p className="text-sm text-muted-foreground" dir="auto">
-							{settings.subtitle}
-						</p>
-					) : null}
+				<div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3">
+					<div className="min-w-0">
+						<h1 className="text-base font-semibold" dir="auto">
+							{title}
+						</h1>
+						{settings.subtitle ? (
+							<p className="text-sm text-muted-foreground" dir="auto">
+								{settings.subtitle}
+							</p>
+						) : null}
+					</div>
+					<a
+						href={BRAND.siteUrl}
+						target="_blank"
+						rel="noopener noreferrer"
+						className="flex shrink-0 items-center gap-1.5 text-sm font-semibold text-[var(--brand-text)] hover:opacity-80"
+						aria-label={`${BRAND.name}, ${BRAND.siteLabel}`}
+					>
+						<FoxMark className="h-6" />
+						{BRAND.name}
+					</a>
 				</div>
 			</header>
 
@@ -348,6 +373,20 @@ export function PublicChat({ site }: { site: PublicSiteInfo }) {
 							{settings.supportText}
 						</p>
 					) : null}
+					<p className="border-t border-border/60 pt-2 text-xs text-muted-foreground">
+						Assistant conçu par{" "}
+						<a href={BRAND.siteUrl} target="_blank" rel="noopener noreferrer" className={brandLink}>
+							{BRAND.name}
+						</a>
+						{" · "}
+						<a href={`mailto:${BRAND.email}`} className={brandLink}>
+							{BRAND.email}
+						</a>
+						{" · "}
+						<a href={BRAND.whatsappUrl} target="_blank" rel="noopener noreferrer" className={brandLink}>
+							WhatsApp <span dir="ltr">{BRAND.phoneDisplay}</span>
+						</a>
+					</p>
 				</div>
 			</footer>
 		</div>
