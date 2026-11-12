@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
 	buildRetrievalQuery,
+	RETRIEVAL_PREVIOUS_TURNS,
 	RETRIEVAL_QUERY_MAX_CHARS,
 	selectHistory,
 } from "./history";
@@ -71,7 +72,32 @@ test("buildRetrievalQuery uses the most recent user turn", () => {
 		{ role: "user" as const, content: "  second  " },
 		{ role: "assistant" as const, content: "b" },
 	];
-	assert.equal(buildRetrievalQuery("third", history), "second\nthird");
+	assert.equal(buildRetrievalQuery("third", history), "first\nsecond\nthird");
+});
+
+test("buildRetrievalQuery keeps the subject named a few turns back", () => {
+	const history = [
+		{ role: "user" as const, content: "Ma 3015S affiche une alarme" },
+		{ role: "assistant" as const, content: "a" },
+		{ role: "user" as const, content: "Elle s'est éteinte" },
+		{ role: "assistant" as const, content: "b" },
+		{ role: "user" as const, content: "Combien elle consomme ?" },
+		{ role: "assistant" as const, content: "c" },
+	];
+	assert.equal(
+		buildRetrievalQuery("Et la tension ?", history),
+		"Ma 3015S affiche une alarme\nElle s'est éteinte\nCombien elle consomme ?\nEt la tension ?",
+	);
+});
+
+test("buildRetrievalQuery uses at most RETRIEVAL_PREVIOUS_TURNS earlier turns", () => {
+	const history = Array.from({ length: RETRIEVAL_PREVIOUS_TURNS + 2 }, (_, i) => ({
+		role: "user" as const,
+		content: `t${i}`,
+	}));
+	const parts = buildRetrievalQuery("q", history).split("\n");
+	assert.equal(parts.length, RETRIEVAL_PREVIOUS_TURNS + 1);
+	assert.equal(parts.at(-2), `t${RETRIEVAL_PREVIOUS_TURNS + 1}`);
 });
 
 test("buildRetrievalQuery returns the query alone without a previous user turn", () => {
