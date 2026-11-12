@@ -31,6 +31,20 @@ export interface EvalDeps {
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
+/** The question as the judge reads it: earlier turns first, when there are any. */
+export const questionWithHistory = (
+	question: string,
+	history: ReadonlyArray<{ role: string; content: string }>,
+): string =>
+	history.length === 0
+		? question
+		: [
+				"Earlier turns of the conversation:",
+				...history.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`),
+				"",
+				`Question to grade (the last user message): ${question}`,
+			].join("\n");
+
 /** Out-of-scope pass: the answer declines or hands off (the judge reports answered=false). */
 export const outOfScopePassed = (judge: JudgeResult): boolean => judge.ok && !judge.verdict.answered;
 
@@ -48,7 +62,9 @@ const evaluateCase = async (c: EvalCase, deps: EvalDeps): Promise<CaseResult> =>
 	};
 	const options = { ...scope, limit: c.options?.limit ?? deps.k };
 
-	// A follow-up: only the chat route takes history, so its sources are the retrieval
+	// A follow-up: only the chat route takes history, so its sources are the
+	// retrieval. That one call is made with the top-k limit, and its answer is
+	// the one judged.
 	const history = c.messages ?? [];
 	const retrievalFromChat = history.length > 0 && !c.outOfScope;
 	const recordRetrieval = (sources: (string | null)[]) => {
@@ -85,11 +101,10 @@ const evaluateCase = async (c: EvalCase, deps: EvalDeps): Promise<CaseResult> =>
 			history,
 		);
 	} catch (err) {
+		// One failed call, one failure line
+		if (deps.judge) result.answer = { outcome: "error", error: message(err) };
 		if (retrievalFromChat) retrievalFailed(err);
-		if (deps.judge) {
-			result.answer = { outcome: "error", error: message(err) };
-			result.failures.push(`answer: ${message(err)}`);
-		}
+		else result.failures.push(`answer: ${message(err)}`);
 		return result;
 	}
 	if (retrievalFromChat) recordRetrieval(response.sources.map((s) => s.source));
@@ -108,7 +123,8 @@ const evaluateCase = async (c: EvalCase, deps: EvalDeps): Promise<CaseResult> =>
 
 	// 3. Judge
 	const judge = await deps.judge({
-		question: c.question,
+		// A follow-up is graded with the turns that give it its subject
+		question: questionWithHistory(c.question, history),
 		answer: response.answer,
 		sources: response.sources,
 	});

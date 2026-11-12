@@ -5,7 +5,7 @@ import { createFoxmaynClient } from "./client";
 import { postJson, HttpError } from "./http";
 import { judgeAnswer } from "./judge";
 import { compareRuns, formatFailures, formatSummary, type ResultsFile } from "./report";
-import { outOfScopePassed, runEval, summarize, type CaseResult } from "./run";
+import { outOfScopePassed, questionWithHistory, runEval, summarize, type CaseResult } from "./run";
 import { json, mockFetch, noWait } from "./test-helpers";
 
 const KEY = "fx-chat-only-secret";
@@ -363,6 +363,24 @@ test("a follow-up case sends its history to chat and reads retrieval from it", a
 		concurrency: 1,
 	});
 	assert.match(failed[0].failures[0], /^retrieval: search failed/);
+	assert.equal(failed[0].failures.length, 1);
+
+	// The judge reads the follow-up with its earlier turns
+	const seen: string[] = [];
+	await runEval([cases[0]], {
+		client,
+		k: 6,
+		concurrency: 1,
+		judge: async (input) => {
+			seen.push(input.question);
+			return { ok: true, verdict: { supported: "yes", citationsCorrect: true, answered: true, notes: "" } };
+		},
+	});
+	assert.equal(
+		seen[0],
+		"Earlier turns of the conversation:\nUser: Tell me about Pro\nAssistant: Pro is the paid plan.\n\nQuestion to grade (the last user message): How much is it?",
+	);
+	assert.equal(questionWithHistory("q", []), "q");
 
 	assert.throws(
 		() => parseCases(JSON.stringify({ ...cases[0], messages: [{ role: "system", content: "x" }] })),

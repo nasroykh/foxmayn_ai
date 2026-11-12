@@ -76,6 +76,7 @@ import { DEFAULT_CHAT_MODEL } from "./model-catalog.service";
 import {
 	DEFAULT_MAX_TOKENS,
 	DEFAULT_REASONING_EFFORT,
+	MIN_REASONING_BUDGET_TOKENS,
 } from "../utils/profile_schema";
 import { estimateTokens } from "./chunking.service";
 import { redis } from "../config/redis";
@@ -755,7 +756,13 @@ const prepareChat = async (
 	// A follow-up is rewritten into a standalone query before the search
 	const sources = await searchWithProfile(
 		await resolveRetrievalQuery(
-			(input) => rewriteForRetrieval(input, modelId, options),
+			(input) =>
+				rewriteForRetrieval(
+					input,
+					modelId,
+					profile?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+					options,
+				),
 			query,
 			messages,
 		),
@@ -785,20 +792,26 @@ const prepareChat = async (
  * One small model call that rewrites a follow-up into a standalone search
  * query (see utils/standalone_query.ts). Billed like any chat call: reserved
  * first (no credits throws, before any spend), settled in `finally`. A
- * provider error or a timeout resolves to null, and the caller falls back.
- * Uses the profile's own model, so it is always a known, priced one.
+ * provider error, a timeout or a cut-off output resolves to null, and the
+ * caller falls back. Uses the profile's own model, so it is always a known,
+ * priced one, and the profile's reasoning effort: some models cannot answer
+ * with reasoning off, and thinking then needs its own token budget.
  */
 const rewriteForRetrieval = async (
 	input: string,
 	modelId: string,
+	reasoning: string,
 	options: { organizationId: string; userId: string },
 ): Promise<string | null> => {
 	const settings: ModelSettings = {
 		modelId,
-		maxTokens: REWRITE_MAX_TOKENS,
+		maxTokens:
+			reasoning === "none"
+				? REWRITE_MAX_TOKENS
+				: MIN_REASONING_BUDGET_TOKENS + REWRITE_MAX_TOKENS,
 		temperature: 0,
 		topP: undefined,
-		reasoning: "none",
+		reasoning,
 	};
 	const charge = await reserveChat(
 		settings,
@@ -819,7 +832,7 @@ const rewriteForRetrieval = async (
 				model: modelId,
 				temperature: settings.temperature,
 				maxTokens: settings.maxTokens,
-				reasoning: "none",
+				reasoning: reasoning as ReasoningEffort,
 				stream: false,
 			},
 			[],
@@ -840,7 +853,8 @@ const rewriteForRetrieval = async (
 			return null;
 		}
 		usage = result.usage;
-		return result.text;
+		// Cut off at the token limit: not a whole query
+		return result.finishReason ? null : result.text;
 	} catch (err) {
 		// Rejected by the provider: refunded
 		providerCalled = false;

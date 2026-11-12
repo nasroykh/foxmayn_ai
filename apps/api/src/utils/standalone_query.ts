@@ -7,14 +7,15 @@
  * model call rewrites it into one self-contained query first.
  */
 
-import { buildRetrievalQuery } from "./history";
+import { buildRetrievalQuery, truncate } from "./history";
 
 // History shown to the rewriter: the most recent messages, each cut
 export const REWRITE_MAX_HISTORY_MESSAGES = 6;
 export const REWRITE_MAX_MESSAGE_CHARS = 600;
 // The current message, cut for the rewriter
 export const REWRITE_MAX_QUERY_CHARS = 1000;
-// Output budget of the rewrite call, and the longest rewrite accepted
+// Output budget of the rewrite call (plus the thinking budget for a profile
+// with reasoning on), and the longest rewrite accepted
 export const REWRITE_MAX_TOKENS = 120;
 export const REWRITE_MAX_CHARS = 400;
 export const REWRITE_TIMEOUT_MS = 8000;
@@ -36,7 +37,7 @@ export const hasEarlierUserTurn = (history: ReadonlyArray<Turn>): boolean =>
 
 const cut = (text: string, max: number): string => {
 	const flat = text.replace(/\s+/g, " ").trim();
-	return flat.length <= max ? flat : `${flat.slice(0, max)}…`;
+	return flat.length <= max ? flat : `${truncate(flat, max)}…`;
 };
 
 /**
@@ -62,17 +63,27 @@ export const buildRewriteInput = (query: string, history: ReadonlyArray<Turn>): 
 	].join("\n");
 };
 
+// Quotes a model may wrap its output in: opening, closing
+const QUOTE_PAIRS: ReadonlyArray<readonly [string, string]> = [
+	['"', '"'],
+	["'", "'"],
+	["«", "»"],
+	["“", "”"],
+	["„", "“"],
+	["‘", "’"],
+];
+
 /**
  * The usable query in a rewriter's output, or null when there is none (empty,
- * or too long to be a query: the model answered instead of rewriting).
+ * or too long to be a query: the model answered instead of rewriting). Only
+ * the first line counts, without a pair of quotes around the whole of it.
  */
 export const cleanRewrite = (output: string | null | undefined): string | null => {
 	if (!output) return null;
-	const text = output
-		.replace(/\s+/g, " ")
-		.trim()
-		.replace(/^["'«“]\s*|\s*["'»”]$/g, "")
-		.trim();
+	const firstLine = output.split(/\r?\n/).find((line) => line.trim() !== "") ?? "";
+	let text = firstLine.replace(/\s+/g, " ").trim();
+	const pair = QUOTE_PAIRS.find(([open, close]) => text.startsWith(open) && text.endsWith(close));
+	if (pair && text.length >= 2) text = text.slice(1, -1).trim();
 	return text && text.length <= REWRITE_MAX_CHARS ? text : null;
 };
 
@@ -81,6 +92,9 @@ export const cleanRewrite = (output: string | null | undefined): string | null =
  * Otherwise `rewrite` (one model call) makes it standalone; when that gives
  * nothing usable, the earlier turns are joined to the query instead, so a
  * failed rewrite never fails the chat.
+ *
+ * A query longer than REWRITE_MAX_CHARS is not rewritten: its rewrite could
+ * not be accepted, and a message that long names its own subject.
  *
  * @param rewrite resolves to the model output, or null when the call failed.
  *   It throws only what the client must see (no credits).
@@ -91,6 +105,7 @@ export const resolveRetrievalQuery = async (
 	history: ReadonlyArray<Turn>,
 ): Promise<string> => {
 	if (!hasEarlierUserTurn(history)) return buildRetrievalQuery(query, []);
+	if (query.trim().length > REWRITE_MAX_CHARS) return buildRetrievalQuery(query, history);
 	const rewritten = cleanRewrite(await rewrite(buildRewriteInput(query, history)));
 	return rewritten ?? buildRetrievalQuery(query, history);
 };

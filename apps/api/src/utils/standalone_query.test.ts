@@ -50,10 +50,36 @@ test("buildRewriteInput keeps the most recent messages, each cut", () => {
 	assert.ok(last.endsWith("…"));
 });
 
-test("cleanRewrite returns one trimmed line without wrapping quotes", () => {
-	assert.equal(cleanRewrite('  "Garantie de la\n X200 ?"  '), "Garantie de la X200 ?");
+test("cleanRewrite keeps the first line, without a pair of wrapping quotes", () => {
+	assert.equal(cleanRewrite('  "Garantie de   la X200 ?"  '), "Garantie de la X200 ?");
 	assert.equal(cleanRewrite("« Garantie X200 »"), "Garantie X200");
+	assert.equal(cleanRewrite("\nGarantie X200\nBecause the user asked about it."), "Garantie X200");
+	// Quotes that do not wrap the whole line stay
 	assert.equal(cleanRewrite("l'alarme de la X200"), "l'alarme de la X200");
+	assert.equal(cleanRewrite("'s-Hertogenbosch delivery"), "'s-Hertogenbosch delivery");
+	assert.equal(cleanRewrite('"X200" warranty'), '"X200" warranty');
+});
+
+test("buildRewriteInput never splits a surrogate pair at a cut", () => {
+	const input = buildRewriteInput("q", [
+		{ role: "user", content: "a".repeat(REWRITE_MAX_MESSAGE_CHARS - 1) + "😀 tail" },
+	]);
+	assert.doesNotMatch(input, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+});
+
+test("resolveRetrievalQuery skips the rewrite for a long message", async () => {
+	let calls = 0;
+	const long = "x".repeat(REWRITE_MAX_CHARS + 1);
+	const result = await resolveRetrievalQuery(
+		async () => {
+			calls++;
+			return "y";
+		},
+		long,
+		[{ role: "user", content: "p" }],
+	);
+	assert.equal(calls, 0);
+	assert.equal(result, `p\n${long}`);
 });
 
 test("cleanRewrite rejects empty and overlong output", () => {
