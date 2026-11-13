@@ -26,18 +26,80 @@ export const parseDocx = async (docxBuffer: Buffer) => {
 	return parseHTML((await mammoth.convertToHtml({ buffer: docxBuffer })).value);
 };
 
-export const parseHTML = (html: string) => {
-	const turndownService = new TurndownService({
-		headingStyle: "atx",
-		hr: "___",
-		codeBlockStyle: "fenced",
-		bulletListMarker: "*",
-		strongDelimiter: "**",
-		emDelimiter: "_",
-	});
+/** Page chrome and code: never content worth indexing. */
+const NOISE_TAGS = new Set([
+	"title",
+	"script",
+	"style",
+	"noscript",
+	"template",
+	"iframe",
+	"svg",
+	"canvas",
+	"nav",
+	"aside",
+	"form",
+	"button",
+]);
 
-	return turndownService.turndown(html);
+/** The part of a DOM node the filter reads (the API has no DOM types). */
+interface TreeNode {
+	nodeName: string;
+	parentNode: TreeNode | null;
+}
+
+/**
+ * Code, navigation and forms, plus a site header or footer. The header or
+ * footer of an article or main block is content and is kept.
+ */
+const isNoise = (node: TreeNode): boolean => {
+	const name = node.nodeName.toLowerCase();
+	if (NOISE_TAGS.has(name)) return true;
+	if (name !== "header" && name !== "footer") return false;
+	for (let p = node.parentNode; p; p = p.parentNode) {
+		const parent = p.nodeName.toLowerCase();
+		if (parent === "article" || parent === "main") return false;
+	}
+	return true;
 };
+
+const cellText = (content: string) => content.replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
+
+const turndownService = new TurndownService({
+	headingStyle: "atx",
+	hr: "___",
+	codeBlockStyle: "fenced",
+	bulletListMarker: "*",
+	strongDelimiter: "**",
+	emDelimiter: "_",
+});
+// Added rules take precedence over the built-in ones (image, link)
+turndownService.addRule("noise", { filter: (node) => isNoise(node), replacement: () => "" });
+// Images carry no text, and DOCX images arrive as base64 data URIs
+turndownService.addRule("image", { filter: "img", replacement: () => "" });
+// Link text only: URLs are noise for retrieval
+turndownService.addRule("link", { filter: "a", replacement: (content) => content });
+// One table row per line ("| Tension | 220 V |"), so a value stays with its label
+turndownService.addRule("tableCell", {
+	filter: ["th", "td"],
+	replacement: (content) => ` ${cellText(content)} |`,
+});
+turndownService.addRule("tableRow", {
+	filter: "tr",
+	replacement: (content) => (/[^\s|]/.test(content) ? `\n|${content}` : ""),
+});
+turndownService.addRule("table", {
+	filter: "table",
+	// thead and tbody add blank lines between rows
+	replacement: (content) => `\n\n${content.trim().replace(/\n{2,}/g, "\n")}\n\n`,
+});
+
+export const parseHTML = (html: string) =>
+	turndownService
+		.turndown(html)
+		.replace(/^[ \t]+$/gm, "")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
 
 export interface PdfPageRenderer {
 	/** Page count of the PDF. */
