@@ -59,7 +59,13 @@ const NAMED_ENTITIES = new Map<string, string>([
 	["trade", "\u2122"],
 	["oelig", "\u0153"],
 	["OElig", "\u0152"],
+	["scaron", "\u0161"],
+	["Scaron", "\u0160"],
+	["Yuml", "\u0178"],
 ]);
+
+// The only names HTML also defines in capitals
+const UPPERCASE_ENTITIES = new Set(["AMP", "LT", "GT", "QUOT", "COPY", "REG"]);
 
 const isSurrogate = (code: number) => code >= 0xd800 && code <= 0xdfff;
 
@@ -71,7 +77,9 @@ const decodeEntities = (text: string) =>
 			const valid = Number.isFinite(code) && code > 0 && code <= 0x10ffff && !isSurrogate(code);
 			return valid ? String.fromCodePoint(code) : match;
 		}
-		return NAMED_ENTITIES.get(body) ?? NAMED_ENTITIES.get(body.toLowerCase()) ?? match;
+		const known = NAMED_ENTITIES.get(body);
+		if (known !== undefined) return known;
+		return UPPERCASE_ENTITIES.has(body) ? (NAMED_ENTITIES.get(body.toLowerCase()) ?? match) : match;
 	});
 
 /** Plain text of an HTML fragment: block tags become newlines, list items get "- ", table cells " : ". */
@@ -81,6 +89,8 @@ export const htmlToText = (html: string): string => {
 		.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "")
 		// A script or style that is never closed runs to the end
 		.replace(/<(?:script|style)\b[\s\S]*$/i, "")
+		// "<li><p>text": the paragraph must not push the text off the bullet line
+		.replace(/(<li\b[^>]*>)\s*<p\b[^>]*>/gi, "$1")
 		.replace(/<li\b[^>]*>/gi, "\n- ")
 		.replace(/<\/t[dh]\s*>\s*<t[dh]\b[^>]*>/gi, " : ")
 		.replace(/<\/?(?:p|br|div|h[1-6]|tr|ul|ol|table|section|article|blockquote|hr)\b[^>]*>/gi, "\n")
@@ -91,6 +101,8 @@ export const htmlToText = (html: string): string => {
 		.replace(/[ \t\r\f\v]+/g, " ")
 		.split("\n")
 		.map((line) => line.trim())
+		// An empty list item
+		.filter((line) => line !== "-")
 		.join("\n")
 		.replace(/\n{3,}/g, "\n\n")
 		// A list item wrapped in a paragraph leaves a blank line: keep the list tight
@@ -186,9 +198,9 @@ export const fetchShopifyProducts = async (
 ): Promise<{ products: ShopifyProduct[]; currency?: string }> => {
 	const sleep = deps.sleep ?? defaultSleep;
 	const products: ShopifyProduct[] = [];
-	let complete = false;
 	let firstOfLastPage: string | undefined;
-	for (let page = 1; page <= MAX_PAGES; page++) {
+	// One page past the limit, to tell a store of exactly the limit from a larger one
+	for (let page = 1; page <= MAX_PAGES + 1; page++) {
 		if (page > 1) await sleep(PAGE_DELAY_MS);
 		const url = `${store}/products.json?limit=${PAGE_LIMIT}&page=${page}`;
 		const response = await deps.fetch(url, { headers: HEADERS });
@@ -196,9 +208,9 @@ export const fetchShopifyProducts = async (
 		const body: unknown = await response.json().catch(() => undefined);
 		const list = body && typeof body === "object" ? (body as { products?: unknown }).products : undefined;
 		if (!Array.isArray(list)) throw new Error(`${url}: HTTP ${response.status}: body is not {products: [...]}`);
-		if (list.length === 0) {
-			complete = true;
-			break;
+		if (list.length === 0) break;
+		if (page > MAX_PAGES) {
+			throw new Error(`${store}: more than ${MAX_PAGES} pages of products, the import would be incomplete`);
 		}
 		const pageStart = products.length;
 		for (const raw of list) {
@@ -214,9 +226,6 @@ export const fetchShopifyProducts = async (
 			throw new Error(`${url}: the store returns the same products on every page`);
 		}
 		firstOfLastPage = firstOfPage;
-	}
-	if (!complete) {
-		throw new Error(`${store}: more than ${MAX_PAGES * PAGE_LIMIT} products, the import would be incomplete`);
 	}
 
 	let currency: string | undefined;

@@ -280,6 +280,14 @@ describe("review fixes", () => {
 		assert.equal(htmlToText("<table><tr><td>Taille</td><td>40 cm</td></tr><tr><th>Poids</th><td>3 &lt; 5 kg</td></tr></table>3 < 5 et 6 > 4"), "Taille : 40 cm\n\nPoids : 3 < 5 kg\n\n3 < 5 et 6 > 4");
 	});
 
+	it("keeps a paragraph inside a list item on the bullet line, and drops empty items", () => {
+		assert.equal(htmlToText("<ul><li><p>a</p></li><li></li><li><p>b</p></li></ul>"), "- a\n- b");
+	});
+
+	it("leaves invalid capital entity names as typed", () => {
+		assert.equal(htmlToText("&EACUTE; &AMP; &Yuml; &ETH;"), "&EACUTE; & \u0178 \u00d0");
+	});
+
 	it("drops an unclosed script", () => {
 		assert.equal(htmlToText("<p>Texte</p><script>var a = 1;"), "Texte");
 	});
@@ -313,8 +321,8 @@ describe("review fixes", () => {
 	it("fails instead of truncating a store past the page cap", async () => {
 		let n = 0;
 		const fetch = (async () => page([`p${n++}`])) as unknown as typeof globalThis.fetch;
-		await assert.rejects(() => fetchShopifyProducts("https://shop.example", { fetch, sleep }), /more than 10000 products/);
-		assert.equal(n, 40);
+		await assert.rejects(() => fetchShopifyProducts("https://shop.example", { fetch, sleep }), /more than 40 pages of products/);
+		assert.equal(n, 41);
 	});
 
 	it("rejects a store URL with a user", () => {

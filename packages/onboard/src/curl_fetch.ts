@@ -28,7 +28,9 @@ export const curlFetch = ((input: Parameters<typeof fetch>[0], init?: RequestIni
 				reject(new Error(`curl ${url}: no HTTP status`));
 				return;
 			}
-			resolve(new Response(stdout.slice(0, cut), { status }));
+			// A Response with one of these statuses cannot carry a body
+			const noBody = status === 204 || status === 205 || status === 304;
+			resolve(new Response(noBody ? null : stdout.slice(0, cut), { status }));
 		});
 	});
 }) as typeof fetch;
