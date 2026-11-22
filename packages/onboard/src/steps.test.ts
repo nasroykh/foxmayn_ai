@@ -30,7 +30,7 @@ interface World {
 	documents?: { id: string; source: string; status: string }[];
 }
 
-const run = async (world: World, over: { topup?: number; reimport?: boolean; wait?: boolean } = {}) => {
+const run = async (world: World, over: { topup?: number; reimport?: boolean; wait?: boolean; pack?: ReturnType<typeof samplePack> } = {}) => {
 	const logs: string[] = [];
 	const statuses = new Map<string, string>();
 	let n = 0;
@@ -173,5 +173,25 @@ describe("runOnboard", () => {
 		const ok = await run({});
 		assert.ok(![...logs, ...ok.logs].some((l) => l.includes(PASSWORD)));
 		assert.ok(!ok.logs.some((l) => l.includes("abc123")));
+	});
+});
+
+describe("pack document with text", () => {
+	it("is sent as text with its url as the source", async () => {
+		const pack = samplePack({
+			documents: [
+				{ url: "https://acme.example/delivery", title: "Delivery", text: "Delivered in 2 days.", family: "Information" },
+				{ url: "https://acme.example/a.pdf", title: "Drill A" },
+			],
+		});
+		const { result, calls } = await run({}, { pack });
+		assert.equal(result.imported, 2);
+		const imports = calls.filter((c) => c.path === "/api/v1/documents/import").map((c) => c.body);
+		const text = imports.find((b) => b?.title === "Delivery");
+		assert.equal(text?.text, "Delivered in 2 days.");
+		assert.equal(text?.source, "https://acme.example/delivery");
+		assert.equal(text?.url, undefined);
+		assert.deepEqual(text?.metadata, { family: "Information" });
+		assert.equal(imports.find((b) => b?.title === "Drill A")?.url, "https://acme.example/a.pdf");
 	});
 });

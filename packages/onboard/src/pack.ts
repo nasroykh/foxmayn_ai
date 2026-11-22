@@ -31,6 +31,8 @@ const documentSchema = z.object({
 		.max(2048)
 		.refine((u) => u.startsWith("https://"), "must be an https URL"),
 	title: z.string().trim().min(1),
+	// The page's text, for a page the API server cannot fetch itself. The url stays the source.
+	text: z.string().trim().min(1).optional(),
 	family: z.string().trim().min(1).optional(),
 	metadata: z.record(z.string(), z.unknown()).optional(),
 });

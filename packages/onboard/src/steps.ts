@@ -164,12 +164,12 @@ export const runOnboard = async (opts: OnboardOptions): Promise<OnboardResult> =
 	const importedIds: string[] = [];
 	const failures: string[] = [];
 	const items: ImportItem[] = [
-		...pack.documents.map((doc): ImportItem => ({
-			kind: "url",
-			url: doc.url,
-			title: doc.title,
-			metadata: { ...(doc.family ? { family: doc.family } : {}), ...doc.metadata },
-		})),
+		...pack.documents.map((doc): ImportItem => {
+			const metadata = { ...(doc.family ? { family: doc.family } : {}), ...doc.metadata };
+			return doc.text === undefined
+				? { kind: "url", url: doc.url, title: doc.title, metadata }
+				: { kind: "text", text: doc.text, source: doc.url, title: doc.title, metadata };
+		}),
 		...(opts.textDocuments ?? []).map((doc): ImportItem => ({ kind: "text", ...doc })),
 	];
 	await pool(items, IMPORT_CONCURRENCY, async (item) => {
