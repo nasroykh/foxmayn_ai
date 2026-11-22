@@ -35,6 +35,18 @@ const documentSchema = z.object({
 	metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
+// A public Shopify store: one document per product, read from /products.json
+const shopifySchema = z.strictObject({
+	store: z
+		.url()
+		.refine((u) => u.startsWith("https://"), "must be an https URL")
+		.refine((u) => {
+			const url = new URL(u);
+			return url.pathname === "/" && url.search === "" && url.hash === "" && url.username === "" && url.password === "";
+		}, "must be an origin only, with no user, path, query or hash")
+		.transform((u) => new URL(u).origin),
+});
+
 // Passed to the API as is; the API validates the rest of the fields
 const profileSchema = z.looseObject({ name: z.string().trim().min(1).max(100) });
 
@@ -55,6 +67,7 @@ export const packSchema = z.object({
 	hostnames: z.array(hostnameSchema).default([]),
 	monthlyCapUsd: z.number().positive().max(1_000_000).nullable().optional(),
 	documents: z.array(documentSchema).default([]),
+	shopify: shopifySchema.optional(),
 });
 
 export type Pack = z.infer<typeof packSchema>;

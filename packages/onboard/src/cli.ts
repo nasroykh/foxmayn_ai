@@ -19,6 +19,8 @@ import * as dotenv from "dotenv";
 import { createClient } from "./http";
 import { parsePack } from "./pack";
 import { describePlan, redactor } from "./plan";
+import { curlFetch } from "./curl_fetch";
+import { shopifyDocuments } from "./shopify";
 import { runOnboard } from "./steps";
 
 dotenv.config({ path: path.resolve(__dirname, "../../../.env"), quiet: true });
@@ -68,6 +70,13 @@ const main = async () => {
 	const password = requireEnv("FOXMAYN_AI_PASSWORD");
 	const redact = redactor([password]);
 
+	let textDocuments;
+	if (pack.shopify) {
+		const date = new Date().toISOString().slice(0, 10);
+		textDocuments = await shopifyDocuments(pack.shopify.store, { fetch: curlFetch, date });
+		console.log(`shopify: ${textDocuments.length} products from ${pack.shopify.store}`);
+	}
+
 	const result = await runOnboard({
 		client: createClient({ baseUrl, fetch }),
 		pack,
@@ -76,6 +85,7 @@ const main = async () => {
 		topup,
 		reimport: values.reimport,
 		wait: values.wait,
+		textDocuments,
 		log: (line) => console.log(redact(line)),
 	});
 	const unfinished =

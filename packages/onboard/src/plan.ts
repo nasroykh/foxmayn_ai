@@ -22,6 +22,9 @@ export const describePlan = (
 	lines.push(
 		`documents: ${pack.documents.length} in pack, ${opts.reimport ? "all re-imported" : "indexed ones with the same source skipped"}`,
 	);
+	if (pack.shopify) {
+		lines.push(`shopify: one document per product of ${pack.shopify.store} (fetched at run time; --reimport refreshes prices and stock)`);
+	}
 	for (const host of pack.hostnames) lines.push(`public site: ${host}`);
 	if (opts.wait) lines.push("wait: until every imported document is indexed or failed (30 min limit)");
 	return lines;

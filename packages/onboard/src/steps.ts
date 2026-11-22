@@ -1,5 +1,6 @@
 import { HttpError, defaultSleep, type Client } from "./http";
-import type { Pack, PackDocument } from "./pack";
+import type { Pack } from "./pack";
+import type { ShopifyDocument } from "./shopify";
 
 const API = "/api/v1";
 const PAGE = 100;
@@ -18,12 +19,13 @@ export interface ExistingDocument {
  * `--reimport` always imports (the API replaces the old one once indexed).
  */
 export const shouldImport = (
-	doc: Pick<PackDocument, "url">,
+	doc: { url: string } | { source: string },
 	existing: readonly Pick<ExistingDocument, "source" | "status">[],
 	reimport: boolean,
 ): boolean => {
 	if (reimport) return true;
-	return !existing.some((e) => e.source === doc.url && e.status === "indexed");
+	const source = "url" in doc ? doc.url : doc.source;
+	return !existing.some((e) => e.source === source && e.status === "indexed");
 };
 
 export interface OnboardOptions {
@@ -34,10 +36,16 @@ export interface OnboardOptions {
 	topup?: number;
 	reimport?: boolean;
 	wait?: boolean;
+	/** Text documents to import after `pack.documents` (the Shopify products, fetched by the caller) */
+	textDocuments?: readonly ShopifyDocument[];
 	log: (line: string) => void;
 	sleep?: (ms: number) => Promise<void>;
 	now?: () => number;
 }
+
+type ImportItem =
+	| { kind: "url"; url: string; title: string; metadata: Record<string, unknown> }
+	| { kind: "text"; text: string; source: string; title: string; metadata: Record<string, unknown> };
 
 export interface OnboardResult {
 	organizationId: string;
@@ -155,18 +163,27 @@ export const runOnboard = async (opts: OnboardOptions): Promise<OnboardResult> =
 	let failed = 0;
 	const importedIds: string[] = [];
 	const failures: string[] = [];
-	await pool(pack.documents, IMPORT_CONCURRENCY, async (doc) => {
-		if (!shouldImport(doc, existing, opts.reimport ?? false)) {
+	const items: ImportItem[] = [
+		...pack.documents.map((doc): ImportItem => ({
+			kind: "url",
+			url: doc.url,
+			title: doc.title,
+			metadata: { ...(doc.family ? { family: doc.family } : {}), ...doc.metadata },
+		})),
+		...(opts.textDocuments ?? []).map((doc): ImportItem => ({ kind: "text", ...doc })),
+	];
+	await pool(items, IMPORT_CONCURRENCY, async (item) => {
+		if (!shouldImport(item.kind === "url" ? { url: item.url } : { source: item.source }, existing, opts.reimport ?? false)) {
 			skipped++;
 			return;
 		}
 		try {
 			const res = asRecord(
 				await client.request("POST", `${API}/documents/import`, {
-					url: doc.url,
-					title: doc.title,
+					...(item.kind === "url" ? { url: item.url } : { text: item.text, source: item.source }),
+					title: item.title,
 					profileId,
-					metadata: { ...(doc.family ? { family: doc.family } : {}), ...doc.metadata },
+					metadata: item.metadata,
 					replace: true,
 				}),
 			);
@@ -174,7 +191,7 @@ export const runOnboard = async (opts: OnboardOptions): Promise<OnboardResult> =
 			if (typeof res.documentId === "string") importedIds.push(res.documentId);
 		} catch (err) {
 			failed++;
-			failures.push(`${doc.title}: ${errorText(err)}`);
+			failures.push(`${item.title}: ${errorText(err)}`);
 		}
 	});
 	log(`documents: imported ${imported}, skipped ${skipped}, failed ${failed}`);
