@@ -11,7 +11,7 @@ Multi-tenant RAG monorepo (pnpm workspaces, Turborepo). Read [README.md](README.
 - `packages/llm`: OpenRouter client and the static model list (`src/data/openrouter_models.ts`), the fallback for chat models and the allow-list for embedding models.
 - `packages/qdrant`: Qdrant helpers.
 - `packages/rag-eval`: RAG evaluation harness, an HTTP client of a deployed API (`src/cli.ts`). No DB, Redis or Qdrant access.
-- `packages/onboard`: lead onboarding, an HTTP client of a deployed API (`src/cli.ts`). Turns a lead folder (`pack.json`) into an organization, a profile, imported documents and public sites. A pack can also name a public Shopify store (`shopify.store`) whose products are imported as one text document each; the store is read with the `curl` program, and `--reimport` refreshes prices and stock. Signs in as a global admin. No company data in code.
+- `packages/onboard`: lead onboarding, an HTTP client of a deployed API (`src/cli.ts`). Turns a lead folder (`pack.json`) into an organization, a profile, imported documents and public sites. A pack document can carry its `text` for a page the API server cannot fetch. A pack can also name a public Shopify store (`shopify.store`) whose products are imported as one text document each; the store is read with the `curl` program, and `--reimport` refreshes prices and stock. Signs in as a global admin. No company data in code.
 - `packages/eslint-config`, `packages/tsconfig`: shared lint and TS config.
 
 ## Commands
